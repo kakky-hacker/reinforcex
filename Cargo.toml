@@ -1,0 +1,13 @@
+[package]
+name = "rl"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rand = "0.8"
+tch = {version="0.18.0"}
+torch-sys = {version="0.18.0", features=["download-libtorch"]}
+ndarray = "0.15"
+gym = { git = "https://github.com/kakky-hacker/gym-rs.git", branch = "master" }
