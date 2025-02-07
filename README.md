@@ -10,3 +10,4 @@ Reinforcex is the Deep Rainforcement Learning framework made by Rust.
 | SAC | Not yet |
 
 # Sample
+cargo run
