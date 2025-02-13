@@ -6,34 +6,49 @@ use tch::{nn, nn::OptimizerConfig, Device, Tensor, Kind};
 use rl::models::{FCGaussianPolicyWithValue, FCGaussianPolicy, BasePolicy};
 use rl::agents::{BaseAgent, REINFORCE};
 
-pub fn train_reinforce() {
+pub fn train_mountaincar_with_reinforce() {
     let device = Device::cuda_if_available();
     let vs = nn::VarStore::new(device);
+    let n_input_channels = 2;
+    let n_actions = 1;
+    let n_hidden_layers = 2;
+    let n_hidden_channels = Some(128);
+    let min_action = Some(Tensor::from_slice(&[-1.0]));
+    let max_action = Some(Tensor::from_slice(&[1.0]));
+    let bound_mean = true;
+    let var_type = "spherical";
+    let min_var = 0.1;
 
     let model = Box::new(FCGaussianPolicy::new(
         &vs,
-        2,
-        1,
-        2,
-        Some(128),
-        Some(Tensor::from_slice(&[-1.0])),
-        Some(Tensor::from_slice(&[1.0])),
-        true,
-        "spherical",
-        0.1,
+        n_input_channels,
+        n_actions,
+        n_hidden_layers,
+        n_hidden_channels,
+        min_action,
+        max_action,
+        bound_mean,
+        var_type,
+        min_var,
     ));
 
-    let opt = nn::Adam::default().build(&vs, 3e-4).unwrap();
+    let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
+    let gamma = 0.997;
+    let beta = 0.01;
+    let batchsize = 1;
+    let act_deterministically = false;
+    let average_entropy_decay = 0.9;
+    let backward_separately = false;
 
     let mut agent = REINFORCE::new(
         model,
-        opt,
-        0.997,
-        0.01,
-        1,
-        false,
-        0.9,
-        false,
+        optimizer,
+        gamma,
+        beta,
+        batchsize,
+        act_deterministically,
+        average_entropy_decay,
+        backward_separately,
     );
 
     let gym = gym::client::GymClient::default();

@@ -8,27 +8,38 @@ use rl::agents::{BaseAgent, REINFORCE};
 pub fn train_cartpole_with_reinforce() {
     let device = Device::cuda_if_available();
     let vs = nn::VarStore::new(device);
+    let n_input_channels = 4;
+    let n_actions = 2;
+    let n_hidden_layers = 2;
+    let n_hidden_channels = Some(128);
+    let min_prob = 0.0;
 
     let model = Box::new(FCSoftmaxPolicy::new(
         &vs,
-        4,
-        2,
-        2,
-        Some(128),
-        0.0,
+        n_input_channels,
+        n_actions,
+        n_hidden_layers,
+        n_hidden_channels,
+        min_prob,
     ));
 
-    let opt = nn::Adam::default().build(&vs, 3e-3).unwrap();
+    let optimizer = nn::Adam::default().build(&vs, 3e-3).unwrap();
+    let gamma = 0.9;
+    let beta = 0.0;
+    let batchsize = 8;
+    let act_deterministically = false;
+    let average_entropy_decay = 0.9;
+    let backward_separately = false;
 
     let mut agent = REINFORCE::new(
         model,
-        opt,
-        0.9,
-        0.0,
-        8,
-        false,
-        0.9,
-        false,
+        optimizer,
+        gamma,
+        beta,
+        batchsize,
+        act_deterministically,
+        average_entropy_decay,
+        backward_separately,
     );
 
     let gym = gym::client::GymClient::default();
