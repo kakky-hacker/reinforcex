@@ -57,8 +57,8 @@ impl<T> RandomAccessQueue<T> {
     }
 
     pub fn sample(&self, k: usize) -> Vec<&T> {
-        let mut rng: rand::prelude::ThreadRng = rand::thread_rng();
-        let length: usize = self.len();
+        let mut rng = rand::thread_rng();
+        let length = self.len();
         let indices: Vec<usize> = (0..k)
         .map(|_| rng.gen_range(0..length))
         .collect();

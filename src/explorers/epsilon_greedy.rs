@@ -30,14 +30,14 @@ where
     where
         G: Fn() -> usize,
     {
-        let epsilon: f64;
+        let epsilon;
         if t > self.decay_steps {
             epsilon = self.end_epsilon
         } else {
             epsilon = self.start_epsilon + (self.end_epsilon - self.start_epsilon) * (t as f64 / self.decay_steps as f64)
         }
         
-        let action: usize = if rand::thread_rng().gen::<f64>() < epsilon { (self.random_action_func)() } else { greedy_action_func() };
+        let action = if rand::thread_rng().gen::<f64>() < epsilon { (self.random_action_func)() } else { greedy_action_func() };
 
         action
     }

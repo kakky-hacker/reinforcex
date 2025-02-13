@@ -2,15 +2,15 @@ use tch::nn::Init;
 
 /// Xavier Initialization
 pub fn xavier_init(nin: i64, nout: i64) -> Init {
-    let lo: f64 = -(6.0 / (nin + nout) as f64).sqrt();
-    let up: f64 = (6.0 / (nin + nout) as f64).sqrt();
+    let lo = -(6.0 / (nin + nout) as f64).sqrt();
+    let up = (6.0 / (nin + nout) as f64).sqrt();
     Init::Uniform { lo, up }
 }
 
 /// He Initialization
 pub fn he_init(nin: i64) -> Init {
-    let mean: f64 = 0.0;
-    let stdev: f64 = (2.0 / nin as f64).sqrt();
+    let mean = 0.0;
+    let stdev = (2.0 / nin as f64).sqrt();
     Init::Randn { mean, stdev }
 }
 
@@ -20,9 +20,9 @@ mod tests {
 
     #[test]
     fn test_xavier_init() {
-        let nin: i64 = 4;
-        let nout: i64 = 6;
-        let expected_init: Init = xavier_init(nin, nout);
+        let nin = 4;
+        let nout = 6;
+        let expected_init = xavier_init(nin, nout);
 
         match expected_init {
             Init::Uniform { lo, up } => {
@@ -37,8 +37,8 @@ mod tests {
 
     #[test]
     fn test_he_init() {
-        let nin: i64 = 4;
-        let expected_init: Init = he_init(nin);
+        let nin = 4;
+        let expected_init = he_init(nin);
 
         match expected_init {
             Init::Randn { mean, stdev } => {

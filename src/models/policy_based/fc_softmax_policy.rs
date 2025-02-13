@@ -25,9 +25,9 @@ impl FCSoftmaxPolicy {
            n_hidden_layers: usize, n_hidden_channels: Option<i64>, 
            min_prob: f64) -> Self {
 
-        let root: nn::Path<'_> = vs.root(); 
-        let mut hidden_layers: Vec<Linear> = Vec::new();
-        let n_hidden_channels: i64 = n_hidden_channels.unwrap_or(256);
+        let root = vs.root(); 
+        let mut hidden_layers = Vec::new();
+        let n_hidden_channels = n_hidden_channels.unwrap_or(256);
 
         if n_hidden_layers > 0 {
             hidden_layers.push(nn::linear(&root, n_input_channels, n_hidden_channels, LinearConfig {
@@ -60,7 +60,7 @@ impl FCSoftmaxPolicy {
     }
 
     fn compute_medium_layer(&self, x: &Tensor) -> Tensor {
-        let mut h: Tensor = x.view([-1, self.n_input_channels]);
+        let mut h = x.view([-1, self.n_input_channels]);
         
         for layer in &self.hidden_layers {
             h = (layer.forward(&h)).relu();
@@ -72,8 +72,8 @@ impl FCSoftmaxPolicy {
 
 impl BasePolicy for FCSoftmaxPolicy {
     fn forward(&self, x: &Tensor) -> (Box<dyn BaseDistribution>, Option<Tensor>) {
-        let h: Tensor = self.compute_medium_layer(x);
-        let logits: Tensor = self.logits_layer.forward(&h).relu();
+        let h = self.compute_medium_layer(x);
+        let logits = self.logits_layer.forward(&h).relu();
         (Box::new(SoftmaxDistribution::new(logits, 1.0, self.min_prob)), None)
     }
 
@@ -103,9 +103,9 @@ impl FCSoftmaxPolicyWithValue {
             min_prob,
         );
 
-        let root: nn::Path<'_> = vs.root();
-        let n_hidden_channels: i64 = n_hidden_channels.unwrap_or(256);
-        let value_layer: Linear = nn::linear(
+        let root = vs.root();
+        let n_hidden_channels = n_hidden_channels.unwrap_or(256);
+        let value_layer = nn::linear(
             &root,
             n_hidden_channels,
             1,
@@ -125,9 +125,9 @@ impl FCSoftmaxPolicyWithValue {
 
 impl BasePolicy for FCSoftmaxPolicyWithValue {
     fn forward(&self, x: &Tensor) -> (Box<dyn BaseDistribution>, Option<Tensor>) {
-        let h: Tensor = self.base_policy.compute_medium_layer(x);
-        let logits: Tensor = self.base_policy.logits_layer.forward(&h).relu();
-        let value: Tensor = self.value_layer.forward(&h);
+        let h = self.base_policy.compute_medium_layer(x);
+        let logits = self.base_policy.logits_layer.forward(&h).relu();
+        let value = self.value_layer.forward(&h);
         (
             Box::new(SoftmaxDistribution::new(logits, 1.0, self.base_policy.min_prob)),
             Some(value),

@@ -32,9 +32,9 @@ impl ReplayBuffer {
         reward: f64,
         is_state_terminal: bool,
     ) {
-        let prev_n_experiences: Vec<Rc<Experience>> = self.last_n_experiences.clone().into_iter().collect();
+        let prev_n_experiences = self.last_n_experiences.clone().into_iter().collect();
 
-        let experience: Rc<Experience> = Rc::new(Experience {
+        let experience = Rc::new(Experience {
             state,
             action,
             reward,

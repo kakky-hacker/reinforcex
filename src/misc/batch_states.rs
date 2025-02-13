@@ -10,7 +10,7 @@ use tch::{Device, Tensor};
 
 pub(crate) fn batch_states(states: Vec<Tensor>, is_cuda: bool) -> Tensor
 {
-    let device: Device = if is_cuda && Device::cuda_if_available().is_cuda() {
+    let device = if is_cuda && Device::cuda_if_available().is_cuda() {
         Device::Cuda(0)
     } else {
         Device::Cpu
@@ -30,7 +30,7 @@ mod tests {
             Tensor::from_slice(&[4.0, 5.0, 6.0]),
         ];
         
-        let result: Tensor = batch_states(states, false);
+        let result = batch_states(states, false);
         assert_eq!(result.device(), Device::Cpu);
 
         let expected = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -45,11 +45,11 @@ mod tests {
                 Tensor::from_slice(&[4.0, 5.0, 6.0]),
             ];
 
-            let result: Tensor = batch_states(states, true);
+            let result = batch_states(states, true);
 
             assert_eq!(result.device(), Device::Cuda(0));
 
-            let expected: Tensor = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).to(Device::Cuda(0));
+            let expected = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).to(Device::Cuda(0));
             assert_eq!(result, expected);
         }
         else {

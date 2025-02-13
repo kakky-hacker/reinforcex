@@ -45,9 +45,9 @@ impl DQN {
 
 impl BaseAgent for DQN {
     fn act(&self, obs: &Tensor) -> Tensor {
-        let mut action: Option<Tensor> = None;
+        let mut action = None;
         no_grad(|| {
-            let state: Tensor = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
+            let state = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
             let q_values = self.model.forward(&state);
             let action = q_values.argmax(-1, false);
         });

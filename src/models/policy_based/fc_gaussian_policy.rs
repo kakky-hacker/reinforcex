@@ -29,9 +29,9 @@ impl FCGaussianPolicy {
            min_action: Option<Tensor>, max_action: Option<Tensor>, 
            bound_mean: bool, var_type: &str, min_var: f64) -> Self {
 
-        let root: nn::Path<'_> = vs.root(); 
+        let root = vs.root(); 
         let mut hidden_layers: Vec<Linear> = Vec::new();
-        let n_hidden_channels: i64 = n_hidden_channels.unwrap_or(256);
+        let n_hidden_channels = n_hidden_channels.unwrap_or(256);
 
         if n_hidden_layers > 0 {
             hidden_layers.push(nn::linear(&root, n_input_channels, n_hidden_channels, LinearConfig {
@@ -48,13 +48,13 @@ impl FCGaussianPolicy {
             }
         }
 
-        let mean_layer: Linear = nn::linear(&root, n_hidden_channels, action_size, LinearConfig {
+        let mean_layer = nn::linear(&root, n_hidden_channels, action_size, LinearConfig {
             ws_init: xavier_init(n_hidden_channels, action_size),
             bs_init: Some(Init::Const(0.0)),
             bias: true,
         });
-        let var_size: i64 = if var_type == "spherical" { 1 } else { action_size };
-        let var_layer: Linear = nn::linear(&root, n_hidden_channels, var_size, LinearConfig {
+        let var_size = if var_type == "spherical" { 1 } else { action_size };
+        let var_layer = nn::linear(&root, n_hidden_channels, var_size, LinearConfig {
             ws_init: he_init(n_hidden_channels),
             bs_init: Some(Init::Const(0.0)),
             bias: true,
@@ -73,7 +73,7 @@ impl FCGaussianPolicy {
     }
 
     fn compute_medium_layer(&self, x: &Tensor) -> Tensor {
-        let mut h: Tensor = x.view([-1, self.n_input_channels]);
+        let mut h = x.view([-1, self.n_input_channels]);
         
         for layer in &self.hidden_layers {
             h = (layer.forward(&h)).relu();
@@ -83,15 +83,15 @@ impl FCGaussianPolicy {
     }
 
     fn compute_mean_and_var(&self, x: &Tensor) -> (Tensor, Tensor) {
-        let mean: Tensor = self.mean_layer.forward(&x);
-        let mean: Tensor = if self.bound_mean {
+        let mean = self.mean_layer.forward(&x);
+        let mean = if self.bound_mean {
             self.bound_by_tanh(mean)
         } else {
             mean
         };
 
-        let var: Tensor = self.var_layer.forward(&x).softplus() + self.min_var;
-        let var: Tensor = var.expand(&mean.size(), false);
+        let var = self.var_layer.forward(&x).softplus() + self.min_var;
+        let var = var.expand(&mean.size(), false);
         (mean, var)
     }
 
@@ -99,17 +99,17 @@ impl FCGaussianPolicy {
         if self.min_action.is_none() || self.max_action.is_none() {
             return x;
         }
-        let min_action: &Tensor = self.min_action.as_ref().unwrap();
-        let max_action: &Tensor = self.max_action.as_ref().unwrap();
-        let scale: Tensor = (max_action - min_action) / 2.0;
-        let x_mean: Tensor = (max_action + min_action) / 2.0;
+        let min_action = self.min_action.as_ref().unwrap();
+        let max_action = self.max_action.as_ref().unwrap();
+        let scale = (max_action - min_action) / 2.0;
+        let x_mean = (max_action + min_action) / 2.0;
         x.tanh() * scale + x_mean
     }
 }
 
 impl BasePolicy for FCGaussianPolicy {
     fn forward(&self, x: &Tensor) -> (Box<dyn BaseDistribution>, Option<Tensor>) {
-        let h: Tensor = self.compute_medium_layer(x);
+        let h = self.compute_medium_layer(x);
         let (mean, var) = self.compute_mean_and_var(&h);
         (Box::new(GaussianDistribution::new(mean, var)), None)
     }
@@ -140,7 +140,7 @@ impl FCGaussianPolicyWithValue {
         var_type: &str,
         min_var: f64,
     ) -> Self {
-        let base_policy: FCGaussianPolicy = FCGaussianPolicy::new(
+        let base_policy = FCGaussianPolicy::new(
             vs,
             n_input_channels,
             action_size,
@@ -153,9 +153,9 @@ impl FCGaussianPolicyWithValue {
             min_var,
         );
 
-        let root: nn::Path<'_> = vs.root();
-        let n_hidden_channels: i64 = n_hidden_channels.unwrap_or(256);
-        let value_layer: Linear = nn::linear(
+        let root = vs.root();
+        let n_hidden_channels = n_hidden_channels.unwrap_or(256);
+        let value_layer = nn::linear(
             &root,
             n_hidden_channels,
             1,
@@ -179,9 +179,9 @@ impl FCGaussianPolicyWithValue {
 
 impl BasePolicy for FCGaussianPolicyWithValue {
     fn forward(&self, x: &Tensor) -> (Box<dyn BaseDistribution>, Option<Tensor>) {
-        let h: Tensor = self.base_policy.compute_medium_layer(x);
+        let h = self.base_policy.compute_medium_layer(x);
         let (mean, var) = self.base_policy.compute_mean_and_var(&h);
-        let value: Tensor = self.compute_value(&h);
+        let value = self.compute_value(&h);
         (
             Box::new(GaussianDistribution::new(mean, var)),
             Some(value),
@@ -209,18 +209,18 @@ mod tests {
 
     #[test]
     fn test_initialization() {
-        let vs: nn::VarStore = nn::VarStore::new(Device::Cpu);
-        let n_input_channels: i64 = 4;
-        let action_size: i64 = 2;
-        let n_hidden_layers: usize = 2;
-        let n_hidden_channels: Option<i64> = Some(64);
-        let min_action: Tensor = Tensor::from(-1.0).copy();
-        let max_action: Tensor = Tensor::from(1.0).copy();
-        let bound_mean: bool = true;
-        let var_type: &str = "spherical";
-        let min_var: f64 = 1e-3;
+        let vs = nn::VarStore::new(Device::Cpu);
+        let n_input_channels = 4;
+        let action_size = 2;
+        let n_hidden_layers = 2;
+        let n_hidden_channels = Some(64);
+        let min_action = Tensor::from(-1.0).copy();
+        let max_action = Tensor::from(1.0).copy();
+        let bound_mean = true;
+        let var_type = "spherical";
+        let min_var = 1e-3;
 
-        let policy: FCGaussianPolicy = FCGaussianPolicy::new(
+        let policy = FCGaussianPolicy::new(
             &vs, n_input_channels, action_size, n_hidden_layers, n_hidden_channels,
             Some(min_action.shallow_clone()), Some(max_action.shallow_clone()), bound_mean, var_type, min_var
         );
@@ -235,16 +235,16 @@ mod tests {
 
     #[test]
     fn test_compute_mean_and_var() {
-        let vs: nn::VarStore = nn::VarStore::new(Device::Cpu);
-        let n_input_channels: i64 = 4;
-        let action_size: i64 = 6;
-        let policy: FCGaussianPolicy = FCGaussianPolicy::new(
+        let vs = nn::VarStore::new(Device::Cpu);
+        let n_input_channels = 4;
+        let action_size = 6;
+        let policy = FCGaussianPolicy::new(
             &vs, n_input_channels, action_size, 2, Some(64), None, None,
             false, "spherical", 1e-3,
         );
 
-        let input: Tensor = Tensor::randn(&[3, n_input_channels], (tch::Kind::Float, Device::Cpu));
-        let h: Tensor = policy.compute_medium_layer(&input);
+        let input = Tensor::randn(&[3, n_input_channels], (tch::Kind::Float, Device::Cpu));
+        let h = policy.compute_medium_layer(&input);
         let (mean, var) = policy.compute_mean_and_var(&h);
 
         assert_eq!(mean.size()[0], 3);
@@ -256,20 +256,20 @@ mod tests {
 
     #[test]
     fn test_bound_by_tanh() {
-        let vs: nn::VarStore = nn::VarStore::new(Device::Cpu);
-        let n_input_channels: i64 = 4;
-        let action_size: i64 = 2;
-        let min_action: Tensor = Tensor::from(-1.0);
-        let max_action: Tensor = Tensor::from(1.0);
+        let vs = nn::VarStore::new(Device::Cpu);
+        let n_input_channels = 4;
+        let action_size = 2;
+        let min_action = Tensor::from(-1.0);
+        let max_action = Tensor::from(1.0);
 
-        let policy: FCGaussianPolicy = FCGaussianPolicy::new(
+        let policy = FCGaussianPolicy::new(
             &vs, n_input_channels, action_size, 2, Some(64), 
             Some(min_action.copy()), Some(max_action.copy()),
             true, "spherical", 1e-3,
         );
 
-        let unbounded_mean: Tensor = Tensor::from_slice(&[-2.0, 0.0, 2.0]);
-        let bounded_mean: Tensor = policy.bound_by_tanh(unbounded_mean);
+        let unbounded_mean = Tensor::from_slice(&[-2.0, 0.0, 2.0]);
+        let bounded_mean = policy.bound_by_tanh(unbounded_mean);
 
         assert!(bounded_mean.min().double_value(&[]) >= min_action.double_value(&[]));
         assert!(bounded_mean.max().double_value(&[]) <= max_action.double_value(&[]));
@@ -277,16 +277,16 @@ mod tests {
 
     #[test]
     fn test_forward(){
-        let vs: nn::VarStore = nn::VarStore::new(Device::Cpu);
-        let n_input_channels: i64 = 4;
-        let action_size: i64 = 6;
-        let policy: FCGaussianPolicy = FCGaussianPolicy::new(
+        let vs = nn::VarStore::new(Device::Cpu);
+        let n_input_channels = 4;
+        let action_size = 6;
+        let policy = FCGaussianPolicy::new(
             &vs, n_input_channels, action_size, 2, Some(64), None, None,
             false, "spherical", 1e-3,
         );
 
-        let input: Tensor = Tensor::randn(&[3, n_input_channels], (tch::Kind::Float, Device::Cpu));
-        let action_distribution:Box<dyn BaseDistribution>  = policy.forward(&input).0;
+        let input = Tensor::randn(&[3, n_input_channels], (tch::Kind::Float, Device::Cpu));
+        let action_distribution = policy.forward(&input).0;
 
         let (mean, var) = action_distribution.params();
         

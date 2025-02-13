@@ -64,11 +64,7 @@ impl REINFORCE {
             self.optimizer.zero_grad();
         }
     
-        let mut losses: Vec<Tensor> = vec![];
-        let mut a: Tensor = Tensor::from_slice(&[0.0]).view([1, 1]);
-        let mut b: Tensor = Tensor::from_slice(&[0.0]).view([1, 1]);
-        let mut c: Tensor = Tensor::from_slice(&[0.0]).view([1, 1]);
-        let mut d: Tensor = Tensor::from_slice(&[0.0]).view([1, 1]);
+        let mut losses = vec![];
     
         // Iterate over the reward, log probabilities, and entropy sequences
         for (r_seq, log_prob_seq, ent_seq, v_seq) in self.reward_sequences.iter()
@@ -81,45 +77,26 @@ impl REINFORCE {
             assert_eq!(log_prob_seq.len(), ent_seq.len());
     
             // Calculate returns (sum of future rewards)
-            let g_seq: Vec<f64> = cumsum::cumsum_rev(&r_seq[1..], self.gamma);
+            let g_seq = cumsum::cumsum_rev(&r_seq[1..], self.gamma);
 
             assert_eq!(g_seq.len(), log_prob_seq.len());
     
             // Compute the losses based on rewards, log probabilities, and entropy
             for (((g, log_prob), entropy), v) in g_seq.iter().zip(log_prob_seq.iter()).zip(ent_seq.iter()).zip(v_seq.iter()) {
-                let loss: Tensor;
-                let g_tensor: Tensor = tch::no_grad(|| Tensor::from(*g));
+                let loss;
+                let g_tensor = tch::no_grad(|| Tensor::from(*g));
                 if v.is_none() {
                     loss = (-g_tensor * log_prob - self.beta * entropy) / r_seq.len() as f64;
-                    d = d + entropy.detach();
-                    b += loss.detach();
                 } else {
-                    let v_tensor: Tensor = v.as_ref().unwrap().copy();
-                    let advantage: Tensor = &g_tensor - v_tensor.detach();
-                    a = a + advantage.detach();
-                    let actor_loss: Tensor = -advantage * log_prob - self.beta * entropy;
-                    let critic_loss: Tensor = (v_tensor - &g_tensor).pow_tensor_scalar(2.0);
-                    b += actor_loss.detach();
-                    c += critic_loss.detach();
-                    d = d + entropy.detach();
+                    let v_tensor = v.as_ref().unwrap().copy();
+                    let advantage = &g_tensor - v_tensor.detach();
+                    let actor_loss = -advantage * log_prob - self.beta * entropy;
+                    let critic_loss = (v_tensor - &g_tensor).pow_tensor_scalar(2.0);
                     loss = (actor_loss + critic_loss) / r_seq.len() as f64;
                 }
                 losses.push(loss)
             }
         }
-
-        a /= losses.len() as f64;
-        b /= losses.len() as f64;
-        c /= losses.len() as f64;
-        d /= losses.len() as f64;
-        println!("advantage");
-        a.print();
-        println!("actor");
-        b.print();
-        println!("critic");
-        c.print();
-        println!("entropy");
-        d.print();
     
         // Sum the losses and divide by batch size, then backward.
         // TODO:don't user into_iter().sum when tensor is on GPU.
@@ -160,14 +137,14 @@ impl REINFORCE {
 
 impl BaseAgent for REINFORCE {
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor {
-        let state: Tensor = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
+        let state = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
 
         // Get action distribution from the model
         let (action_distrib, value) = self.model.forward(&state);
 
         // Sample an action from the distribution
-        let batch_action: Tensor = action_distrib.sample().detach();
-        let action: Tensor = batch_action.to_device(Device::Cpu);
+        let batch_action = action_distrib.sample().detach();
+        let action = batch_action.to_device(Device::Cpu);
 
         // Save values used to compute losses
         if let Some(last_vec) = self.reward_sequences.last_mut(){
@@ -196,12 +173,12 @@ impl BaseAgent for REINFORCE {
     fn act(&self, obs: &Tensor) -> Tensor {
         let mut action: Option<Tensor> = None;
         no_grad(|| {
-            let state: Tensor = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
+            let state = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
 
             // Get action distribution from the model
             let action_distrib: Box<dyn BaseDistribution> = self.model.forward(&state).0;
 
-            let batch_action: Tensor;
+            let batch_action;
 
             if self.act_deterministically {
                 // Choose the most probable action
