@@ -55,15 +55,16 @@ impl BaseAgent for DQN {
     }
 
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor {
-        self.replay_buffer.append(self.last_state, self.last_action, reward)
+        self.replay_buffer.append(self.last_state, self.last_action, reward);
         let state = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
         let q_values = self.model.forward(&state);
         let action = self.explorer.select_action(self.t, q_values.argmax(-1, false));
         self.last_state = state;
         self.last_action = action;
         self.t += 1;
-        if self.t % self.update_interval == 0:
+        if self.t % self.update_interval == 0 {
             self.update();
+        }
         action
     }
 
