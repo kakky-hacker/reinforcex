@@ -1,14 +1,14 @@
 use tch::{nn, Device, Tensor};
 use super::base_agent::BaseAgent;
 use crate::replay_buffer::ReplayBuffer;
-use crate::explorers::EpsilonGreedy;
+use crate::explorers::BaseExplorer;
 use crate::misc::batch_states::batch_states;
 
 pub struct DQN {
     model: nn::VarStore,
     optimizer: nn::Optimizer,
     replay_buffer: ReplayBuffer,
-    explorer: EpsilonGreedy,
+    explorer: Box<dyn BaseExplorer>,
     batch_size: usize,
     update_interval: usize,
     last_state: Option<Tensor>,
@@ -24,15 +24,15 @@ impl DQN {
         batch_size: usize,
         update_interval: usize,
     ) -> Self {
-        Self {
+        DQN {
             model,
             optimizer,
-            ReplayBuffer(10**6, 1),
-            EpsilonGreedy(1.0, 0.1, 10**6),
+            replay_buffer: ReplayBuffer::new(1000000, 1),
+            explorer: EpsilonGreedy::new(1.0, 0.1, 1000000),
             batch_size,
             update_interval,
-            None,
-            None,
+            last_state: None,
+            last_action: None,
             t: 0,
         }
     }
