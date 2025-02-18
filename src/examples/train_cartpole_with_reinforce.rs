@@ -69,7 +69,7 @@ pub fn train_cartpole_with_reinforce() {
             total_reward += reward;
             if state.is_done {
                 let obs_ = Tensor::from_slice(&obs).to_kind(Kind::Float);
-                agent.stop_episode_and_train(&obs_, reward, true);
+                agent.stop_episode_and_train(&obs_, reward);
                 break;
             }
         }

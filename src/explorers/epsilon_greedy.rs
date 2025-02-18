@@ -21,10 +21,7 @@ impl EpsilonGreedy {
 }
 
 impl BaseExplorer for EpsilonGreedy {
-    fn select_action<F, G>(&self, t: usize, random_action_func: F, greedy_action_func: G) -> usize
-    where
-        F: Fn() -> usize, G: Fn() -> usize,
-    {
+    fn select_action(&self, t: usize, random_action_func: &dyn Fn() -> usize, greedy_action_func: &dyn Fn() -> usize) -> usize {
         let epsilon;
         if t > self.decay_steps {
             epsilon = self.end_epsilon
@@ -63,7 +60,7 @@ mod tests {
         let random_action = || 456;
         let greedy_action = || 123;
 
-        let action = explorer.select_action(0, random_action, greedy_action);
+        let action = explorer.select_action(0, &random_action, &greedy_action);
         assert_eq!(action, 456);
     }
 
@@ -73,7 +70,7 @@ mod tests {
         let random_action = || 456;
         let greedy_action = || 123;
 
-        let action = explorer.select_action(50, random_action, greedy_action);
+        let action = explorer.select_action(50, &random_action, &greedy_action);
         assert_eq!(action, 123);
     }
 
@@ -87,7 +84,7 @@ mod tests {
         let mut greedy_count = 0;
 
         for t in 0..100 {
-            let action = explorer.select_action(t, random_action, greedy_action);
+            let action = explorer.select_action(t, &random_action, &greedy_action);
             if action == 456 {
                 random_count += 1;
             } else {

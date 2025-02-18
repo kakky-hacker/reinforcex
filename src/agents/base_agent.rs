@@ -9,9 +9,9 @@ pub trait BaseAgent {
 
     fn act(&self, obs: &Tensor) -> Tensor;
 
-    fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64, done: bool) {
+    fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         // Implementation specific logic
-        println!("Stop episode and train: state = {}, reward = {}, done = {}", obs, reward, done);
+        println!("Stop episode and train: state = {}, reward = {}", obs, reward);
     }
 
     fn stop_episode(&mut self) {

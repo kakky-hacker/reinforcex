@@ -193,32 +193,28 @@ impl BaseAgent for REINFORCE {
         action.unwrap()
     }
 
-    fn stop_episode_and_train(&mut self, obs: &Tensor, reward:f64 , done: bool) {
+    fn stop_episode_and_train(&mut self, obs: &Tensor, reward:f64) {
         // Add reward to the sequences
         if let Some(last_vec) = self.reward_sequences.last_mut(){
             last_vec.push(reward);
         }
         
-        if done {
-            if self.backward_separately {
-                // Perform backprop for each episode and accumulate gradients
-                self.accumulate_grad();
-                if self.n_backward == self.batchsize {
-                    self.update_with_accumulated_grad();
-                }
-            } else {
-                if self.reward_sequences.len() == self.batchsize {
-                    self.batch_update();
-                } else {
-                    // Prepare for the next episode
-                    self.reward_sequences.push(vec![]);
-                    self.log_prob_sequences.push(vec![]);
-                    self.entropy_sequences.push(vec![]);
-                    self.value_sequences.push(vec![]);
-                }
+        if self.backward_separately {
+            // Perform backprop for each episode and accumulate gradients
+            self.accumulate_grad();
+            if self.n_backward == self.batchsize {
+                self.update_with_accumulated_grad();
             }
         } else {
-            panic!("Since REINFORCE supports episodic environments only, must be done=True.")
+            if self.reward_sequences.len() == self.batchsize {
+                self.batch_update();
+            } else {
+                // Prepare for the next episode
+                self.reward_sequences.push(vec![]);
+                self.log_prob_sequences.push(vec![]);
+                self.entropy_sequences.push(vec![]);
+                self.value_sequences.push(vec![]);
+            }
         }
 
         // Reset model state if it's a recurrent model
