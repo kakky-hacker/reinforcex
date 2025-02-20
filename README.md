@@ -15,11 +15,16 @@ Offers overall faster training speeds compared to Python-based frameworks.
 | PPO | Not yet |
 | SAC | Not yet |
 
-# For experiments
+# Sample experiments
+The experimental environment is built using OpenAI Gym. Since Gym is a Python framework, set up a Python environment and run the following pip command:
+```
 pip install gymnasium==0.26.3
+```
+We use Gym as the environment by calling Python from Rust.
 
-# Sample
+```
 cargo run
+```
 
 <img width="597" alt="image" src="https://github.com/user-attachments/assets/b8c0606b-ec11-4b5a-b7fc-3070ad327d72" />
 
