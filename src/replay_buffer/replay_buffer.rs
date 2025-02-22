@@ -123,10 +123,22 @@ mod tests {
         let state1 = Tensor::from_slice(&[0.0]);
         let state2 = Tensor::from_slice(&[1.0]);
         let state3 = Tensor::from_slice(&[2.0]);
+        let state4 = Tensor::from_slice(&[3.0]);
+        let state5 = Tensor::from_slice(&[4.0]);
+        let state6 = Tensor::from_slice(&[5.0]);
+        let state7 = Tensor::from_slice(&[6.0]);
+        let state8 = Tensor::from_slice(&[7.0]);
+        let state9 = Tensor::from_slice(&[8.0]);
 
         buffer.append(state1, None, 1.0, false, 0.9);
         buffer.append(state2, None, 2.0, false, 0.9);
         buffer.append(state3, None, 3.0, true, 0.9);
+        buffer.append(state4, None, 0.0, false, 0.9);
+        buffer.append(state5, None, 0.0, false, 0.9);
+        buffer.append(state6, None, 0.0, false, 0.9);
+        buffer.append(state7, None, 0.0, false, 0.9);
+        buffer.append(state8, None, 0.0, false, 0.9);
+        buffer.append(state9, None, 5.0, true, 0.9);
 
         for experience in buffer.sample(100) {
             let q_value = *experience.q_value.borrow();
@@ -137,10 +149,22 @@ mod tests {
                 expected_q_value = 2.0 + 0.9 * 3.0;
             } else if experience.state.double_value(&[]) == 2.0 {
                 expected_q_value = 3.0;
+            } else if experience.state.double_value(&[]) == 3.0 {
+                expected_q_value = 0.0;
+            } else if experience.state.double_value(&[]) == 4.0 {
+                expected_q_value = 0.0;
+            } else if experience.state.double_value(&[]) == 5.0 {
+                expected_q_value = 0.0;
+            } else if experience.state.double_value(&[]) == 6.0 {
+                expected_q_value = 0.9 * 0.9 * 5.0;
+            } else if experience.state.double_value(&[]) == 7.0 {
+                expected_q_value = 0.9 * 5.0;
+            } else if experience.state.double_value(&[]) == 8.0 {
+                expected_q_value = 5.0;
             } else {
                 expected_q_value = -1.0;
             }
-            assert_eq!(q_value, Some(expected_q_value));
+            assert!((q_value.unwrap() - expected_q_value).abs() < 1e-6);
         }
     }
 }
