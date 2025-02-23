@@ -1,7 +1,7 @@
 mod base_agent;
-mod reinforce;
 mod dqn;
+mod reinforce;
 
 pub use base_agent::BaseAgent;
-pub use reinforce::REINFORCE;
 pub use dqn::DQN;
+pub use reinforce::REINFORCE;

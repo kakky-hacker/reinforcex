@@ -5,7 +5,7 @@ pub struct BoundedVecDeque<T> {
     max_len: usize,
 }
 
-impl<T> BoundedVecDeque<T> 
+impl<T> BoundedVecDeque<T>
 where
     T: Clone,
 {
@@ -39,7 +39,6 @@ where
         self.deque.front_mut().unwrap()
     }
 }
-
 
 #[cfg(test)]
 mod tests {

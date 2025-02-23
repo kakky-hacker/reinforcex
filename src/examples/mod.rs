@@ -1,5 +1,5 @@
-mod train_mountaincar_with_reinforce;
 mod train_cartpole_with_reinforce;
+mod train_mountaincar_with_reinforce;
 
-pub use train_mountaincar_with_reinforce::train_mountaincar_with_reinforce;
 pub use train_cartpole_with_reinforce::train_cartpole_with_reinforce;
+pub use train_mountaincar_with_reinforce::train_mountaincar_with_reinforce;

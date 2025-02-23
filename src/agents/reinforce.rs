@@ -1,11 +1,11 @@
-use std::collections::HashSet;
-use std::fs;
-use tch::{nn, Tensor, Device, no_grad};
 use super::base_agent::BaseAgent;
-use crate::models::BasePolicy;
-use crate::prob_distributions::BaseDistribution;
 use crate::misc::batch_states::batch_states;
 use crate::misc::cumsum;
+use crate::models::BasePolicy;
+use crate::prob_distributions::BaseDistribution;
+use std::collections::HashSet;
+use std::fs;
+use tch::{nn, no_grad, Device, Tensor};
 
 pub struct REINFORCE {
     model: Box<dyn BasePolicy>,
@@ -63,26 +63,33 @@ impl REINFORCE {
         if self.n_backward == 0 {
             self.optimizer.zero_grad();
         }
-    
+
         let mut losses = vec![];
-    
+
         // Iterate over the reward, log probabilities, and entropy sequences
-        for (r_seq, log_prob_seq, ent_seq, v_seq) in self.reward_sequences.iter()
+        for (r_seq, log_prob_seq, ent_seq, v_seq) in self
+            .reward_sequences
+            .iter()
             .zip(self.log_prob_sequences.iter())
             .zip(self.entropy_sequences.iter())
             .zip(self.value_sequences.iter())
-            .map(|(((r, log_prob), ent), v)| (r, log_prob, ent, v)) {
-            
+            .map(|(((r, log_prob), ent), v)| (r, log_prob, ent, v))
+        {
             assert_eq!(r_seq.len() - 1, log_prob_seq.len());
             assert_eq!(log_prob_seq.len(), ent_seq.len());
-    
+
             // Calculate returns (sum of future rewards)
             let g_seq = cumsum::cumsum_rev(&r_seq[1..], self.gamma);
 
             assert_eq!(g_seq.len(), log_prob_seq.len());
-    
+
             // Compute the losses based on rewards, log probabilities, and entropy
-            for (((g, log_prob), entropy), v) in g_seq.iter().zip(log_prob_seq.iter()).zip(ent_seq.iter()).zip(v_seq.iter()) {
+            for (((g, log_prob), entropy), v) in g_seq
+                .iter()
+                .zip(log_prob_seq.iter())
+                .zip(ent_seq.iter())
+                .zip(v_seq.iter())
+            {
                 let loss;
                 let g_tensor = tch::no_grad(|| Tensor::from(*g));
                 if v.is_none() {
@@ -97,17 +104,19 @@ impl REINFORCE {
                 losses.push(loss)
             }
         }
-    
+
         // Sum the losses and divide by batch size, then backward.
         // TODO:don't user into_iter().sum when tensor is on GPU.
-        (losses.into_iter().sum::<Tensor>() / self.batchsize as f64).squeeze().backward();
-    
+        (losses.into_iter().sum::<Tensor>() / self.batchsize as f64)
+            .squeeze()
+            .backward();
+
         // Reset the reward, log probability, and entropy sequences for the next episode
         self.reward_sequences = vec![vec![]];
         self.log_prob_sequences = vec![vec![]];
         self.entropy_sequences = vec![vec![]];
         self.value_sequences = vec![vec![]];
-    
+
         self.n_backward += 1;
     }
 
@@ -147,21 +156,22 @@ impl BaseAgent for REINFORCE {
         let action = batch_action.to_device(Device::Cpu);
 
         // Save values used to compute losses
-        if let Some(last_vec) = self.reward_sequences.last_mut(){
+        if let Some(last_vec) = self.reward_sequences.last_mut() {
             last_vec.push(reward);
         }
-        if let Some(last_vec) = self.log_prob_sequences.last_mut(){
+        if let Some(last_vec) = self.log_prob_sequences.last_mut() {
             last_vec.push(action_distrib.log_prob(&batch_action));
         }
-        if let Some(last_vec) = self.entropy_sequences.last_mut(){
+        if let Some(last_vec) = self.entropy_sequences.last_mut() {
             last_vec.push(action_distrib.entropy());
         }
-        if let Some(last_vec) = self.value_sequences.last_mut(){
+        if let Some(last_vec) = self.value_sequences.last_mut() {
             last_vec.push(value);
         }
 
         // Update stats for entropy
-        self.average_entropy += (1.0 - self.average_entropy_decay) * (action_distrib.entropy().double_value(&[]) - self.average_entropy);
+        self.average_entropy += (1.0 - self.average_entropy_decay)
+            * (action_distrib.entropy().double_value(&[]) - self.average_entropy);
 
         // Increment the time step
         self.t += 1;
@@ -191,12 +201,12 @@ impl BaseAgent for REINFORCE {
         })
     }
 
-    fn stop_episode_and_train(&mut self, obs: &Tensor, reward:f64) {
+    fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         // Add reward to the sequences
-        if let Some(last_vec) = self.reward_sequences.last_mut(){
+        if let Some(last_vec) = self.reward_sequences.last_mut() {
             last_vec.push(reward);
         }
-        
+
         if self.backward_separately {
             // Perform backprop for each episode and accumulate gradients
             self.accumulate_grad();
@@ -219,9 +229,7 @@ impl BaseAgent for REINFORCE {
         self.stop_episode();
     }
 
-    fn stop_episode(&mut self) {
-        
-    }
+    fn stop_episode(&mut self) {}
 
     fn get_statistics(&self) -> Vec<(String, f64)> {
         vec![("average_entropy".to_string(), self.average_entropy as f64)]

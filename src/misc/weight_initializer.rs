@@ -44,7 +44,10 @@ mod tests {
             Init::Randn { mean, stdev } => {
                 let expected_stdev = (2.0 / nin as f64).sqrt();
                 assert!((mean - 0.0).abs() < 1e-6, "Mean value mismatch");
-                assert!((stdev - expected_stdev).abs() < 1e-6, "Standard deviation mismatch");
+                assert!(
+                    (stdev - expected_stdev).abs() < 1e-6,
+                    "Standard deviation mismatch"
+                );
             }
             _ => panic!("Expected Randn initialization"),
         }

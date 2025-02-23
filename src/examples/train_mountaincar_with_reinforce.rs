@@ -2,9 +2,9 @@ use gym::client::MakeOptions;
 extern crate gym;
 use gym::Action;
 use ndarray::Array1;
-use tch::{nn, nn::OptimizerConfig, Device, Tensor, Kind};
-use rl::models::{FCGaussianPolicyWithValue, FCGaussianPolicy, BasePolicy};
 use rl::agents::{BaseAgent, REINFORCE};
+use rl::models::{BasePolicy, FCGaussianPolicy, FCGaussianPolicyWithValue};
+use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
 pub fn train_mountaincar_with_reinforce() {
     let device = Device::cuda_if_available();
@@ -52,16 +52,16 @@ pub fn train_mountaincar_with_reinforce() {
     );
 
     let gym = gym::client::GymClient::default();
-	let env = gym.make(
-			"MountainCarContinuous-v0",
-			Some(MakeOptions {
-				render_mode: Some(gym::client::RenderMode::Human),
-				..Default::default()
-			}),
-		)
-		.expect("Unable to create environment");
+    let env = gym
+        .make(
+            "MountainCarContinuous-v0",
+            Some(MakeOptions {
+                render_mode: Some(gym::client::RenderMode::Human),
+                ..Default::default()
+            }),
+        )
+        .expect("Unable to create environment");
 
-    
     let mut total_reward = 0.0;
     for episode in 0..1000000 {
         env.reset(None).unwrap();

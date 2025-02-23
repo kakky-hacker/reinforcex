@@ -1,10 +1,10 @@
 use super::base_policy_network::BasePolicy;
 
-use tch::{Tensor, nn};
-use tch::nn::{Module, Linear, LinearConfig, Init};
+use crate::misc::weight_initializer::he_init;
 use crate::prob_distributions::BaseDistribution;
 use crate::prob_distributions::SoftmaxDistribution;
-use crate::misc::weight_initializer::he_init;
+use tch::nn::{Init, Linear, LinearConfig, Module};
+use tch::{nn, Tensor};
 
 pub struct FCSoftmaxPolicy {
     hidden_layers: Vec<Linear>,
@@ -19,35 +19,53 @@ pub struct FCSoftmaxPolicyWithValue {
     value_layer: Linear,
 }
 
-
 impl FCSoftmaxPolicy {
-    pub fn new(vs: &nn::VarStore, n_input_channels: i64, n_actions: i64, 
-           n_hidden_layers: usize, n_hidden_channels: Option<i64>, 
-           min_prob: f64) -> Self {
-
-        let root = vs.root(); 
+    pub fn new(
+        vs: &nn::VarStore,
+        n_input_channels: i64,
+        n_actions: i64,
+        n_hidden_layers: usize,
+        n_hidden_channels: Option<i64>,
+        min_prob: f64,
+    ) -> Self {
+        let root = vs.root();
         let mut hidden_layers = Vec::new();
         let n_hidden_channels = n_hidden_channels.unwrap_or(256);
 
-        hidden_layers.push(nn::linear(&root, n_input_channels, n_hidden_channels, LinearConfig {
-            ws_init: he_init(n_input_channels),
-            bs_init: Some(Init::Const(0.0)),
-            bias: true,
-        }));
+        hidden_layers.push(nn::linear(
+            &root,
+            n_input_channels,
+            n_hidden_channels,
+            LinearConfig {
+                ws_init: he_init(n_input_channels),
+                bs_init: Some(Init::Const(0.0)),
+                bias: true,
+            },
+        ));
         for _ in 0..n_hidden_layers - 1 {
-            hidden_layers.push(nn::linear(&root, n_hidden_channels, n_hidden_channels, LinearConfig {
+            hidden_layers.push(nn::linear(
+                &root,
+                n_hidden_channels,
+                n_hidden_channels,
+                LinearConfig {
+                    ws_init: he_init(n_hidden_channels),
+                    bs_init: Some(Init::Const(0.0)),
+                    bias: true,
+                },
+            ));
+        }
+
+        let logits_layer: Linear = nn::linear(
+            &root,
+            n_hidden_channels,
+            n_actions,
+            LinearConfig {
                 ws_init: he_init(n_hidden_channels),
                 bs_init: Some(Init::Const(0.0)),
                 bias: true,
-            }));
-        }
+            },
+        );
 
-        let logits_layer: Linear = nn::linear(&root, n_hidden_channels, n_actions, LinearConfig {
-            ws_init: he_init(n_hidden_channels),
-            bs_init: Some(Init::Const(0.0)),
-            bias: true,
-        });
-        
         FCSoftmaxPolicy {
             hidden_layers,
             logits_layer,
@@ -59,7 +77,7 @@ impl FCSoftmaxPolicy {
 
     fn compute_medium_layer(&self, x: &Tensor) -> Tensor {
         let mut h = x.view([-1, self.n_input_channels]);
-        
+
         for layer in &self.hidden_layers {
             h = (layer.forward(&h)).relu();
         }
@@ -72,7 +90,10 @@ impl BasePolicy for FCSoftmaxPolicy {
     fn forward(&self, x: &Tensor) -> (Box<dyn BaseDistribution>, Option<Tensor>) {
         let h = self.compute_medium_layer(x);
         let logits = self.logits_layer.forward(&h).relu();
-        (Box::new(SoftmaxDistribution::new(logits, 1.0, self.min_prob)), None)
+        (
+            Box::new(SoftmaxDistribution::new(logits, 1.0, self.min_prob)),
+            None,
+        )
     }
 
     fn is_cuda(&self) -> bool {
@@ -81,9 +102,14 @@ impl BasePolicy for FCSoftmaxPolicy {
 }
 
 impl FCSoftmaxPolicyWithValue {
-    pub fn new(vs: &nn::VarStore, n_input_channels: i64, n_actions: i64, 
-        n_hidden_layers: usize, n_hidden_channels: Option<i64>, 
-        min_prob: f64) -> Self {
+    pub fn new(
+        vs: &nn::VarStore,
+        n_input_channels: i64,
+        n_actions: i64,
+        n_hidden_layers: usize,
+        n_hidden_channels: Option<i64>,
+        min_prob: f64,
+    ) -> Self {
         let base_policy: FCSoftmaxPolicy = FCSoftmaxPolicy::new(
             vs,
             n_input_channels,
@@ -119,7 +145,11 @@ impl BasePolicy for FCSoftmaxPolicyWithValue {
         let logits = self.base_policy.logits_layer.forward(&h).relu();
         let value = self.value_layer.forward(&h);
         (
-            Box::new(SoftmaxDistribution::new(logits, 1.0, self.base_policy.min_prob)),
+            Box::new(SoftmaxDistribution::new(
+                logits,
+                1.0,
+                self.base_policy.min_prob,
+            )),
             Some(value),
         )
     }

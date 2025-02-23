@@ -1,18 +1,26 @@
 // Cumulative sum considering the discount rate.
-pub fn cumsum(seq: &[f64], gamma: f64) -> Vec<f64>{
-    seq.iter().scan(0.0, |cumsum_x, &x| {
-        *cumsum_x *= gamma;
-        *cumsum_x += x;
-        Some(*cumsum_x)
-    }).collect::<Vec<f64>>()
+pub fn cumsum(seq: &[f64], gamma: f64) -> Vec<f64> {
+    seq.iter()
+        .scan(0.0, |cumsum_x, &x| {
+            *cumsum_x *= gamma;
+            *cumsum_x += x;
+            Some(*cumsum_x)
+        })
+        .collect::<Vec<f64>>()
 }
 
-pub fn cumsum_rev(seq: &[f64], gamma: f64) -> Vec<f64>{
-    seq.iter().rev().scan(0.0, |cumsum_x, &x| {
-        *cumsum_x *= gamma;
-        *cumsum_x += x;
-        Some(*cumsum_x)
-    }).collect::<Vec<f64>>().into_iter().rev().collect::<Vec<f64>>()
+pub fn cumsum_rev(seq: &[f64], gamma: f64) -> Vec<f64> {
+    seq.iter()
+        .rev()
+        .scan(0.0, |cumsum_x, &x| {
+            *cumsum_x *= gamma;
+            *cumsum_x += x;
+            Some(*cumsum_x)
+        })
+        .collect::<Vec<f64>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<f64>>()
 }
 
 #[cfg(test)]

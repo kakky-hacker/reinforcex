@@ -1,9 +1,9 @@
 use gym::client::MakeOptions;
 extern crate gym;
 use gym::Action;
-use tch::{nn, nn::OptimizerConfig, Device, Tensor, Kind};
-use rl::models::{FCSoftmaxPolicy, FCSoftmaxPolicyWithValue, BasePolicy};
 use rl::agents::{BaseAgent, REINFORCE};
+use rl::models::{BasePolicy, FCSoftmaxPolicy, FCSoftmaxPolicyWithValue};
+use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
 pub fn train_cartpole_with_reinforce() {
     let device = Device::cuda_if_available();
@@ -43,16 +43,16 @@ pub fn train_cartpole_with_reinforce() {
     );
 
     let gym = gym::client::GymClient::default();
-	let env = gym.make(
-			"CartPole-v1",
-			Some(MakeOptions {
-				render_mode: Some(gym::client::RenderMode::Human),
-				..Default::default()
-			}),
-		)
-		.expect("Unable to create environment");
+    let env = gym
+        .make(
+            "CartPole-v1",
+            Some(MakeOptions {
+                render_mode: Some(gym::client::RenderMode::Human),
+                ..Default::default()
+            }),
+        )
+        .expect("Unable to create environment");
 
-    
     let mut total_reward = 0.0;
     for episode in 0..1000000 {
         env.reset(None).unwrap();
@@ -62,7 +62,9 @@ pub fn train_cartpole_with_reinforce() {
             let obs_ = Tensor::from_slice(&obs).to_kind(Kind::Float);
             let action_;
             action_ = agent.act_and_train(&obs_, reward);
-            let state = env.step(&Action::Discrete(action_.int64_value(&[]) as usize)).unwrap();
+            let state = env
+                .step(&Action::Discrete(action_.int64_value(&[]) as usize))
+                .unwrap();
             obs = state.observation.get_box().unwrap().to_vec();
             reward = state.reward / 10.0;
             env.render();

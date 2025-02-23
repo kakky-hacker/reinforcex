@@ -1,5 +1,5 @@
-use tch::{Tensor, Kind};
 use super::base_distribution::BaseDistribution;
+use tch::{Kind, Tensor};
 
 pub struct GaussianDistribution {
     mean: Tensor,
@@ -45,9 +45,8 @@ impl BaseDistribution for GaussianDistribution {
 
     fn log_prob(&self, x: &Tensor) -> Tensor {
         let diff = (x - &self.mean).pow_tensor_scalar(2.0);
-        let eltwise_log_prob: Tensor = -0.5 * ((2.0 * std::f64::consts::PI).ln()
-            + &self.ln_var
-            + diff / &self.var);
+        let eltwise_log_prob: Tensor =
+            -0.5 * ((2.0 * std::f64::consts::PI).ln() + &self.ln_var + diff / &self.var);
         eltwise_log_prob.sum_dim_intlist(&[1i64][..], false, Kind::Float)
     }
 
@@ -72,8 +71,9 @@ mod tests {
     #[test]
     fn test_new_and_params() {
         let mean = Tensor::from_slice(&[0.0, 0.0, 0.0]).view([1, 3]);
-        let var  = Tensor::from_slice(&[1.0, 1.0, 1.0]).view([1, 3]);
-        let gaussian: GaussianDistribution = GaussianDistribution::new(mean.shallow_clone(), var.shallow_clone());
+        let var = Tensor::from_slice(&[1.0, 1.0, 1.0]).view([1, 3]);
+        let gaussian: GaussianDistribution =
+            GaussianDistribution::new(mean.shallow_clone(), var.shallow_clone());
 
         let (mean_out, var_out) = gaussian.params();
         assert_eq!(mean_out, &mean);
@@ -120,7 +120,8 @@ mod tests {
 
         let mean_q = Tensor::from_slice(&[0.8]).view([1, 1]);
         let var_q = Tensor::from_slice(&[1.5]).view([1, 1]);
-        let gaussian_q: Box<dyn BaseDistribution> = Box::new(GaussianDistribution::new(mean_q, var_q));
+        let gaussian_q: Box<dyn BaseDistribution> =
+            Box::new(GaussianDistribution::new(mean_q, var_q));
 
         let kl_div = gaussian_p.kl(gaussian_q);
         let expected_kl: f64 = 0.249399221;

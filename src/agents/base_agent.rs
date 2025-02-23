@@ -1,8 +1,7 @@
-use std::fs;
 use std::collections::HashSet;
+use std::fs;
 
 use tch::Tensor;
-
 
 pub trait BaseAgent {
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor;
@@ -11,7 +10,10 @@ pub trait BaseAgent {
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         // Implementation specific logic
-        println!("Stop episode and train: state = {}, reward = {}", obs, reward);
+        println!(
+            "Stop episode and train: state = {}, reward = {}",
+            obs, reward
+        );
     }
 
     fn stop_episode(&mut self) {
@@ -21,7 +23,10 @@ pub trait BaseAgent {
 
     fn get_statistics(&self) -> Vec<(String, f64)> {
         // Implement logic for getting statistics
-        vec![("average_loss".to_string(), 0.0), ("average_value".to_string(), 1.0)]
+        vec![
+            ("average_loss".to_string(), 0.0),
+            ("average_value".to_string(), 1.0),
+        ]
     }
 
     fn saved_attributes(&self) -> Vec<String> {

@@ -1,9 +1,9 @@
-use tch::{nn, Device, Tensor, no_grad};
 use super::base_agent::BaseAgent;
-use crate::models::BaseQFunction;
-use crate::replay_buffer::ReplayBuffer;
 use crate::explorers::BaseExplorer;
 use crate::misc::batch_states::batch_states;
+use crate::models::BaseQFunction;
+use crate::replay_buffer::ReplayBuffer;
+use tch::{nn, no_grad, Device, Tensor};
 
 pub struct DQN {
     model: Box<dyn BaseQFunction>,
@@ -19,7 +19,6 @@ pub struct DQN {
     n_steps: usize,
     t: usize,
 }
-
 
 impl DQN {
     pub fn new(
@@ -64,7 +63,10 @@ impl DQN {
             n_step_discounted_rewards.push(n_step_discounted_reward);
         }
         let pred_q_values = self._compute_pred_q_values(states, actions);
-        let loss = self._compute_loss(Tensor::from_slice(&n_step_discounted_rewards), pred_q_values);
+        let loss = self._compute_loss(
+            Tensor::from_slice(&n_step_discounted_rewards),
+            pred_q_values,
+        );
         loss.backward();
         self.optimizer.step();
     }
@@ -73,7 +75,11 @@ impl DQN {
         self.target_model = self.model.clone();
     }
 
-    fn _compute_q_values(&self, states: Vec<Tensor>, n_step_discounted_rewards: Vec<f64>) -> Tensor {
+    fn _compute_q_values(
+        &self,
+        states: Vec<Tensor>,
+        n_step_discounted_rewards: Vec<f64>,
+    ) -> Tensor {
         let _states = batch_states(states, self.model.is_cuda());
         let pred_q_values = self.target_model.forward(&_states);
         let max_q_values = pred_q_values.max_dim(1, false).0;
@@ -82,21 +88,25 @@ impl DQN {
         let updated_q_values = max_q_values * gamma_n + n_step_discounted_rewards_tensor;
         updated_q_values
     }
-    
+
     fn _compute_pred_q_values(&self, states: Vec<Tensor>, actions: Vec<Tensor>) -> Tensor {
         let _states = batch_states(states, self.model.is_cuda());
         let pred_q_values = self.model.forward(&_states);
         let actions = Tensor::stack(&actions, 0).to_kind(tch::Kind::Int64);
-        let pred_q_values_selected = pred_q_values.gather(1, &actions.unsqueeze(1), false).squeeze();
+        let pred_q_values_selected = pred_q_values
+            .gather(1, &actions.unsqueeze(1), false)
+            .squeeze();
         pred_q_values_selected
     }
 
     fn _compute_loss(&self, q_values: Tensor, pred_q_values: Tensor) -> Tensor {
-        let loss = (q_values - pred_q_values).square().mean(tch::Kind::Float).sqrt();
+        let loss = (q_values - pred_q_values)
+            .square()
+            .mean(tch::Kind::Float)
+            .sqrt();
         loss
-    }    
+    }
 }
-
 
 impl BaseAgent for DQN {
     fn act(&self, obs: &Tensor) -> Tensor {
@@ -106,19 +116,29 @@ impl BaseAgent for DQN {
             q_values.argmax(1, false).to_device(Device::Cpu)
         })
     }
-    
+
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor {
         self.t += 1;
         let state = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
         let q_values = self.model.forward(&state);
-        
+
         let greedy_action_func = || q_values.argmax(1, false).int64_value(&[0]) as usize;
         let random_action_func = || rand::random::<usize>() % self.action_size;
-        
-        let action_idx = self.explorer.select_action(self.t, &random_action_func, &greedy_action_func);
-        let action = Tensor::from_slice(&[action_idx as i64]).detach().to_device(Device::Cpu);
-        
-        self.replay_buffer.append(state, Some(action.shallow_clone()), reward, false, self.gamma);
+
+        let action_idx =
+            self.explorer
+                .select_action(self.t, &random_action_func, &greedy_action_func);
+        let action = Tensor::from_slice(&[action_idx as i64])
+            .detach()
+            .to_device(Device::Cpu);
+
+        self.replay_buffer.append(
+            state,
+            Some(action.shallow_clone()),
+            reward,
+            false,
+            self.gamma,
+        );
         if self.t % self.target_update_interval == 0 {
             self.sync_target_model();
         }
@@ -130,6 +150,7 @@ impl BaseAgent for DQN {
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
-        self.replay_buffer.append(state, None, reward, true, self.gamma);
+        self.replay_buffer
+            .append(state, None, reward, true, self.gamma);
     }
 }

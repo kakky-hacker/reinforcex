@@ -1,9 +1,9 @@
-use std::rc::Rc;
-use std::cell::RefCell;
-use tch::Tensor;
-use crate::misc::random_access_queue::RandomAccessQueue;
 use crate::misc::bounded_vec_deque::BoundedVecDeque;
 use crate::misc::cumsum;
+use crate::misc::random_access_queue::RandomAccessQueue;
+use std::cell::RefCell;
+use std::rc::Rc;
+use tch::Tensor;
 
 pub struct ReplayBuffer {
     memory: RandomAccessQueue<Rc<Experience>>,
@@ -43,22 +43,47 @@ impl ReplayBuffer {
             n_step_discounted_reward: RefCell::new(None),
             n_step_after_experience: RefCell::new(None),
         });
-    
+
         if !self.last_n_experiences.is_empty() {
-            let mut rewards: Vec<f64> = self.last_n_experiences.clone().into_iter().skip(1).map(|e| e.reward_for_this_state).collect();
+            let mut rewards: Vec<f64> = self
+                .last_n_experiences
+                .clone()
+                .into_iter()
+                .skip(1)
+                .map(|e| e.reward_for_this_state)
+                .collect();
             rewards.push(reward);
             let n_step_discounted_reward = cumsum::cumsum_rev(&rewards, gamma)[0];
-            *self.last_n_experiences.front_mut().n_step_discounted_reward.borrow_mut() = Some(n_step_discounted_reward);
-            *self.last_n_experiences.front_mut().n_step_after_experience.borrow_mut() = Some(Rc::clone(&experience));
+            *self
+                .last_n_experiences
+                .front_mut()
+                .n_step_discounted_reward
+                .borrow_mut() = Some(n_step_discounted_reward);
+            *self
+                .last_n_experiences
+                .front_mut()
+                .n_step_after_experience
+                .borrow_mut() = Some(Rc::clone(&experience));
         }
 
         self.last_n_experiences.push_back(Rc::clone(&experience));
 
         if is_episode_terminal {
-            let mut rewards: Vec<f64> = self.last_n_experiences.clone().into_iter().skip(1).map(|e| e.reward_for_this_state).collect();
-            rewards.push(0.0);  // For terminal state
+            let mut rewards: Vec<f64> = self
+                .last_n_experiences
+                .clone()
+                .into_iter()
+                .skip(1)
+                .map(|e| e.reward_for_this_state)
+                .collect();
+            rewards.push(0.0); // For terminal state
             let q_values = cumsum::cumsum_rev(&rewards, gamma);
-            for (experience, &n_step_discounted_reward) in self.last_n_experiences.clone().into_iter().zip(q_values.iter()) {
+            for (experience, &n_step_discounted_reward) in self
+                .last_n_experiences
+                .clone()
+                .into_iter()
+                .zip(q_values.iter())
+            {
                 *experience.n_step_discounted_reward.borrow_mut() = Some(n_step_discounted_reward);
             }
             self.last_n_experiences.empty();
@@ -75,7 +100,6 @@ impl ReplayBuffer {
         self.memory.len()
     }
 }
-
 
 #[cfg(test)]
 mod tests {

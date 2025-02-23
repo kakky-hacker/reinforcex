@@ -1,7 +1,7 @@
 use super::base_q_network::BaseQFunction;
-use tch::{Tensor, nn, no_grad};
-use tch::nn::{Module, Linear, LinearConfig, Init};
 use crate::misc::weight_initializer::he_init;
+use tch::nn::{Init, Linear, LinearConfig, Module};
+use tch::{nn, no_grad, Tensor};
 
 pub struct FCQNetwork {
     layers: Vec<Linear>,
@@ -9,33 +9,51 @@ pub struct FCQNetwork {
     action_size: i64,
 }
 
-
 impl FCQNetwork {
-    pub fn new(vs: &nn::VarStore, n_input_channels: i64, action_size: i64, 
-           n_hidden_layers: usize, n_hidden_channels: Option<i64>) -> Self {
-
-        let root = vs.root(); 
+    pub fn new(
+        vs: &nn::VarStore,
+        n_input_channels: i64,
+        action_size: i64,
+        n_hidden_layers: usize,
+        n_hidden_channels: Option<i64>,
+    ) -> Self {
+        let root = vs.root();
         let mut layers: Vec<Linear> = Vec::new();
         let n_hidden_channels = n_hidden_channels.unwrap_or(256);
 
-        layers.push(nn::linear(&root, n_input_channels, n_hidden_channels, LinearConfig {
-            ws_init: he_init(n_input_channels),
-            bs_init: Some(Init::Const(0.0)),
-            bias: true,
-        }));
-        for _ in 0..n_hidden_layers - 1 {
-            layers.push(nn::linear(&root, n_hidden_channels, n_hidden_channels, LinearConfig {
-                ws_init: he_init(n_hidden_channels),
+        layers.push(nn::linear(
+            &root,
+            n_input_channels,
+            n_hidden_channels,
+            LinearConfig {
+                ws_init: he_init(n_input_channels),
                 bs_init: Some(Init::Const(0.0)),
                 bias: true,
-            }));
+            },
+        ));
+        for _ in 0..n_hidden_layers - 1 {
+            layers.push(nn::linear(
+                &root,
+                n_hidden_channels,
+                n_hidden_channels,
+                LinearConfig {
+                    ws_init: he_init(n_hidden_channels),
+                    bs_init: Some(Init::Const(0.0)),
+                    bias: true,
+                },
+            ));
         }
-        layers.push(nn::linear(&root, n_hidden_channels, action_size, LinearConfig {
-            ws_init: he_init(n_input_channels),
-            bs_init: Some(Init::Const(0.0)),
-            bias: true,
-        }));
-        
+        layers.push(nn::linear(
+            &root,
+            n_hidden_channels,
+            action_size,
+            LinearConfig {
+                ws_init: he_init(n_input_channels),
+                bs_init: Some(Init::Const(0.0)),
+                bias: true,
+            },
+        ));
+
         FCQNetwork {
             layers,
             n_input_channels,
@@ -68,7 +86,8 @@ impl BaseQFunction for FCQNetwork {
         );
 
         no_grad(|| {
-            for (cloned_layer, original_layer) in cloned_network.layers.iter_mut().zip(&self.layers) {
+            for (cloned_layer, original_layer) in cloned_network.layers.iter_mut().zip(&self.layers)
+            {
                 cloned_layer.ws.copy_(&original_layer.ws);
                 if let Some(ref mut cloned_bs) = cloned_layer.bs {
                     if let Some(ref original_bs) = &original_layer.bs {
@@ -85,7 +104,7 @@ impl BaseQFunction for FCQNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tch::{Device, Tensor, nn};
+    use tch::{nn, Device, Tensor};
 
     #[test]
     fn test_fcqnetwork_forward() {
@@ -95,7 +114,13 @@ mod tests {
         let n_hidden_layers = 2;
         let n_hidden_channels = Some(64);
 
-        let network = FCQNetwork::new(&vs, n_input_channels, action_size, n_hidden_layers, n_hidden_channels);
+        let network = FCQNetwork::new(
+            &vs,
+            n_input_channels,
+            action_size,
+            n_hidden_layers,
+            n_hidden_channels,
+        );
 
         let input = Tensor::randn([1, n_input_channels], (tch::Kind::Float, Device::Cpu));
         let output = network.forward(&input);
@@ -111,7 +136,13 @@ mod tests {
         let n_hidden_layers = 2;
         let n_hidden_channels = Some(64);
 
-        let network = FCQNetwork::new(&vs, n_input_channels, action_size, n_hidden_layers, n_hidden_channels);
+        let network = FCQNetwork::new(
+            &vs,
+            n_input_channels,
+            action_size,
+            n_hidden_layers,
+            n_hidden_channels,
+        );
         let cloned_network = network.clone();
 
         let input = Tensor::randn([1, n_input_channels], (tch::Kind::Float, Device::Cpu));

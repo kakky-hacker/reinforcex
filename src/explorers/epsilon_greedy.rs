@@ -1,5 +1,5 @@
-use rand::Rng;
 use super::base_explorer::BaseExplorer;
+use rand::Rng;
 
 pub struct EpsilonGreedy {
     start_epsilon: f64,
@@ -21,15 +21,25 @@ impl EpsilonGreedy {
 }
 
 impl BaseExplorer for EpsilonGreedy {
-    fn select_action(&self, t: usize, random_action_func: &dyn Fn() -> usize, greedy_action_func: &dyn Fn() -> usize) -> usize {
+    fn select_action(
+        &self,
+        t: usize,
+        random_action_func: &dyn Fn() -> usize,
+        greedy_action_func: &dyn Fn() -> usize,
+    ) -> usize {
         let epsilon;
         if t > self.decay_steps {
             epsilon = self.end_epsilon
         } else {
-            epsilon = self.start_epsilon + (self.end_epsilon - self.start_epsilon) * (t as f64 / self.decay_steps as f64)
+            epsilon = self.start_epsilon
+                + (self.end_epsilon - self.start_epsilon) * (t as f64 / self.decay_steps as f64)
         }
-        
-        let action = if rand::thread_rng().gen::<f64>() < epsilon { (random_action_func)() } else { greedy_action_func() };
+
+        let action = if rand::thread_rng().gen::<f64>() < epsilon {
+            (random_action_func)()
+        } else {
+            greedy_action_func()
+        };
 
         action
     }

@@ -1,5 +1,5 @@
-use tch::Tensor;
 use super::base_distribution::BaseDistribution;
+use tch::Tensor;
 
 pub struct SoftmaxDistribution {
     logits: Tensor,
@@ -46,13 +46,20 @@ impl BaseDistribution for SoftmaxDistribution {
 
     fn kl(&self, q: Box<dyn BaseDistribution>) -> Tensor {
         let q_log_prob = q.log_prob(&self.all_prob());
-        self.all_prob() * (self.all_log_prob() - q_log_prob)
-            .sum_dim_intlist([-1].as_ref(), false, tch::Kind::Float)
+        self.all_prob()
+            * (self.all_log_prob() - q_log_prob).sum_dim_intlist(
+                [-1].as_ref(),
+                false,
+                tch::Kind::Float,
+            )
     }
 
     fn entropy(&self) -> Tensor {
-        -(&self.all_prob() * self.all_log_prob())
-            .sum_dim_intlist([-1].as_ref(), false, tch::Kind::Float)
+        -(&self.all_prob() * self.all_log_prob()).sum_dim_intlist(
+            [-1].as_ref(),
+            false,
+            tch::Kind::Float,
+        )
     }
 
     fn sample(&self) -> Tensor {
@@ -67,11 +74,17 @@ impl BaseDistribution for SoftmaxDistribution {
     }
 
     fn log_prob(&self, x: &Tensor) -> Tensor {
-        self.all_log_prob().gather(-1, &x.reshape(&[1, 1]), false).squeeze_dim(-1)
+        self.all_log_prob()
+            .gather(-1, &x.reshape(&[1, 1]), false)
+            .squeeze_dim(-1)
     }
 
     fn copy(&self) -> Box<dyn BaseDistribution> {
-        Box::new(Self::new(self.logits.shallow_clone(), self.beta, self.min_prob))
+        Box::new(Self::new(
+            self.logits.shallow_clone(),
+            self.beta,
+            self.min_prob,
+        ))
     }
 
     fn most_probable(&self) -> Tensor {
@@ -82,7 +95,7 @@ impl BaseDistribution for SoftmaxDistribution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tch::{Tensor, Kind};
+    use tch::{Kind, Tensor};
 
     #[test]
     fn test_all_prob() {
