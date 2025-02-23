@@ -44,24 +44,21 @@ impl ReplayBuffer {
             n_step_after_experience: RefCell::new(None),
         });
     
-        let prev_n_experiences: Vec<Rc<Experience>> = self.last_n_experiences.clone().into_iter().collect();
-
-        if !prev_n_experiences.is_empty() {
-            let mut rewards: Vec<f64> = prev_n_experiences.iter().skip(1).map(|e| e.reward_for_this_state).collect();
+        if !self.last_n_experiences.is_empty() {
+            let mut rewards: Vec<f64> = self.last_n_experiences.clone().into_iter().skip(1).map(|e| e.reward_for_this_state).collect();
             rewards.push(reward);
             let n_step_discounted_reward = cumsum::cumsum_rev(&rewards, gamma)[0];
-            *prev_n_experiences[0].n_step_discounted_reward.borrow_mut() = Some(n_step_discounted_reward);
-            *prev_n_experiences[0].n_step_after_experience.borrow_mut() = Some(Rc::clone(&experience));
+            *self.last_n_experiences.front_mut().n_step_discounted_reward.borrow_mut() = Some(n_step_discounted_reward);
+            *self.last_n_experiences.front_mut().n_step_after_experience.borrow_mut() = Some(Rc::clone(&experience));
         }
 
         self.last_n_experiences.push_back(Rc::clone(&experience));
 
         if is_episode_terminal {
-            let prev_experiences: Vec<Rc<Experience>> = self.last_n_experiences.clone().into_iter().collect();
-            let mut rewards: Vec<f64> = prev_experiences.iter().skip(1).map(|e| e.reward_for_this_state).collect();
+            let mut rewards: Vec<f64> = self.last_n_experiences.clone().into_iter().skip(1).map(|e| e.reward_for_this_state).collect();
             rewards.push(0.0);  // For terminal state
             let q_values = cumsum::cumsum_rev(&rewards, gamma);
-            for (experience, &n_step_discounted_reward) in prev_experiences.iter().zip(q_values.iter()) {
+            for (experience, &n_step_discounted_reward) in self.last_n_experiences.clone().into_iter().zip(q_values.iter()) {
                 *experience.n_step_discounted_reward.borrow_mut() = Some(n_step_discounted_reward);
             }
             self.last_n_experiences.empty();
