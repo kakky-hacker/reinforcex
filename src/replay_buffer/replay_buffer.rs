@@ -11,10 +11,11 @@ pub struct ReplayBuffer {
 }
 
 pub struct Experience {
-    state: Tensor,
-    action: Option<Tensor>,
-    reward: f64,
-    q_value: RefCell<Option<f64>>,
+    pub state: Tensor,
+    pub action: Option<Tensor>,
+    pub reward: f64,
+    pub q_value: RefCell<Option<f64>>,
+    pub next_experience: RefCell<Option<Rc<Experience>>>,
     prev_n_experiences: Vec<Rc<Experience>>,
 }
 
@@ -37,21 +38,23 @@ impl ReplayBuffer {
         gamma: f64,
     ) {
         let prev_n_experiences: Vec<Rc<Experience>> = self.last_n_experiences.clone().into_iter().collect();
+
+        let experience = Rc::new(Experience {
+            state,
+            action,
+            reward,
+            q_value: RefCell::new(None),
+            next_experience: RefCell::new(None),
+            prev_n_experiences: prev_n_experiences.clone(),
+        });
     
         if !prev_n_experiences.is_empty() {
             let mut rewards: Vec<f64> = prev_n_experiences.iter().map(|e| e.reward).collect();
             rewards.push(reward);
             let q_value = cumsum::cumsum_rev(&rewards, gamma)[0];
             *prev_n_experiences[0].q_value.borrow_mut() = Some(q_value);
+            *prev_n_experiences[prev_n_experiences.len() - 1].next_experience.borrow_mut() = Some(Rc::clone(&experience));
         }
-    
-        let experience = Rc::new(Experience {
-            state,
-            action,
-            reward,
-            q_value: RefCell::new(None),
-            prev_n_experiences,
-        });
 
         self.last_n_experiences.push_back(Rc::clone(&experience));
         self.memory.append(experience);
@@ -118,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn test_q_value_update() {
+    fn test_q_value_and_next_experience_update() {
         let mut buffer = ReplayBuffer::new(100, 2);
         let state1 = Tensor::from_slice(&[0.0]);
         let state2 = Tensor::from_slice(&[1.0]);
@@ -140,27 +143,37 @@ mod tests {
         buffer.append(state8, None, 0.0, false, 0.9);
         buffer.append(state9, None, 5.0, true, 0.9);
 
-        for experience in buffer.sample(100) {
+        for experience in buffer.sample(200) {
             let q_value = *experience.q_value.borrow();
+            let next_experience = experience.next_experience.borrow();
             let expected_q_value;
             if experience.state.double_value(&[]) == 0.0 {
                 expected_q_value = 1.0 + 0.9 * 2.0 + 0.9 * 0.9 * 3.0;
+                assert!(next_experience.is_some());
             } else if experience.state.double_value(&[]) == 1.0 {
                 expected_q_value = 2.0 + 0.9 * 3.0;
+                assert!(next_experience.is_some());
             } else if experience.state.double_value(&[]) == 2.0 {
                 expected_q_value = 3.0;
+                assert!(next_experience.is_none());
             } else if experience.state.double_value(&[]) == 3.0 {
                 expected_q_value = 0.0;
+                assert!(next_experience.is_some());
             } else if experience.state.double_value(&[]) == 4.0 {
                 expected_q_value = 0.0;
+                assert!(next_experience.is_some());
             } else if experience.state.double_value(&[]) == 5.0 {
                 expected_q_value = 0.0;
+                assert!(next_experience.is_some());
             } else if experience.state.double_value(&[]) == 6.0 {
                 expected_q_value = 0.9 * 0.9 * 5.0;
+                assert!(next_experience.is_some());
             } else if experience.state.double_value(&[]) == 7.0 {
                 expected_q_value = 0.9 * 5.0;
+                assert!(next_experience.is_some());
             } else if experience.state.double_value(&[]) == 8.0 {
                 expected_q_value = 5.0;
+                assert!(next_experience.is_none());
             } else {
                 expected_q_value = -1.0;
             }
