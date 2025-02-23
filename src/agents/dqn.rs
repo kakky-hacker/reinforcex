@@ -154,3 +154,91 @@ impl BaseAgent for DQN {
             .append(state, None, reward, true, self.gamma);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::explorers::EpsilonGreedy;
+    use crate::models::FCQNetwork;
+    use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
+
+    #[test]
+    fn test_dqn_new() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+        let model = FCQNetwork::new(&vs, 4, 4, 2, Some(64));
+        let explorer = EpsilonGreedy::new(1.0, 0.1, 1000);
+
+        let dqn = DQN::new(
+            Box::new(model),
+            optimizer,
+            4,   // action_size
+            32,  // batch_size
+            4,   // update_interval
+            100, // target_update_interval
+            Box::new(explorer),
+            0.99, // gamma
+            1,    // n_steps
+        );
+
+        assert_eq!(dqn.action_size, 4);
+        assert_eq!(dqn.batch_size, 32);
+        assert_eq!(dqn.update_interval, 4);
+        assert_eq!(dqn.target_update_interval, 100);
+        assert_eq!(dqn.gamma, 0.99);
+        assert_eq!(dqn.n_steps, 1);
+        assert_eq!(dqn.t, 0);
+    }
+
+    #[test]
+    fn test_dqn_act() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+        let model = FCQNetwork::new(&vs, 4, 4, 2, Some(64));
+        let explorer = EpsilonGreedy::new(1.0, 0.1, 1000);
+        let dqn = DQN::new(
+            Box::new(model),
+            optimizer,
+            4,
+            32,
+            4,
+            100,
+            Box::new(explorer),
+            0.99,
+            1,
+        );
+
+        let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0])
+            .to_kind(Kind::Float)
+            .reshape(&[1, 4]);
+        let action = dqn.act(&obs);
+        let action_value = i64::from(action.int64_value(&[]));
+    }
+
+    #[test]
+    fn test_dqn_act_and_train() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+        let model = FCQNetwork::new(&vs, 4, 4, 2, Some(64));
+        let explorer = EpsilonGreedy::new(0.0, 0.0, 1000); // 100% greedy
+        let mut dqn = DQN::new(
+            Box::new(model),
+            optimizer,
+            4,
+            32,
+            4,
+            100,
+            Box::new(explorer),
+            0.99,
+            1,
+        );
+
+        let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0])
+            .to_kind(Kind::Float)
+            .reshape(&[1, 4]);
+        let action = dqn.act_and_train(&obs, 1.0);
+        let action_value = i64::from(action.int64_value(&[]));
+
+        assert_eq!(dqn.t, 1);
+    }
+}
