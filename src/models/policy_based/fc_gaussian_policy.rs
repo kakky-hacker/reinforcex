@@ -33,19 +33,17 @@ impl FCGaussianPolicy {
         let mut hidden_layers: Vec<Linear> = Vec::new();
         let n_hidden_channels = n_hidden_channels.unwrap_or(256);
 
-        if n_hidden_layers > 0 {
-            hidden_layers.push(nn::linear(&root, n_input_channels, n_hidden_channels, LinearConfig {
-                ws_init: he_init(n_input_channels),
+        hidden_layers.push(nn::linear(&root, n_input_channels, n_hidden_channels, LinearConfig {
+            ws_init: he_init(n_input_channels),
+            bs_init: Some(Init::Const(0.0)),
+            bias: true,
+        }));
+        for _ in 0..n_hidden_layers - 1 {
+            hidden_layers.push(nn::linear(&root, n_hidden_channels, n_hidden_channels, LinearConfig {
+                ws_init: he_init(n_hidden_channels),
                 bs_init: Some(Init::Const(0.0)),
                 bias: true,
             }));
-            for _ in 0..n_hidden_layers - 1 {
-                hidden_layers.push(nn::linear(&root, n_hidden_channels, n_hidden_channels, LinearConfig {
-                    ws_init: he_init(n_hidden_channels),
-                    bs_init: Some(Init::Const(0.0)),
-                    bias: true,
-                }));
-            }
         }
 
         let mean_layer = nn::linear(&root, n_hidden_channels, action_size, LinearConfig {

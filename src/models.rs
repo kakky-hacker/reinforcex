@@ -6,6 +6,7 @@ mod policy_based {
 
 mod value_based {
     pub mod base_q_network;
+    pub mod fc_q_network;
 }
 
 pub use policy_based::base_policy_network::BasePolicy;
@@ -13,3 +14,4 @@ pub use policy_based::fc_gaussian_policy::{FCGaussianPolicy, FCGaussianPolicyWit
 pub use policy_based::fc_softmax_policy::{FCSoftmaxPolicy, FCSoftmaxPolicyWithValue};
 
 pub use value_based::base_q_network::BaseQFunction;
+pub use value_based::fc_q_network::FCQNetwork;

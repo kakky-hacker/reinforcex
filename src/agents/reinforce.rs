@@ -171,7 +171,6 @@ impl BaseAgent for REINFORCE {
     }
 
     fn act(&self, obs: &Tensor) -> Tensor {
-        let mut action: Option<Tensor> = None;
         no_grad(|| {
             let state = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
 
@@ -188,9 +187,8 @@ impl BaseAgent for REINFORCE {
                 batch_action = action_distrib.sample();
             }
 
-            action = Some(batch_action.to_device(Device::Cpu));
-        });
-        action.unwrap()
+            batch_action.to_device(Device::Cpu)
+        })
     }
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward:f64) {

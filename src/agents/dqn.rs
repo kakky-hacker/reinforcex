@@ -10,7 +10,7 @@ pub struct DQN {
     optimizer: nn::Optimizer,
     replay_buffer: ReplayBuffer,
     explorer: Box<dyn BaseExplorer>,
-    action_space_size: usize,
+    action_size: usize,
     batch_size: usize,
     update_interval: usize,
     target_model: Box<dyn BaseQFunction>,
@@ -25,7 +25,7 @@ impl DQN {
     pub fn new(
         model: Box<dyn BaseQFunction>,
         optimizer: nn::Optimizer,
-        action_space_size: usize,
+        action_size: usize,
         batch_size: usize,
         update_interval: usize,
         target_update_interval: usize,
@@ -39,7 +39,7 @@ impl DQN {
             optimizer,
             replay_buffer: ReplayBuffer::new(1000000, n_steps),
             explorer,
-            action_space_size,
+            action_size,
             batch_size,
             update_interval,
             target_model,
@@ -100,10 +100,11 @@ impl DQN {
 
 impl BaseAgent for DQN {
     fn act(&self, obs: &Tensor) -> Tensor {
-        let state = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
-        let q_values = self.model.forward(&state);
-        let action = q_values.argmax(1, false);
-        action
+        no_grad(|| {
+            let state = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
+            let q_values = self.model.forward(&state);
+            q_values.argmax(1, false).to_device(Device::Cpu)
+        })
     }
     
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor {
@@ -112,7 +113,7 @@ impl BaseAgent for DQN {
         let q_values = self.model.forward(&state);
         
         let greedy_action_func = || q_values.argmax(1, false).int64_value(&[0]) as usize;
-        let random_action_func = || rand::random::<usize>() % self.action_space_size;
+        let random_action_func = || rand::random::<usize>() % self.action_size;
         
         let action_idx = self.explorer.select_action(self.t, &random_action_func, &greedy_action_func);
         let action = Tensor::from_slice(&[action_idx as i64]).detach().to_device(Device::Cpu);
