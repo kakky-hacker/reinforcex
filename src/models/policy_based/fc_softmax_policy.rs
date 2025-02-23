@@ -77,14 +77,6 @@ impl BasePolicy for FCSoftmaxPolicy {
         (Box::new(SoftmaxDistribution::new(logits, 1.0, self.min_prob)), None)
     }
 
-    fn is_recurrent(&self) -> bool{
-        false
-    }
-
-    fn reset_state(&mut self) {
-        
-    }
-
     fn is_cuda(&self) -> bool {
         false
     }
@@ -132,14 +124,6 @@ impl BasePolicy for FCSoftmaxPolicyWithValue {
             Box::new(SoftmaxDistribution::new(logits, 1.0, self.base_policy.min_prob)),
             Some(value),
         )
-    }
-
-    fn is_recurrent(&self) -> bool {
-        self.base_policy.is_recurrent()
-    }
-
-    fn reset_state(&mut self) {
-        self.base_policy.reset_state();
     }
 
     fn is_cuda(&self) -> bool {

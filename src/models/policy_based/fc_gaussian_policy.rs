@@ -114,14 +114,6 @@ impl BasePolicy for FCGaussianPolicy {
         (Box::new(GaussianDistribution::new(mean, var)), None)
     }
 
-    fn is_recurrent(&self) -> bool{
-        false
-    }
-
-    fn reset_state(&mut self) {
-        
-    }
-
     fn is_cuda(&self) -> bool {
         false
     }
@@ -186,14 +178,6 @@ impl BasePolicy for FCGaussianPolicyWithValue {
             Box::new(GaussianDistribution::new(mean, var)),
             Some(value),
         )
-    }
-
-    fn is_recurrent(&self) -> bool {
-        self.base_policy.is_recurrent()
-    }
-
-    fn reset_state(&mut self) {
-        self.base_policy.reset_state();
     }
 
     fn is_cuda(&self) -> bool {

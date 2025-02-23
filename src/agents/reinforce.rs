@@ -222,9 +222,7 @@ impl BaseAgent for REINFORCE {
     }
 
     fn stop_episode(&mut self) {
-        if self.model.is_recurrent() {
-            self.model.reset_state();
-        }
+        
     }
 
     fn get_statistics(&self) -> Vec<(String, f64)> {
