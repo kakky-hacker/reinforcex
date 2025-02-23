@@ -28,5 +28,10 @@ cargo run
 
 <img width="597" alt="image" src="https://github.com/user-attachments/assets/b8c0606b-ec11-4b5a-b7fc-3070ad327d72" />
 
+# Unit test
+```
+cargo test
+```
+
 # License
 MIT License (https://github.com/kakky-hacker/reinforcex/blob/master/LICENSE)
