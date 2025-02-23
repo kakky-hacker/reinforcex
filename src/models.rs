@@ -11,3 +11,5 @@ mod value_based {
 pub use policy_based::base_policy_network::BasePolicy;
 pub use policy_based::fc_gaussian_policy::{FCGaussianPolicy, FCGaussianPolicyWithValue};
 pub use policy_based::fc_softmax_policy::{FCSoftmaxPolicy, FCSoftmaxPolicyWithValue};
+
+pub use value_based::base_q_network::BaseQFunction;

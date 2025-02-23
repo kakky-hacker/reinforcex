@@ -27,8 +27,16 @@ where
         self.deque = VecDeque::new();
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.deque.is_empty()
+    }
+
     pub fn clone(&self) -> VecDeque<T> {
         self.deque.clone()
+    }
+
+    pub fn front_mut(&mut self) -> &mut T {
+        self.deque.front_mut().unwrap()
     }
 }
 
@@ -41,6 +49,7 @@ mod tests {
     fn test_bounded_vec_deque_new() {
         let deque: BoundedVecDeque<i32> = BoundedVecDeque::new(3);
         assert_eq!(deque.clone().len(), 0);
+        assert!(deque.is_empty());
     }
 
     #[test]
@@ -52,6 +61,7 @@ mod tests {
         deque.push_back(4);
         assert_eq!(deque.clone().len(), 3);
         assert_eq!(deque.clone().into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
+        assert!(!deque.is_empty());
     }
 
     #[test]
@@ -61,5 +71,6 @@ mod tests {
         deque.push_back(2);
         deque.empty();
         assert_eq!(deque.clone().len(), 0);
+        assert!(deque.is_empty());
     }
 }
