@@ -1,5 +1,5 @@
 use super::base_q_network::BaseQFunction;
-use tch::{Tensor, nn};
+use tch::{Tensor, nn, no_grad};
 use tch::nn::{Module, Linear, LinearConfig, Init};
 use crate::misc::weight_initializer::he_init;
 
@@ -67,15 +67,58 @@ impl BaseQFunction for FCQNetwork {
             Some(self.layers[0].ws.size()[0]),
         );
 
-        for (cloned_layer, original_layer) in cloned_network.layers.iter_mut().zip(&self.layers) {
-            cloned_layer.ws.copy_(&original_layer.ws);
-            if let Some(ref mut cloned_bs) = cloned_layer.bs {
-                if let Some(ref original_bs) = original_layer.bs {
-                    cloned_bs.copy_(original_bs);
+        no_grad(|| {
+            for (cloned_layer, original_layer) in cloned_network.layers.iter_mut().zip(&self.layers) {
+                cloned_layer.ws.copy_(&original_layer.ws);
+                if let Some(ref mut cloned_bs) = cloned_layer.bs {
+                    if let Some(ref original_bs) = &original_layer.bs {
+                        cloned_bs.copy_(original_bs);
+                    }
                 }
             }
-        }
+        });
 
         Box::new(cloned_network)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tch::{Device, Tensor, nn};
+
+    #[test]
+    fn test_fcqnetwork_forward() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let n_input_channels = 4;
+        let action_size = 2;
+        let n_hidden_layers = 2;
+        let n_hidden_channels = Some(64);
+
+        let network = FCQNetwork::new(&vs, n_input_channels, action_size, n_hidden_layers, n_hidden_channels);
+
+        let input = Tensor::randn([1, n_input_channels], (tch::Kind::Float, Device::Cpu));
+        let output = network.forward(&input);
+
+        assert_eq!(output.size(), vec![1, action_size]);
+    }
+
+    #[test]
+    fn test_fcqnetwork_clone() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let n_input_channels = 4;
+        let action_size = 2;
+        let n_hidden_layers = 2;
+        let n_hidden_channels = Some(64);
+
+        let network = FCQNetwork::new(&vs, n_input_channels, action_size, n_hidden_layers, n_hidden_channels);
+        let cloned_network = network.clone();
+
+        let input = Tensor::randn([1, n_input_channels], (tch::Kind::Float, Device::Cpu));
+        let output_original = network.forward(&input);
+        let output_cloned = cloned_network.forward(&input);
+
+        assert_eq!(output_original.size(), output_cloned.size());
+        assert!(output_original.allclose(&output_cloned, 1e-6, 1e-6, false));
     }
 }
