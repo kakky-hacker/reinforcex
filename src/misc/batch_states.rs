@@ -7,7 +7,7 @@ use tch::{Device, Tensor};
 /// Return:
 ///     the object which will be given as input to the model.
 
-pub(crate) fn batch_states(states: Vec<Tensor>, is_cuda: bool) -> Tensor {
+pub(crate) fn batch_states(states: &Vec<Tensor>, is_cuda: bool) -> Tensor {
     let device = if is_cuda && Device::cuda_if_available().is_cuda() {
         Device::Cuda(0)
     } else {
@@ -27,7 +27,7 @@ mod tests {
             Tensor::from_slice(&[4.0, 5.0, 6.0]),
         ];
 
-        let result = batch_states(states, false);
+        let result = batch_states(&states, false);
         assert_eq!(result.device(), Device::Cpu);
 
         let expected = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).reshape(&[2, 3]);
@@ -42,7 +42,7 @@ mod tests {
                 Tensor::from_slice(&[4.0, 5.0, 6.0]),
             ];
 
-            let result = batch_states(states, true);
+            let result = batch_states(&states, true);
 
             assert_eq!(result.device(), Device::Cuda(0));
 

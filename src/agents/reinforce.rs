@@ -146,7 +146,7 @@ impl REINFORCE {
 
 impl BaseAgent for REINFORCE {
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor {
-        let state = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
+        let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
 
         // Get action distribution from the model
         let (action_distrib, value) = self.model.forward(&state);
@@ -182,7 +182,7 @@ impl BaseAgent for REINFORCE {
 
     fn act(&self, obs: &Tensor) -> Tensor {
         no_grad(|| {
-            let state = batch_states(vec![obs.shallow_clone()], self.model.is_cuda());
+            let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
 
             // Get action distribution from the model
             let action_distrib: Box<dyn BaseDistribution> = self.model.forward(&state).0;

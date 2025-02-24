@@ -66,7 +66,10 @@ impl ReplayBuffer {
                 .borrow_mut() = Some(Rc::clone(&experience));
         }
 
-        self.last_n_experiences.push_back(Rc::clone(&experience));
+        let n_step_before_experience = self.last_n_experiences.push_back(Rc::clone(&experience));
+        if n_step_before_experience.is_some() {
+            self.memory.append(n_step_before_experience.unwrap());
+        }
 
         if is_episode_terminal {
             let mut rewards: Vec<f64> = self
@@ -85,10 +88,10 @@ impl ReplayBuffer {
                 .zip(q_values.iter())
             {
                 *experience.n_step_discounted_reward.borrow_mut() = Some(n_step_discounted_reward);
+                *experience.n_step_after_experience.borrow_mut() = Some(Rc::clone(&experience));
+                // TODO:append last n-1 experiences to memory
             }
             self.last_n_experiences.empty();
-        } else {
-            self.memory.append(experience);
         }
     }
 
@@ -114,10 +117,14 @@ mod tests {
 
     #[test]
     fn test_replay_buffer_append_and_len() {
-        let mut buffer = ReplayBuffer::new(100, 5);
+        let mut buffer = ReplayBuffer::new(100, 1);
         let state = Tensor::from_slice(&[1.0]);
-        buffer.append(state, None, 1.0, false, 1.0);
+        buffer.append(state.shallow_clone(), None, 1.0, false, 1.0);
+        assert_eq!(buffer.len(), 0);
+        buffer.append(state.shallow_clone(), None, 1.0, false, 1.0);
         assert_eq!(buffer.len(), 1);
+        buffer.append(state.shallow_clone(), None, 1.0, false, 1.0);
+        assert_eq!(buffer.len(), 2);
     }
 
     #[test]

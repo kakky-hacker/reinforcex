@@ -65,8 +65,11 @@ impl FCQNetwork {
 impl BaseQFunction for FCQNetwork {
     fn forward(&self, x: &Tensor) -> Tensor {
         let mut h = x.view([-1, self.n_input_channels]);
-        for layer in &self.layers {
-            h = (layer.forward(&h)).relu();
+        for i in 0..self.layers.len() {
+            h = self.layers[i].forward(&h);
+            if i < self.layers.len() - 1 {
+                h = h.relu();
+            }
         }
         h.view([-1, self.action_size])
     }

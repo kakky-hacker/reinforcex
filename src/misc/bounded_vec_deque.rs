@@ -16,11 +16,13 @@ where
         }
     }
 
-    pub fn push_back(&mut self, item: T) {
+    pub fn push_back(&mut self, item: T) -> Option<T> {
+        let mut res: Option<T> = None;
         if self.deque.len() == self.max_len {
-            self.deque.pop_front();
+            res = self.deque.pop_front();
         }
         self.deque.push_back(item);
+        res
     }
 
     pub fn empty(&mut self) {
@@ -54,10 +56,10 @@ mod tests {
     #[test]
     fn test_bounded_vec_deque_push_back() {
         let mut deque = BoundedVecDeque::new(3);
-        deque.push_back(1);
-        deque.push_back(2);
-        deque.push_back(3);
-        deque.push_back(4);
+        assert!(deque.push_back(1).is_none());
+        assert!(deque.push_back(2).is_none());
+        assert!(deque.push_back(3).is_none());
+        assert_eq!(deque.push_back(4).unwrap(), 1);
         assert_eq!(deque.clone().len(), 3);
         assert_eq!(deque.clone().into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
         assert!(!deque.is_empty());
