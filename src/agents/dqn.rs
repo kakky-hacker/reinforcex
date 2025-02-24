@@ -277,19 +277,12 @@ mod tests {
             1,
         );
 
-        let mut greedy_action_value: Option<i64> = None;
         for i in 0..1000 {
             let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
             let action = dqn.act_and_train(&obs, 1.0);
             let action_value = i64::from(action.int64_value(&[]));
             assert!([0, 1, 2, 3].contains(&action_value));
             assert_eq!(dqn.t, i + 1);
-            if dqn.t > 1000 {
-                if greedy_action_value.is_none() {
-                    greedy_action_value = Some(action_value);
-                }
-                assert_eq!(action_value, greedy_action_value.unwrap());
-            }
         }
     }
 }
