@@ -164,7 +164,7 @@ mod tests {
         buffer.append(state8, None, 0.0, false, 0.9);
         buffer.append(state9, None, 5.0, true, 0.9);
 
-        for experience in buffer.sample(200) {
+        for experience in buffer.sample(1000) {
             let n_step_discounted_reward = *experience.n_step_discounted_reward.borrow();
             let n_step_after_experience = experience.n_step_after_experience.borrow();
             let expected_q_value;

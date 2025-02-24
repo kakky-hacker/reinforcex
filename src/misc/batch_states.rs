@@ -13,8 +13,7 @@ pub(crate) fn batch_states(states: Vec<Tensor>, is_cuda: bool) -> Tensor {
     } else {
         Device::Cpu
     };
-
-    Tensor::cat(&states, 0).to(device)
+    Tensor::stack(&states, 0).to(device)
 }
 
 #[cfg(test)]
@@ -31,7 +30,7 @@ mod tests {
         let result = batch_states(states, false);
         assert_eq!(result.device(), Device::Cpu);
 
-        let expected = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let expected = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).reshape(&[2, 3]);
         assert_eq!(result, expected);
     }
 
@@ -47,7 +46,9 @@ mod tests {
 
             assert_eq!(result.device(), Device::Cuda(0));
 
-            let expected = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).to(Device::Cuda(0));
+            let expected = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+                .reshape(&[2, 3])
+                .to(Device::Cuda(0));
             assert_eq!(result, expected);
         } else {
             println!("Cuda is not available.");
