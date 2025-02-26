@@ -1,5 +1,5 @@
 # About ReinforceX
-The ReinforceX (ReX) is a deep reinforcement learning framework built entirely from scratch in Rust.
+ReinforceX (ReX) is a deep reinforcement learning framework built entirely from scratch in Rust.
 We plan to implement various reinforcement learning algorithms, including value-based, policy-based, and actor-critic methods.
 
 Advantages of Rust:
