@@ -7,7 +7,7 @@ use tch::nn::{Init, Linear, LinearConfig, Module};
 use tch::{nn, Tensor};
 
 pub struct FCGaussianPolicy {
-    hidden_layers: Vec<Linear>,
+    layers: Vec<Linear>,
     mean_layer: Linear,
     var_layer: Linear,
     n_input_channels: i64,
@@ -36,10 +36,10 @@ impl FCGaussianPolicy {
         min_var: f64,
     ) -> Self {
         let root = vs.root();
-        let mut hidden_layers: Vec<Linear> = Vec::new();
+        let mut layers: Vec<Linear> = Vec::new();
         let n_hidden_channels = n_hidden_channels.unwrap_or(256);
 
-        hidden_layers.push(nn::linear(
+        layers.push(nn::linear(
             &root,
             n_input_channels,
             n_hidden_channels,
@@ -49,8 +49,8 @@ impl FCGaussianPolicy {
                 bias: true,
             },
         ));
-        for _ in 0..n_hidden_layers - 1 {
-            hidden_layers.push(nn::linear(
+        for _ in 0..n_hidden_layers {
+            layers.push(nn::linear(
                 &root,
                 n_hidden_channels,
                 n_hidden_channels,
@@ -89,7 +89,7 @@ impl FCGaussianPolicy {
         );
 
         FCGaussianPolicy {
-            hidden_layers,
+            layers,
             mean_layer,
             var_layer,
             n_input_channels,
@@ -103,7 +103,7 @@ impl FCGaussianPolicy {
     fn compute_medium_layer(&self, x: &Tensor) -> Tensor {
         let mut h = x.view([-1, self.n_input_channels]);
 
-        for layer in &self.hidden_layers {
+        for layer in &self.layers {
             h = (layer.forward(&h)).relu();
         }
 
@@ -242,7 +242,7 @@ mod tests {
         );
 
         assert_eq!(policy.n_input_channels, n_input_channels);
-        assert_eq!(policy.hidden_layers.len(), n_hidden_layers);
+        assert_eq!(policy.layers.len(), n_hidden_layers + 1);
         assert_eq!(policy.bound_mean, bound_mean);
         assert!(policy.min_action.is_some());
         assert!(policy.max_action.is_some());

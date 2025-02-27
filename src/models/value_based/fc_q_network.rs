@@ -1,5 +1,5 @@
 use super::base_q_network::BaseQFunction;
-use crate::misc::weight_initializer::he_init;
+use crate::misc::weight_initializer::{he_init, xavier_init};
 use tch::nn::{Init, Linear, LinearConfig, Module};
 use tch::{nn, no_grad, Tensor};
 
@@ -7,6 +7,8 @@ pub struct FCQNetwork {
     layers: Vec<Linear>,
     n_input_channels: i64,
     action_size: i64,
+    n_hidden_layers: usize,
+    n_hidden_channels: i64,
 }
 
 impl FCQNetwork {
@@ -31,7 +33,7 @@ impl FCQNetwork {
                 bias: true,
             },
         ));
-        for _ in 0..n_hidden_layers - 1 {
+        for _ in 0..n_hidden_layers {
             layers.push(nn::linear(
                 &root,
                 n_hidden_channels,
@@ -48,7 +50,7 @@ impl FCQNetwork {
             n_hidden_channels,
             action_size,
             LinearConfig {
-                ws_init: he_init(n_input_channels),
+                ws_init: xavier_init(n_hidden_channels, action_size),
                 bs_init: Some(Init::Const(0.0)),
                 bias: true,
             },
@@ -58,6 +60,8 @@ impl FCQNetwork {
             layers,
             n_input_channels,
             action_size,
+            n_hidden_layers,
+            n_hidden_channels,
         }
     }
 }
@@ -84,8 +88,8 @@ impl BaseQFunction for FCQNetwork {
             &vs,
             self.n_input_channels,
             self.action_size,
-            self.layers.len() - 1,
-            Some(self.layers[0].ws.size()[0]),
+            self.n_hidden_layers,
+            Some(self.n_hidden_channels),
         );
 
         no_grad(|| {

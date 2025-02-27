@@ -7,7 +7,7 @@ use tch::nn::{Init, Linear, LinearConfig, Module};
 use tch::{nn, Tensor};
 
 pub struct FCSoftmaxPolicy {
-    hidden_layers: Vec<Linear>,
+    layers: Vec<Linear>,
     logits_layer: Linear,
     n_input_channels: i64,
     n_actions: i64,
@@ -29,10 +29,10 @@ impl FCSoftmaxPolicy {
         min_prob: f64,
     ) -> Self {
         let root = vs.root();
-        let mut hidden_layers = Vec::new();
+        let mut layers = Vec::new();
         let n_hidden_channels = n_hidden_channels.unwrap_or(256);
 
-        hidden_layers.push(nn::linear(
+        layers.push(nn::linear(
             &root,
             n_input_channels,
             n_hidden_channels,
@@ -42,8 +42,8 @@ impl FCSoftmaxPolicy {
                 bias: true,
             },
         ));
-        for _ in 0..n_hidden_layers - 1 {
-            hidden_layers.push(nn::linear(
+        for _ in 0..n_hidden_layers {
+            layers.push(nn::linear(
                 &root,
                 n_hidden_channels,
                 n_hidden_channels,
@@ -67,7 +67,7 @@ impl FCSoftmaxPolicy {
         );
 
         FCSoftmaxPolicy {
-            hidden_layers,
+            layers,
             logits_layer,
             n_input_channels,
             n_actions,
@@ -78,7 +78,7 @@ impl FCSoftmaxPolicy {
     fn compute_medium_layer(&self, x: &Tensor) -> Tensor {
         let mut h = x.view([-1, self.n_input_channels]);
 
-        for layer in &self.hidden_layers {
+        for layer in &self.layers {
             h = (layer.forward(&h)).relu();
         }
 

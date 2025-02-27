@@ -26,6 +26,7 @@ impl DQN {
         optimizer: nn::Optimizer,
         action_size: usize,
         batch_size: usize,
+        replay_buffer_capacity: usize,
         update_interval: usize,
         target_update_interval: usize,
         explorer: Box<dyn BaseExplorer>,
@@ -36,7 +37,7 @@ impl DQN {
         DQN {
             model,
             optimizer,
-            replay_buffer: ReplayBuffer::new(1000000, n_steps),
+            replay_buffer: ReplayBuffer::new(replay_buffer_capacity, n_steps),
             explorer,
             action_size,
             batch_size,
@@ -51,7 +52,7 @@ impl DQN {
 
     fn _update(&mut self) {
         if self.replay_buffer.len() < self.batch_size {
-            panic!("The length of replay_buffer is less than batch_size")
+            return;
         }
         let experiences = self.replay_buffer.sample(self.batch_size);
         let mut states: Vec<Tensor> = vec![];
@@ -114,10 +115,7 @@ impl DQN {
     }
 
     fn _compute_loss(&self, q_values: Tensor, pred_q_values: Tensor) -> Tensor {
-        let loss = (q_values - pred_q_values)
-            .square()
-            .mean(tch::Kind::Float)
-            .sqrt();
+        let loss = (q_values - pred_q_values).square().mean(tch::Kind::Float);
         loss
     }
 }
@@ -153,11 +151,11 @@ impl BaseAgent for DQN {
             false,
             self.gamma,
         );
-        if self.t % self.target_update_interval == 0 {
-            self._sync_target_model();
-        }
         if self.t % self.update_interval == 0 {
             self._update();
+        }
+        if self.t % self.target_update_interval == 0 {
+            self._sync_target_model();
         }
         action
     }
@@ -188,6 +186,7 @@ mod tests {
             optimizer,
             2,
             32,
+            1000,
             8,
             100,
             Box::new(explorer),
@@ -205,37 +204,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dqn_act() {
-        let vs = nn::VarStore::new(Device::Cpu);
-        let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
-        let model = FCQNetwork::new(&vs, 4, 4, 2, Some(64));
-        let explorer = EpsilonGreedy::new(1.0, 0.1, 1000);
-        let dqn = DQN::new(
-            Box::new(model),
-            optimizer,
-            4,
-            32,
-            4,
-            100,
-            Box::new(explorer),
-            0.99,
-            1,
-        );
-
-        let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
-        let action = dqn.act(&obs);
-        let action_value = i64::from(action.int64_value(&[]));
-        assert!([0, 1, 2, 3].contains(&action_value));
-
-        for _ in 0..1000 {
-            let action = dqn.act(&obs);
-            let _action_value = i64::from(action.int64_value(&[]));
-            assert_eq!(_action_value, action_value);
-            assert_eq!(dqn.t, 0);
-        }
-    }
-
-    #[test]
     fn test_dqn_act_and_train() {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-2).unwrap();
@@ -246,6 +214,7 @@ mod tests {
             optimizer,
             4,
             16,
+            1000,
             50,
             100,
             Box::new(explorer),
@@ -254,7 +223,6 @@ mod tests {
         );
 
         let mut reward = 0.0;
-        let mut greedy_action_value: Option<i64> = None;
         for i in 0..2000 {
             let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
             let action = dqn.act_and_train(&obs, reward);
@@ -267,14 +235,16 @@ mod tests {
             assert!([0, 1, 2, 3].contains(&action_value));
             assert_eq!(dqn.t, i + 1);
             if dqn.t > 1000 {
-                if greedy_action_value.is_none() {
-                    greedy_action_value = Some(action_value);
-                    assert_eq!(greedy_action_value.unwrap(), 2);
-                }
-                assert_eq!(action_value, greedy_action_value.unwrap());
+                assert_eq!(action_value, 2);
             }
         }
         let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
         dqn.stop_episode_and_train(&obs, 1.0);
+
+        for _ in 0..1000 {
+            let action = dqn.act(&obs);
+            let action_value = i64::from(action.int64_value(&[]));
+            assert_eq!(action_value, 2);
+        }
     }
 }
