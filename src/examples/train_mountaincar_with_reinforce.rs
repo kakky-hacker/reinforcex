@@ -2,8 +2,8 @@ use gym::client::MakeOptions;
 extern crate gym;
 use gym::Action;
 use ndarray::Array1;
-use rl::agents::{BaseAgent, REINFORCE};
-use rl::models::FCGaussianPolicy;
+use reinforcex::agents::{BaseAgent, REINFORCE};
+use reinforcex::models::FCGaussianPolicy;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
 pub fn train_mountaincar_with_reinforce() {

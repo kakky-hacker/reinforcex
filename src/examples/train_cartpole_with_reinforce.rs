@@ -1,8 +1,8 @@
 use gym::client::MakeOptions;
 extern crate gym;
 use gym::Action;
-use rl::agents::{BaseAgent, REINFORCE};
-use rl::models::FCSoftmaxPolicy;
+use reinforcex::agents::{BaseAgent, REINFORCE};
+use reinforcex::models::FCSoftmaxPolicy;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
 pub fn train_cartpole_with_reinforce() {

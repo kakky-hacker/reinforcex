@@ -1,9 +1,9 @@
 use gym::client::MakeOptions;
 extern crate gym;
 use gym::Action;
-use rl::agents::{BaseAgent, DQN};
-use rl::explorers::EpsilonGreedy;
-use rl::models::FCQNetwork;
+use reinforcex::agents::{BaseAgent, DQN};
+use reinforcex::explorers::EpsilonGreedy;
+use reinforcex::models::FCQNetwork;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
 pub fn train_cartpole_with_dqn() {
