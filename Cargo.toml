@@ -7,7 +7,7 @@ license = "MIT"
 repository = "https://github.com/kakky-hacker/reinforcex"
 readme = "README.md"
 keywords = ["rust", "reinforcement learning"]
-categories = ["command-line-utilities"]
+categories = ["framework"]
 exclude=["examples", "main.rs"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
