@@ -12,7 +12,7 @@ pub fn train_cartpole_with_dqn() {
     let n_input_channels = 4;
     let action_size = 2;
     let n_hidden_layers = 2;
-    let n_hidden_channels = Some(64);
+    let n_hidden_channels = Some(128);
 
     let model = Box::new(FCQNetwork::new(
         &vs,
@@ -22,13 +22,13 @@ pub fn train_cartpole_with_dqn() {
         n_hidden_channels,
     ));
 
-    let optimizer = nn::Adam::default().build(&vs, 1e-4).unwrap();
-    let explorer = EpsilonGreedy::new(1.0, 0.0, 10000);
-    let gamma = 0.99;
-    let n_steps = 1;
-    let batchsize = 50;
-    let update_interval = 50;
-    let target_update_interval = 200;
+    let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
+    let explorer = EpsilonGreedy::new(0.5, 0.1, 50000);
+    let gamma = 0.97;
+    let n_steps = 3;
+    let batchsize = 16;
+    let update_interval = 8;
+    let target_update_interval = 100;
 
     let mut agent = DQN::new(
         model,
@@ -68,7 +68,7 @@ pub fn train_cartpole_with_dqn() {
                 .unwrap();
             obs = state.observation.get_box().unwrap().to_vec();
             if step % 20 == 0 {
-                reward = 1.0;
+                reward = 5.0;
             } else {
                 reward = 0.0;
             }
@@ -76,7 +76,7 @@ pub fn train_cartpole_with_dqn() {
             total_reward += reward;
             if state.is_done {
                 let obs_ = Tensor::from_slice(&obs).to_kind(Kind::Float);
-                agent.stop_episode_and_train(&obs_, -1.0);
+                agent.stop_episode_and_train(&obs_, -30.0);
                 break;
             }
         }
