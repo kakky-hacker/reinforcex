@@ -11,7 +11,7 @@ Offers overall faster training speeds compared to Python-based frameworks.
 | Name | Status |
 | --- | --- |
 | REINFORCE | Done |
-| DQN | Under development |
+| DQN | Done |
 | PPO | Not yet |
 | SAC | Not yet |
 
