@@ -17,8 +17,4 @@ rand = "0.8"
 tch = {version="0.18.0"}
 torch-sys = {version="0.18.0", features=["download-libtorch"]}
 ndarray = "0.15"
-gym = { git = "https://github.com/kakky-hacker/gym-rs.git", branch = "master", optional = true, version="*" }
-
-[features]
-default = []
-dev = ["gym"]
+gym = { git = "https://github.com/kakky-hacker/gym-rs.git", branch = "master", version="*" }

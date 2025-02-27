@@ -23,14 +23,14 @@ pip install gymnasium==0.26.3
 We use Gym as the environment by calling Python from Rust.
 
 ```
-cargo run --features dev -- --env cartpole --algo dqn
+cargo run -- --env cartpole --algo dqn
 ```
 
 <img width="597" alt="image" src="https://github.com/user-attachments/assets/b8c0606b-ec11-4b5a-b7fc-3070ad327d72" />
 
 # Unit test
 ```
-cargo test --features dev
+cargo test
 ```
 
 # License
