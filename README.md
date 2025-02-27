@@ -7,6 +7,12 @@ Efficient memory management prevents memory leaks that often trouble data scient
 Enables thread-safe execution for parallel training.
 Offers overall faster training speeds compared to Python-based frameworks.
 
+# Package
+crates.io: https://crates.io/crates/reinforcex
+```
+cargo add reinforcex
+```
+
 # Algorithms
 | Name | Status |
 | --- | --- |
