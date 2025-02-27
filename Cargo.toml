@@ -1,6 +1,6 @@
 [package]
 name = "reinforcex"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 description = "Deep Reinforcement Learning Framework"
 license = "MIT"
