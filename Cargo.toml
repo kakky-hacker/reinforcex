@@ -20,4 +20,5 @@ ndarray = "0.15"
 gym = { git = "https://github.com/kakky-hacker/gym-rs.git", branch = "master", optional = true }
 
 [features]
+default = []
 dev = ["gym"]
