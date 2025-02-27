@@ -7,6 +7,8 @@ use rl::models::FCQNetwork;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
 pub fn train_cartpole_with_dqn() {
+    println!("train_cartpole_with_dqn");
+
     let device = Device::cuda_if_available();
     let vs = nn::VarStore::new(device);
     let n_input_channels = 4;

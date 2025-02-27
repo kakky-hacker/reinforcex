@@ -2,10 +2,12 @@ use gym::client::MakeOptions;
 extern crate gym;
 use gym::Action;
 use rl::agents::{BaseAgent, REINFORCE};
-use rl::models::{BasePolicy, FCSoftmaxPolicy, FCSoftmaxPolicyWithValue};
+use rl::models::FCSoftmaxPolicy;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
 pub fn train_cartpole_with_reinforce() {
+    println!("train_cartpole_with_reinforce");
+
     let device = Device::cuda_if_available();
     let vs = nn::VarStore::new(device);
     let n_input_channels = 4;
@@ -23,8 +25,8 @@ pub fn train_cartpole_with_reinforce() {
         min_prob,
     ));
 
-    let optimizer = nn::Adam::default().build(&vs, 3e-3).unwrap();
-    let gamma = 0.9;
+    let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
+    let gamma = 0.97;
     let beta = 0.0;
     let batchsize = 8;
     let act_deterministically = false;
@@ -54,7 +56,7 @@ pub fn train_cartpole_with_reinforce() {
         .expect("Unable to create environment");
 
     let mut total_reward = 0.0;
-    for episode in 0..1000000 {
+    for episode in 1..1000000 {
         env.reset(None).unwrap();
         let mut reward = 0.0;
         let mut obs = vec![0.0; 4];
@@ -66,18 +68,27 @@ pub fn train_cartpole_with_reinforce() {
                 .step(&Action::Discrete(action_.int64_value(&[]) as usize))
                 .unwrap();
             obs = state.observation.get_box().unwrap().to_vec();
-            reward = state.reward / 10.0;
+            if step % 20 == 0 {
+                reward = 5.0;
+            } else {
+                reward = 0.0;
+            }
             env.render();
             total_reward += reward;
             if state.is_done {
                 let obs_ = Tensor::from_slice(&obs).to_kind(Kind::Float);
-                agent.stop_episode_and_train(&obs_, reward);
+                agent.stop_episode_and_train(&obs_, -30.0);
                 break;
             }
         }
-        println!("reward:{}", total_reward);
-        println!("==============={}===============", episode);
-        total_reward = 0.0;
+        if episode % 100 == 0 {
+            println!(
+                "{} episode, average reward:{}",
+                episode,
+                total_reward / 100 as f64
+            );
+            total_reward = 0.0;
+        }
     }
     env.close();
 }

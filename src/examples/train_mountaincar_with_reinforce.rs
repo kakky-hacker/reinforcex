@@ -3,10 +3,12 @@ extern crate gym;
 use gym::Action;
 use ndarray::Array1;
 use rl::agents::{BaseAgent, REINFORCE};
-use rl::models::{BasePolicy, FCGaussianPolicy, FCGaussianPolicyWithValue};
+use rl::models::FCGaussianPolicy;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
 pub fn train_mountaincar_with_reinforce() {
+    println!("train_mountaincar_with_reinforce");
+
     let device = Device::cuda_if_available();
     let vs = nn::VarStore::new(device);
     let n_input_channels = 2;
