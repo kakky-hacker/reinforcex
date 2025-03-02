@@ -1,8 +1,8 @@
 use super::base_agent::BaseAgent;
 use crate::explorers::BaseExplorer;
+use crate::memory::ReplayBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::BaseQFunction;
-use crate::replay_buffer::ReplayBuffer;
 use tch::{nn, no_grad, Device, Tensor};
 
 pub struct DQN {
@@ -54,7 +54,7 @@ impl DQN {
         if self.replay_buffer.len() < self.batch_size {
             return;
         }
-        let experiences = self.replay_buffer.sample(self.batch_size);
+        let experiences = self.replay_buffer.sample(self.batch_size, true);
         let mut states: Vec<Tensor> = vec![];
         let mut n_step_after_states: Vec<Tensor> = vec![];
         let mut actions: Vec<Tensor> = vec![];

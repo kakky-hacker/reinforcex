@@ -1,3 +1,4 @@
+use rand::prelude::SliceRandom;
 use rand::Rng;
 use std::collections::VecDeque;
 
@@ -14,6 +15,11 @@ impl<T> RandomAccessQueue<T> {
             queue_back: VecDeque::new(),
             maxlen,
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.queue_front.clear();
+        self.queue_back.clear();
     }
 
     pub fn len(&self) -> usize {
@@ -56,13 +62,29 @@ impl<T> RandomAccessQueue<T> {
         }
     }
 
-    pub fn sample(&self, k: usize) -> Vec<&T> {
+    pub fn sample_with_replacement(&self, k: usize) -> Vec<&T> {
         let mut rng = rand::thread_rng();
         let length = self.len();
         let indices: Vec<usize> = (0..k).map(|_| rng.gen_range(0..length)).collect();
         indices
             .into_iter()
             .filter_map(|i: usize| self.get(i as isize))
+            .collect()
+    }
+
+    pub fn sample_without_replacement(&self, k: usize) -> Vec<&T> {
+        let length = self.len();
+        if k > length {
+            panic!("Cannot sample more elements than available in the queue");
+        }
+
+        let mut indices: Vec<usize> = (0..length).collect();
+        let mut rng = rand::thread_rng();
+        indices.shuffle(&mut rng);
+        indices
+            .into_iter()
+            .take(k)
+            .filter_map(|i| self.get(i as isize))
             .collect()
     }
 }
@@ -98,12 +120,34 @@ mod tests {
     }
 
     #[test]
-    fn test_random_access_queue_sample() {
+    fn test_random_access_queue_sample_with_replacement() {
         let mut queue = RandomAccessQueue::new(5);
         for i in 1..=5 {
             queue.append(i);
         }
-        let samples = queue.sample(3);
+        let samples = queue.sample_with_replacement(3);
         assert_eq!(samples.len(), 3);
+        let samples = queue.sample_with_replacement(6);
+        assert_eq!(samples.len(), 6);
+    }
+
+    #[test]
+    fn test_random_access_queue_sample_without_replacement() {
+        let mut queue = RandomAccessQueue::new(5);
+        for i in 1..=5 {
+            queue.append(i);
+        }
+        let samples = queue.sample_without_replacement(3);
+        assert_eq!(samples.len(), 3);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_random_access_queue_sample_without_replacement_should_panic() {
+        let mut queue = RandomAccessQueue::new(5);
+        for i in 1..=5 {
+            queue.append(i);
+        }
+        let samples = queue.sample_without_replacement(6);
     }
 }

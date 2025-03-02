@@ -3,7 +3,7 @@ use crate::misc::cumsum;
 use crate::misc::random_access_queue::RandomAccessQueue;
 use std::cell::RefCell;
 use std::rc::Rc;
-use tch::Tensor;
+use tch::{NoGradGuard, Tensor};
 
 pub struct ReplayBuffer {
     memory: RandomAccessQueue<Rc<Experience>>,
@@ -95,12 +95,21 @@ impl ReplayBuffer {
         }
     }
 
-    pub fn sample(&self, num_experiences: usize) -> Vec<&Rc<Experience>> {
-        self.memory.sample(num_experiences)
+    pub fn sample(&self, num_experiences: usize, replacement: bool) -> Vec<&Rc<Experience>> {
+        if replacement {
+            self.memory.sample_with_replacement(num_experiences)
+        } else {
+            self.memory.sample_without_replacement(num_experiences)
+        }
     }
 
     pub fn len(&self) -> usize {
         self.memory.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.memory.clear();
+        self.last_n_experiences.empty();
     }
 }
 
@@ -134,7 +143,7 @@ mod tests {
             let state = Tensor::from_slice(&[i as f64]);
             buffer.append(state, None, i as f64, false, 1.0);
         }
-        let samples = buffer.sample(3);
+        let samples = buffer.sample(3, false);
         assert_eq!(samples.len(), 3);
     }
 
@@ -171,7 +180,7 @@ mod tests {
         buffer.append(state8, None, 0.0, false, 0.9);
         buffer.append(state9, None, 5.0, true, 0.9);
 
-        for experience in buffer.sample(1000) {
+        for experience in buffer.sample(1000, true) {
             let n_step_discounted_reward = *experience.n_step_discounted_reward.borrow();
             let n_step_after_experience = experience.n_step_after_experience.borrow();
             let expected_q_value;
