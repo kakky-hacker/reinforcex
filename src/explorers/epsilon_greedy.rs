@@ -11,7 +11,6 @@ impl EpsilonGreedy {
     pub fn new(start_epsilon: f64, end_epsilon: f64, decay_steps: usize) -> Self {
         assert!((0.0..=1.0).contains(&start_epsilon));
         assert!((0.0..=1.0).contains(&end_epsilon));
-        assert!(decay_steps >= 0);
         EpsilonGreedy {
             start_epsilon,
             end_epsilon,
@@ -48,7 +47,6 @@ impl BaseExplorer for EpsilonGreedy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::Rng;
 
     #[test]
     fn test_new() {
