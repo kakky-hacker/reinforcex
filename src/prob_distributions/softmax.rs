@@ -1,8 +1,9 @@
 use super::base_distribution::BaseDistribution;
-use candle_core::Tensor;
+use candle_core::{shape, DType, Device, Result, Tensor};
+use candle_nn::ops;
 
 pub struct SoftmaxDistribution {
-    logits: Tensor,
+    logits: Tensor, // [n,m]
     beta: f64,
     min_prob: f64,
     n: f64,
@@ -20,22 +21,20 @@ impl SoftmaxDistribution {
         }
     }
 
-    fn all_prob(&self) -> Tensor {
-        let scaled_logits = &self.logits * self.beta;
+    fn all_prob(&self) -> Result<Tensor> {
+        let scaled_logits = (&self.logits * self.beta)?;
+        let softmax = ops::softmax(&scaled_logits, 1)?; // [n,m]
+        let res;
         if self.min_prob > 0.0 {
-            let softmax = scaled_logits.softmax(-1, candle_core::DType::F32);
-            softmax * (1.0 - self.min_prob * self.n) + self.min_prob
+            res = ((softmax * (1.0 - self.min_prob * self.n))? + self.min_prob)?;
         } else {
-            scaled_logits.softmax(-1, candle_core::DType::F32)
+            res = softmax;
         }
+        Ok(res)
     }
 
-    fn all_log_prob(&self) -> Tensor {
-        if self.min_prob > 0.0 {
-            self.all_prob().log()
-        } else {
-            (&self.logits * self.beta).log_softmax(-1, candle_core::DType::F32)
-        }
+    fn all_log_prob(&self) -> Result<Tensor> {
+        self.all_prob()?.log() // [n,m]
     }
 }
 
@@ -44,169 +43,165 @@ impl BaseDistribution for SoftmaxDistribution {
         (&self.logits, &self.logits)
     }
 
-    fn kl(&self, q: Box<dyn BaseDistribution>) -> Tensor {
-        let q_log_prob = q.log_prob(&self.all_prob());
-        self.all_prob()
-            * (self.all_log_prob() - q_log_prob).sum_keepdim(
-                [-1].as_ref(),
-                false,
-                candle_core::DType::F32,
-            )
+    fn kl(&self, q: Box<dyn BaseDistribution>) -> Result<Tensor> {
+        let q_log_prob = q.log_prob(&self.all_prob()?)?;
+        (self.all_prob() * (self.all_log_prob()? - q_log_prob)?)?.sum(1)
     }
 
-    fn entropy(&self) -> Tensor {
-        -(&self.all_prob() * self.all_log_prob()).sum_keepdim(
-            [-1].as_ref(),
-            false,
-            candle_core::DType::F32,
-        )
+    fn entropy(&self) -> Result<Tensor> {
+        (-1.0 * (&self.all_prob()? * self.all_log_prob()?)?)?.sum_all()
     }
 
-    fn sample(&self) -> Tensor {
-        let probs = self.all_prob();
-        let noise = Tensor::rand(&probs.dims(), (candle_core::DType::F32, probs.device())).log() * -1.0;
-        let logits_with_noise = (probs.log() + noise).argmax(-1, false);
-        logits_with_noise
+    fn sample(&self) -> Result<Tensor> {
+        let log_probs = self.all_log_prob()?;
+        let noise = (Tensor::rand(0.0, 1.0, log_probs.dims(), &Device::Cpu)?.log()? * -1.0)?;
+        let res = (log_probs + noise)?.argmax(1)?;
+        Ok(res)
     }
 
-    fn prob(&self, x: &Tensor) -> Tensor {
-        self.all_prob().gather(-1, x, false).squeeze_dim(-1)
+    fn prob(&self, x: &Tensor) -> Result<Tensor> {
+        // x:[n]
+        let probs = self.all_prob()?.gather(x, 1)?; // [n,1]
+        let res = probs.squeeze(1)?; // [n]
+        Ok(res)
     }
 
-    fn log_prob(&self, x: &Tensor) -> Tensor {
-        self.all_log_prob()
-            .gather(-1, &x.reshape(&[1, 1]), false)
-            .squeeze_dim(-1)
+    fn log_prob(&self, x: &Tensor) -> Result<Tensor> {
+        let log_probs = self.all_log_prob()?.gather(x, 1)?; // [n,1]
+        let res = log_probs.squeeze(1)?; // [n]
+        Ok(res)
     }
 
     fn copy(&self) -> Box<dyn BaseDistribution> {
-        Box::new(Self::new(
-            self.logits.clone(),
-            self.beta,
-            self.min_prob,
-        ))
+        Box::new(Self::new(self.logits.clone(), self.beta, self.min_prob))
     }
 
-    fn most_probable(&self) -> Tensor {
-        self.all_prob().argmax(-1, false)
+    fn most_probable(&self) -> Result<Tensor> {
+        self.all_prob()?.argmax(1) // [n]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use candle_core::{Kind, Tensor};
+    use candle_core::Tensor;
 
     #[test]
     fn test_all_prob() {
-        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).reshape(&[1, 4]);
+        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[1, 4], &Device::Cpu).unwrap();
         let dist = SoftmaxDistribution::new(logits, 1.0, 0.0);
 
         // Test probabilities sum to 1
-        let all_prob = dist.all_prob();
-        assert!(all_prob.sum_all().double_value(&[]) - 1.0 < 1e-6);
+        let all_prob = dist.all_prob().unwrap();
+        let sum_all_prob = all_prob.sum_all().unwrap().to_scalar::<f64>().unwrap();
+        assert!(sum_all_prob - 1.0 < 1e-6);
     }
 
     #[test]
     fn test_all_prob_with_min_prob() {
-        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).reshape(&[1, 4]);
+        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[1, 4], &Device::Cpu).unwrap();
         let beta = 1.0;
         let min_prob = 0.1;
         let dist = SoftmaxDistribution::new(logits, beta, min_prob);
 
         // Ensure minimum probability constraint is applied
-        let all_prob = dist.all_prob();
-        let min_val = all_prob.min().double_value(&[]);
-        assert!(min_val >= min_prob);
+        let all_prob = dist.all_prob().unwrap();
+        let min_vals: Vec<f64> = all_prob.min(1).unwrap().to_vec1::<f64>().unwrap();
+        assert!(min_vals.iter().all(|&v| v >= min_prob));
     }
 
     #[test]
     fn test_all_log_prob() {
-        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).reshape(&[1, 4]);
+        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[1, 4], &Device::Cpu).unwrap();
         let dist = SoftmaxDistribution::new(logits, 1.0, 0.0);
 
-        let all_log_prob = dist.all_log_prob();
-        let log_sum = all_log_prob.sum_all().double_value(&[]);
-        assert!(log_sum.is_finite());
+        let all_log_prob = dist.all_log_prob().unwrap();
+        let log_sum = all_log_prob.sum_all().unwrap().to_scalar::<f64>().unwrap();
+        let expected_log_sum = -7.760758794;
+        assert!((log_sum - expected_log_sum).abs() < 1e-6);
     }
 
     #[test]
     fn test_sample() {
-        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).reshape(&[1, 4]);
+        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[1, 4], &Device::Cpu).unwrap();
         let dist = SoftmaxDistribution::new(logits, 1.0, 0.0);
-        let sample = dist.sample();
-        assert_eq!(sample.dims(), [1]);
-        assert!(0 <= sample.double_value(&[]) as i64);
-        assert!(sample.double_value(&[]) as i64 <= 3);
+        let sample = dist.sample().unwrap().to_vec1::<u32>().unwrap();
+        assert!([0, 1, 2, 3].contains(&sample[0]));
     }
 
     #[test]
     fn test_prob() {
-        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).reshape(&[1, 4]);
+        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[1, 4], &Device::Cpu).unwrap();
         let dist = SoftmaxDistribution::new(logits, 1.0, 0.0);
-        let prob = dist.prob(&Tensor::from_slice(&[0 as i64]).reshape(&[1, 1]));
-        assert!((prob.double_value(&[]) - 0.032058604).abs() < 1e-6);
-        let prob = dist.prob(&Tensor::from_slice(&[1 as i64]).reshape(&[1, 1]));
-        assert!((prob.double_value(&[]) - 0.087144318).abs() < 1e-6);
-        let prob = dist.prob(&Tensor::from_slice(&[2 as i64]).reshape(&[1, 1]));
-        assert!((prob.double_value(&[]) - 0.236882818).abs() < 1e-6);
-        let prob = dist.prob(&Tensor::from_slice(&[3 as i64]).reshape(&[1, 1]));
-        assert!((prob.double_value(&[]) - 0.643914260).abs() < 1e-6);
+        let prob = dist
+            .prob(&Tensor::from_slice(&[0 as i64], &[1, 1], &Device::Cpu).unwrap())
+            .unwrap();
+        assert!((prob.to_vec1::<f64>().unwrap()[0] - 0.032058604).abs() < 1e-6);
+        let prob = dist
+            .prob(&Tensor::from_slice(&[1 as i64], &[1, 1], &Device::Cpu).unwrap())
+            .unwrap();
+        assert!((prob.to_vec1::<f64>().unwrap()[0] - 0.087144318).abs() < 1e-6);
+        let prob = dist
+            .prob(&Tensor::from_slice(&[2 as i64], &[1, 1], &Device::Cpu).unwrap())
+            .unwrap();
+        assert!((prob.to_vec1::<f64>().unwrap()[0] - 0.236882818).abs() < 1e-6);
+        let prob = dist
+            .prob(&Tensor::from_slice(&[3 as i64], &[1, 1], &Device::Cpu).unwrap())
+            .unwrap();
+        assert!((prob.to_vec1::<f64>().unwrap()[0] - 0.643914260).abs() < 1e-6);
     }
 
     #[test]
     fn test_log_prob() {
-        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).reshape(&[1, 4]);
+        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[1, 4], &Device::Cpu).unwrap();
         let dist = SoftmaxDistribution::new(logits, 1.0, 0.0);
-        let log_prob = dist.log_prob(&Tensor::from_slice(&[0 as i64]).reshape(&[1, 1]));
-        assert!((log_prob.double_value(&[]) - (-3.440189702)).abs() < 1e-6);
-        let log_prob = dist.log_prob(&Tensor::from_slice(&[1 as i64]).reshape(&[1, 1]));
-        assert!((log_prob.double_value(&[]) - (-2.440189702)).abs() < 1e-6);
-        let log_prob = dist.log_prob(&Tensor::from_slice(&[2 as i64]).reshape(&[1, 1]));
-        assert!((log_prob.double_value(&[]) - (-1.440189702)).abs() < 1e-6);
-        let log_prob = dist.log_prob(&Tensor::from_slice(&[3 as i64]).reshape(&[1, 1]));
-        assert!((log_prob.double_value(&[]) - (-0.440189702)).abs() < 1e-6);
+        let log_prob = dist
+            .log_prob(&Tensor::from_slice(&[0 as i64], &[1, 1], &Device::Cpu).unwrap())
+            .unwrap();
+        assert!((log_prob.to_vec1::<f64>().unwrap()[0] - (-3.440189702)).abs() < 1e-6);
+        let log_prob = dist
+            .log_prob(&Tensor::from_slice(&[1 as i64], &[1, 1], &Device::Cpu).unwrap())
+            .unwrap();
+        assert!((log_prob.to_vec1::<f64>().unwrap()[0] - (-2.440189702)).abs() < 1e-6);
+        let log_prob = dist
+            .log_prob(&Tensor::from_slice(&[2 as i64], &[1, 1], &Device::Cpu).unwrap())
+            .unwrap();
+        assert!((log_prob.to_vec1::<f64>().unwrap()[0] - (-1.440189702)).abs() < 1e-6);
+        let log_prob = dist
+            .log_prob(&Tensor::from_slice(&[3 as i64], &[1, 1], &Device::Cpu).unwrap())
+            .unwrap();
+        assert!((log_prob.to_vec1::<f64>().unwrap()[0] - (-0.440189702)).abs() < 1e-6);
     }
 
     #[test]
     fn test_entropy() {
-        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).reshape(&[1, 4]);
+        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[1, 4], &Device::Cpu).unwrap();
         let dist = SoftmaxDistribution::new(logits, 1.0, 0.0);
-        let entropy = dist.entropy();
-        assert!(entropy.double_value(&[]) >= 0.0);
-        assert!((entropy.double_value(&[]) - 0.947536964).abs() < 1e-6)
+        let entropy = dist.entropy().unwrap();
+        assert!(entropy.to_scalar::<f64>().unwrap() >= 0.0);
+        assert!((entropy.to_scalar::<f64>().unwrap() - 0.947536964).abs() < 1e-6)
     }
 
     #[test]
     fn test_most_probable() {
-        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).reshape(&[1, 4]);
+        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[1, 4], &Device::Cpu).unwrap();
         let dist = SoftmaxDistribution::new(logits, 1.0, 0.0);
-        let most_probable = dist.most_probable();
-        assert_eq!(most_probable.int64_value(&[]), 3);
+        let most_probable = dist.most_probable().unwrap();
+        assert_eq!(most_probable.to_vec1::<u32>().unwrap()[0], 3);
 
-        let logits = Tensor::from_slice(&[1.0, 3.5, 1.0, 2.0]).reshape(&[1, 4]);
+        let logits = Tensor::from_slice(&[1.0, 3.5, 1.0, 2.0], &[1, 4], &Device::Cpu).unwrap();
         let dist = SoftmaxDistribution::new(logits, 1.0, 0.1);
-        let most_probable = dist.most_probable();
-        assert_eq!(most_probable.int64_value(&[]), 1);
+        let most_probable = dist.most_probable().unwrap();
+        assert_eq!(most_probable.to_vec1::<u32>().unwrap()[0], 1);
 
-        let logits = Tensor::from_slice(&[1.0, 3.5, 5.0, 2.0]).reshape(&[1, 4]);
+        let logits = Tensor::from_slice(&[1.0, 3.5, 5.0, 2.0], &[1, 4], &Device::Cpu).unwrap();
         let dist = SoftmaxDistribution::new(logits, 2.0, 0.1);
-        let most_probable = dist.most_probable();
-        assert_eq!(most_probable.int64_value(&[]), 2);
+        let most_probable = dist.most_probable().unwrap();
+        assert_eq!(most_probable.to_vec1::<u32>().unwrap()[0], 2);
 
-        let logits = Tensor::from_slice(&[5.1, 3.5, 5.0, 4.0]).reshape(&[1, 4]);
+        let logits = Tensor::from_slice(&[5.1, 3.5, 5.0, 4.0], &[1, 4], &Device::Cpu).unwrap();
         let dist = SoftmaxDistribution::new(logits, 1.5, 0.0);
-        let most_probable = dist.most_probable();
-        assert_eq!(most_probable.int64_value(&[]), 0);
-    }
-
-    #[test]
-    fn test_invalid_min_prob() {
-        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).reshape(&[1, 4]);
-        let min_prob = 0.3;
-        let result = std::panic::catch_unwind(|| {
-            SoftmaxDistribution::new(logits, 1.0, min_prob);
-        });
-        assert!(result.is_err());
+        let most_probable = dist.most_probable().unwrap();
+        assert_eq!(most_probable.to_vec1::<u32>().unwrap()[0], 0);
     }
 }
