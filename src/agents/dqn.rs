@@ -3,7 +3,7 @@ use crate::explorers::BaseExplorer;
 use crate::memory::ReplayBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::BaseQFunction;
-use tch::{nn, no_grad, Device, Tensor};
+use candle_core::{nn, no_grad, Device, Tensor};
 
 pub struct DQN {
     model: Box<dyn BaseQFunction>,
@@ -60,15 +60,15 @@ impl DQN {
         let mut actions: Vec<Tensor> = vec![];
         let mut n_step_discounted_rewards: Vec<f64> = vec![];
         for experience in experiences {
-            let state = experience.state.shallow_clone();
+            let state = experience.state.clone();
             let n_step_after_state = experience
                 .n_step_after_experience
                 .borrow()
                 .as_ref()
                 .unwrap()
                 .state
-                .shallow_clone();
-            let action = experience.action.as_ref().unwrap().shallow_clone();
+                .clone();
+            let action = experience.action.as_ref().unwrap().clone();
             let n_step_discounted_reward = experience
                 .n_step_discounted_reward
                 .borrow()
@@ -109,13 +109,13 @@ impl DQN {
         assert_eq!(states.len(), actions.len());
         let _states = batch_states(states, self.model.is_cuda());
         let pred_q_values = self.model.forward(&_states);
-        let actions = Tensor::stack(&actions, 0).to_kind(tch::Kind::Int64);
+        let actions = Tensor::stack(&actions, 0).to_kind(candle_core::DType::I64);
         let pred_q_values_selected = pred_q_values.gather(1, &actions, false).squeeze();
         pred_q_values_selected
     }
 
     fn _compute_loss(&self, q_values: Tensor, pred_q_values: Tensor) -> Tensor {
-        let loss = (q_values - pred_q_values).square().mean(tch::Kind::Float);
+        let loss = (q_values - pred_q_values).square().mean(candle_core::DType::F32);
         loss
     }
 }
@@ -123,7 +123,7 @@ impl DQN {
 impl BaseAgent for DQN {
     fn act(&self, obs: &Tensor) -> Tensor {
         no_grad(|| {
-            let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
+            let state = batch_states(&vec![obs.clone()], self.model.is_cuda());
             let q_values = self.model.forward(&state);
             q_values.argmax(1, false).to_device(Device::Cpu)
         })
@@ -131,7 +131,7 @@ impl BaseAgent for DQN {
 
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor {
         self.t += 1;
-        let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
+        let state = batch_states(&vec![obs.clone()], self.model.is_cuda());
         let q_values = self.model.forward(&state);
 
         let greedy_action_func = || q_values.argmax(1, false).int64_value(&[0]) as usize;
@@ -146,7 +146,7 @@ impl BaseAgent for DQN {
 
         self.replay_buffer.append(
             state,
-            Some(action.shallow_clone()),
+            Some(action.clone()),
             reward,
             false,
             self.gamma,
@@ -161,7 +161,7 @@ impl BaseAgent for DQN {
     }
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
-        let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
+        let state = batch_states(&vec![obs.clone()], self.model.is_cuda());
         self.replay_buffer
             .append(state, None, reward, true, self.gamma);
     }
@@ -172,7 +172,7 @@ mod tests {
     use super::*;
     use crate::explorers::EpsilonGreedy;
     use crate::models::FCQNetwork;
-    use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
+    use candle_core::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
     #[test]
     fn test_dqn_new() {
@@ -224,7 +224,7 @@ mod tests {
 
         let mut reward = 0.0;
         for i in 0..2000 {
-            let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
+            let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(DType::F32);
             let action = dqn.act_and_train(&obs, reward);
             let action_value = i64::from(action.int64_value(&[]));
             if action_value == 2 {
@@ -238,7 +238,7 @@ mod tests {
                 assert_eq!(action_value, 2);
             }
         }
-        let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
+        let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(DType::F32);
         dqn.stop_episode_and_train(&obs, 1.0);
 
         for _ in 0..1000 {

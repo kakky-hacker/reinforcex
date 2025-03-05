@@ -1,5 +1,5 @@
 use super::base_distribution::BaseDistribution;
-use tch::Tensor;
+use candle_core::Tensor;
 
 pub struct SoftmaxDistribution {
     logits: Tensor,
@@ -10,7 +10,7 @@ pub struct SoftmaxDistribution {
 
 impl SoftmaxDistribution {
     pub fn new(logits: Tensor, beta: f64, min_prob: f64) -> Self {
-        let n = logits.size()[1] as f64;
+        let n = logits.dims()[1] as f64;
         assert!(min_prob * n <= 1.0, "Invalid min_prob value");
         Self {
             logits,
@@ -23,10 +23,10 @@ impl SoftmaxDistribution {
     fn all_prob(&self) -> Tensor {
         let scaled_logits = &self.logits * self.beta;
         if self.min_prob > 0.0 {
-            let softmax = scaled_logits.softmax(-1, tch::Kind::Float);
+            let softmax = scaled_logits.softmax(-1, candle_core::DType::F32);
             softmax * (1.0 - self.min_prob * self.n) + self.min_prob
         } else {
-            scaled_logits.softmax(-1, tch::Kind::Float)
+            scaled_logits.softmax(-1, candle_core::DType::F32)
         }
     }
 
@@ -34,7 +34,7 @@ impl SoftmaxDistribution {
         if self.min_prob > 0.0 {
             self.all_prob().log()
         } else {
-            (&self.logits * self.beta).log_softmax(-1, tch::Kind::Float)
+            (&self.logits * self.beta).log_softmax(-1, candle_core::DType::F32)
         }
     }
 }
@@ -47,24 +47,24 @@ impl BaseDistribution for SoftmaxDistribution {
     fn kl(&self, q: Box<dyn BaseDistribution>) -> Tensor {
         let q_log_prob = q.log_prob(&self.all_prob());
         self.all_prob()
-            * (self.all_log_prob() - q_log_prob).sum_dim_intlist(
+            * (self.all_log_prob() - q_log_prob).sum_keepdim(
                 [-1].as_ref(),
                 false,
-                tch::Kind::Float,
+                candle_core::DType::F32,
             )
     }
 
     fn entropy(&self) -> Tensor {
-        -(&self.all_prob() * self.all_log_prob()).sum_dim_intlist(
+        -(&self.all_prob() * self.all_log_prob()).sum_keepdim(
             [-1].as_ref(),
             false,
-            tch::Kind::Float,
+            candle_core::DType::F32,
         )
     }
 
     fn sample(&self) -> Tensor {
         let probs = self.all_prob();
-        let noise = Tensor::rand(&probs.size(), (tch::Kind::Float, probs.device())).log() * -1.0;
+        let noise = Tensor::rand(&probs.dims(), (candle_core::DType::F32, probs.device())).log() * -1.0;
         let logits_with_noise = (probs.log() + noise).argmax(-1, false);
         logits_with_noise
     }
@@ -81,7 +81,7 @@ impl BaseDistribution for SoftmaxDistribution {
 
     fn copy(&self) -> Box<dyn BaseDistribution> {
         Box::new(Self::new(
-            self.logits.shallow_clone(),
+            self.logits.clone(),
             self.beta,
             self.min_prob,
         ))
@@ -95,7 +95,7 @@ impl BaseDistribution for SoftmaxDistribution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tch::{Kind, Tensor};
+    use candle_core::{Kind, Tensor};
 
     #[test]
     fn test_all_prob() {
@@ -104,7 +104,7 @@ mod tests {
 
         // Test probabilities sum to 1
         let all_prob = dist.all_prob();
-        assert!(all_prob.sum(Kind::Float).double_value(&[]) - 1.0 < 1e-6);
+        assert!(all_prob.sum_all().double_value(&[]) - 1.0 < 1e-6);
     }
 
     #[test]
@@ -126,7 +126,7 @@ mod tests {
         let dist = SoftmaxDistribution::new(logits, 1.0, 0.0);
 
         let all_log_prob = dist.all_log_prob();
-        let log_sum = all_log_prob.sum(Kind::Float).double_value(&[]);
+        let log_sum = all_log_prob.sum_all().double_value(&[]);
         assert!(log_sum.is_finite());
     }
 
@@ -135,7 +135,7 @@ mod tests {
         let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).reshape(&[1, 4]);
         let dist = SoftmaxDistribution::new(logits, 1.0, 0.0);
         let sample = dist.sample();
-        assert_eq!(sample.size(), [1]);
+        assert_eq!(sample.dims(), [1]);
         assert!(0 <= sample.double_value(&[]) as i64);
         assert!(sample.double_value(&[]) as i64 <= 3);
     }

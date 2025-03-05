@@ -3,8 +3,8 @@ use super::base_policy_network::BasePolicy;
 use crate::misc::weight_initializer::{he_init, xavier_init};
 use crate::prob_distributions::BaseDistribution;
 use crate::prob_distributions::GaussianDistribution;
-use tch::nn::{Init, Linear, LinearConfig, Module};
-use tch::{nn, Tensor};
+use candle_nn::{Init, Linear, LinearConfig, Module};
+use candle_core::{nn, Tensor};
 
 pub struct FCGaussianPolicy {
     layers: Vec<Linear>,
@@ -119,7 +119,7 @@ impl FCGaussianPolicy {
         };
 
         let var = self.var_layer.forward(&x).softplus() + self.min_var;
-        let var = var.expand(&mean.size(), false);
+        let var = var.expand(&mean.dims(), false);
         (mean, var)
     }
 
@@ -213,7 +213,7 @@ impl BasePolicy for FCGaussianPolicyWithValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tch::{nn, Device, Tensor};
+    use candle_core::{nn, Device, Tensor};
 
     #[test]
     fn test_initialization() {
@@ -234,8 +234,8 @@ mod tests {
             action_size,
             n_hidden_layers,
             n_hidden_channels,
-            Some(min_action.shallow_clone()),
-            Some(max_action.shallow_clone()),
+            Some(min_action.clone()),
+            Some(max_action.clone()),
             bound_mean,
             var_type,
             min_var,
@@ -267,14 +267,14 @@ mod tests {
             1e-3,
         );
 
-        let input = Tensor::randn(&[3, n_input_channels], (tch::Kind::Float, Device::Cpu));
+        let input = Tensor::randn(&[3, n_input_channels], (candle_core::DType::F32, Device::Cpu));
         let h = policy.compute_medium_layer(&input);
         let (mean, var) = policy.compute_mean_and_var(&h);
 
-        assert_eq!(mean.size()[0], 3);
-        assert_eq!(mean.size()[1], action_size);
-        assert_eq!(var.size()[0], 3);
-        assert_eq!(var.size()[1], action_size);
+        assert_eq!(mean.dims()[0], 3);
+        assert_eq!(mean.dims()[1], action_size);
+        assert_eq!(var.dims()[0], 3);
+        assert_eq!(var.dims()[1], action_size);
         assert!(var.min().double_value(&[]) >= 1e-3);
     }
 
@@ -324,12 +324,12 @@ mod tests {
             1e-3,
         );
 
-        let input = Tensor::randn(&[3, n_input_channels], (tch::Kind::Float, Device::Cpu));
+        let input = Tensor::randn(&[3, n_input_channels], (candle_core::DType::F32, Device::Cpu));
         let action_distribution = policy.forward(&input).0;
 
         let (mean, var) = action_distribution.params();
 
-        assert!(mean.size() == vec![3, 6]);
-        assert!(var.size() == vec![3, 6]);
+        assert!(mean.dims() == vec![3, 6]);
+        assert!(var.dims() == vec![3, 6]);
     }
 }

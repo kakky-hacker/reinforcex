@@ -1,9 +1,9 @@
 use gym::client::MakeOptions;
 extern crate gym;
+use candle_core::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 use gym::Action;
 use reinforcex::agents::{BaseAgent, REINFORCE};
 use reinforcex::models::FCSoftmaxPolicy;
-use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
 pub fn train_cartpole_with_reinforce() {
     println!("train_cartpole_with_reinforce");
@@ -61,7 +61,7 @@ pub fn train_cartpole_with_reinforce() {
         let mut reward = 0.0;
         let mut obs = vec![0.0; 4];
         for step in 0..10000 {
-            let obs_ = Tensor::from_slice(&obs).to_kind(Kind::Float);
+            let obs_ = Tensor::from_slice(&obs).to_kind(DType::F32);
             let action_;
             action_ = agent.act_and_train(&obs_, reward);
             let state = env
@@ -76,7 +76,7 @@ pub fn train_cartpole_with_reinforce() {
             env.render();
             total_reward += reward;
             if state.is_done {
-                let obs_ = Tensor::from_slice(&obs).to_kind(Kind::Float);
+                let obs_ = Tensor::from_slice(&obs).to_kind(DType::F32);
                 agent.stop_episode_and_train(&obs_, -30.0);
                 break;
             }

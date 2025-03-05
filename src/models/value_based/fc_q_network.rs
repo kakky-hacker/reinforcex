@@ -1,7 +1,7 @@
 use super::base_q_network::BaseQFunction;
 use crate::misc::weight_initializer::{he_init, xavier_init};
-use tch::nn::{Init, Linear, LinearConfig, Module};
-use tch::{nn, no_grad, Tensor};
+use candle_nn::{Init, Linear, LinearConfig, Module};
+use candle_core::{no_grad, Tensor};
 
 pub struct FCQNetwork {
     layers: Vec<Linear>,
@@ -83,7 +83,7 @@ impl BaseQFunction for FCQNetwork {
     }
 
     fn clone(&self) -> Box<dyn BaseQFunction> {
-        let vs = nn::VarStore::new(tch::Device::Cpu);
+        let vs = nn::VarStore::new(candle_core::Device::Cpu);
         let mut cloned_network = FCQNetwork::new(
             &vs,
             self.n_input_channels,
@@ -111,7 +111,7 @@ impl BaseQFunction for FCQNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tch::{nn, Device, Tensor};
+    use candle_core::{nn, Device, Tensor};
 
     #[test]
     fn test_fcqnetwork_forward() {
@@ -129,10 +129,10 @@ mod tests {
             n_hidden_channels,
         );
 
-        let input = Tensor::randn([1, n_input_channels], (tch::Kind::Float, Device::Cpu));
+        let input = Tensor::randn([1, n_input_channels], (candle_core::DType::F32, Device::Cpu));
         let output = network.forward(&input);
 
-        assert_eq!(output.size(), vec![1, action_size]);
+        assert_eq!(output.dims(), vec![1, action_size]);
     }
 
     #[test]
@@ -152,11 +152,11 @@ mod tests {
         );
         let cloned_network = network.clone();
 
-        let input = Tensor::randn([1, n_input_channels], (tch::Kind::Float, Device::Cpu));
+        let input = Tensor::randn([1, n_input_channels], (candle_core::DType::F32, Device::Cpu));
         let output_original = network.forward(&input);
         let output_cloned = cloned_network.forward(&input);
 
-        assert_eq!(output_original.size(), output_cloned.size());
+        assert_eq!(output_original.dims(), output_cloned.dims());
         assert!(output_original.allclose(&output_cloned, 1e-6, 1e-6, false));
     }
 }

@@ -1,4 +1,4 @@
-use tch::Tensor;
+use candle_core::Tensor;
 
 pub trait BaseQFunction {
     fn forward(&self, x: &Tensor) -> Tensor;

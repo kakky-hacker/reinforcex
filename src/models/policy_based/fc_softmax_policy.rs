@@ -3,8 +3,8 @@ use super::base_policy_network::BasePolicy;
 use crate::misc::weight_initializer::he_init;
 use crate::prob_distributions::BaseDistribution;
 use crate::prob_distributions::SoftmaxDistribution;
-use tch::nn::{Init, Linear, LinearConfig, Module};
-use tch::{nn, Tensor};
+use candle_nn::{Init, Linear, LinearConfig, Module};
+use candle_core::{nn, Tensor};
 
 pub struct FCSoftmaxPolicy {
     layers: Vec<Linear>,

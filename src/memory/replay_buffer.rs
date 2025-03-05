@@ -3,7 +3,7 @@ use crate::misc::cumsum;
 use crate::misc::random_access_queue::RandomAccessQueue;
 use std::cell::RefCell;
 use std::rc::Rc;
-use tch::{NoGradGuard, Tensor};
+use candle_core::{NoGradGuard, Tensor};
 
 pub struct ReplayBuffer {
     memory: RandomAccessQueue<Rc<Experience>>,
@@ -116,7 +116,7 @@ impl ReplayBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tch::Tensor;
+    use candle_core::Tensor;
 
     #[test]
     fn test_replay_buffer_new() {
@@ -128,11 +128,11 @@ mod tests {
     fn test_replay_buffer_append_and_len() {
         let mut buffer = ReplayBuffer::new(100, 1);
         let state = Tensor::from_slice(&[1.0]);
-        buffer.append(state.shallow_clone(), None, 1.0, false, 1.0);
+        buffer.append(state.clone(), None, 1.0, false, 1.0);
         assert_eq!(buffer.len(), 0);
-        buffer.append(state.shallow_clone(), None, 1.0, false, 1.0);
+        buffer.append(state.clone(), None, 1.0, false, 1.0);
         assert_eq!(buffer.len(), 1);
-        buffer.append(state.shallow_clone(), None, 1.0, false, 1.0);
+        buffer.append(state.clone(), None, 1.0, false, 1.0);
         assert_eq!(buffer.len(), 2);
     }
 

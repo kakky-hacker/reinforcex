@@ -1,4 +1,4 @@
-use tch::nn::Init;
+use candle_nn::Init;
 
 /// Xavier Initialization
 pub fn xavier_init(nin: i64, nout: i64) -> Init {

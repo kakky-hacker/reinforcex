@@ -1,4 +1,4 @@
-use tch::{Device, Tensor};
+use candle_core::{Device, Tensor};
 
 /// The default method for making batch of observations.
 /// Args:

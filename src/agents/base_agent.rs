@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 
-use tch::Tensor;
+use candle_core::Tensor;
 
 pub trait BaseAgent {
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor;

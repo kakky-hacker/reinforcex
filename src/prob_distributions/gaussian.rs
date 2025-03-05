@@ -1,15 +1,15 @@
 use super::base_distribution::BaseDistribution;
-use tch::{Kind, Tensor};
+use candle_core::{shape, DType, Device, Result, Tensor};
 
 pub struct GaussianDistribution {
-    mean: Tensor,
-    var: Tensor,
-    ln_var: Tensor,
+    mean: Tensor,   // [n]
+    var: Tensor,    // [n]
+    ln_var: Tensor, // [n]
 }
 
 impl GaussianDistribution {
     pub fn new(mean: Tensor, var: Tensor) -> Self {
-        let ln_var = var.log();
+        let ln_var = var.log().unwrap();
         GaussianDistribution { mean, var, ln_var }
     }
 }
@@ -19,131 +19,158 @@ impl BaseDistribution for GaussianDistribution {
         (&self.mean, &self.var)
     }
 
-    fn kl(&self, q: Box<dyn BaseDistribution>) -> Tensor {
+    fn kl(&self, q: Box<dyn BaseDistribution>) -> Result<Tensor> {
         let (q_mean, q_var) = q.params();
-        let mean_diff = (&self.mean - q_mean).pow_tensor_scalar(2.0);
-        let term1 = q_var.log() - &self.ln_var;
-        let term2 = (&self.var + mean_diff) / q_var;
-        0.5 * (term1 + term2 - Tensor::from(1.0)).sum(Kind::Float)
+        assert_eq!(self.mean.dims(), q_mean.dims());
+        assert_eq!(self.var.dims(), q_var.dims());
+        let mean_diff = (&self.mean - q_mean)?.powf(2.0)?; // [n]
+        let term1 = (q_var.log() - &self.ln_var)?; // [n]
+        let term2 = ((&self.var + &mean_diff) / q_var)?; // [n]
+        let res = (0.5
+            * (term1 + term2
+                - Tensor::new(&[1.0], &Device::Cpu)?.broadcast_as(mean_diff.dims())?)?)?; // [n]
+        Ok(res)
     }
 
-    fn entropy(&self) -> Tensor {
-        let dim: i64 = self.mean.size()[1];
+    fn entropy(&self) -> Result<Tensor> {
         let log_term: f64 = 0.5 * ((2.0 * std::f64::consts::PI).ln() + 1.0);
-        log_term * dim as f64 + 0.5 * self.ln_var.sum(Kind::Float)
+        let res = (log_term + (0.5 * &self.ln_var)?)?.sum_all()?; // [1]
+        Ok(res)
     }
 
-    fn sample(&self) -> Tensor {
-        let std = self.var.sqrt();
-        let noise = Tensor::randn_like(&self.mean);
+    fn sample(&self) -> Result<Tensor> {
+        let std = self.var.sqrt()?; // [n]
+        let shape = self.mean.shape();
+
+        let noise = Tensor::randn(0.0, 1.0, shape, &Device::Cpu)?; // [n]
         &self.mean + &std * noise
     }
 
-    fn prob(&self, x: &Tensor) -> Tensor {
-        self.log_prob(x).exp()
+    fn prob(&self, x: &Tensor) -> Result<Tensor> {
+        let res = self.log_prob(x)?.exp()?; // [n]
+        Ok(res)
     }
 
-    fn log_prob(&self, x: &Tensor) -> Tensor {
-        let diff = (x - &self.mean).pow_tensor_scalar(2.0);
-        let eltwise_log_prob: Tensor =
-            -0.5 * ((2.0 * std::f64::consts::PI).ln() + &self.ln_var + diff / &self.var);
-        eltwise_log_prob.sum_dim_intlist(&[1i64][..], false, Kind::Float)
+    fn log_prob(&self, x: &Tensor) -> Result<Tensor> {
+        // x.dims() = [n,m]
+        let diff = (x - &self.mean.unsqueeze(1)?.broadcast_as(x.dims())?)?.powf(2.0)?; // [n,m]
+        let eltwise_log_prob = (-0.5
+            * ((2.0 * std::f64::consts::PI).ln()
+                + &self.ln_var.unsqueeze(1)?.broadcast_as(x.dims())?
+                + (diff / &self.var.unsqueeze(1)?.broadcast_as(x.dims())?)?)?)?; // [n,m]
+        let res = eltwise_log_prob.sum(1)?; // [n]
+        Ok(res)
     }
 
     fn copy(&self) -> Box<dyn BaseDistribution> {
         Box::new(GaussianDistribution {
-            mean: self.mean.shallow_clone(),
-            var: self.var.shallow_clone(),
-            ln_var: self.ln_var.shallow_clone(),
+            mean: self.mean.clone(),
+            var: self.var.clone(),
+            ln_var: self.ln_var.clone(),
         })
     }
 
-    fn most_probable(&self) -> Tensor {
-        self.mean.shallow_clone()
+    fn most_probable(&self) -> Result<Tensor> {
+        let res = self.mean.clone(); // [n]
+        Ok(res)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tch::Tensor;
+    use candle_core::Tensor;
 
     #[test]
     fn test_new_and_params() {
-        let mean = Tensor::from_slice(&[0.0, 0.0, 0.0]).view([1, 3]);
-        let var = Tensor::from_slice(&[1.0, 1.0, 1.0]).view([1, 3]);
-        let gaussian: GaussianDistribution =
-            GaussianDistribution::new(mean.shallow_clone(), var.shallow_clone());
+        let mean = Tensor::from_slice(&[0.0, 0.0, 0.0], &[3], &Device::Cpu).unwrap();
+        let var = Tensor::from_slice(&[1.0, 1.0, 1.0], &[3], &Device::Cpu).unwrap();
+        let gaussian: GaussianDistribution = GaussianDistribution::new(mean.clone(), var.clone());
 
         let (mean_out, var_out) = gaussian.params();
-        assert_eq!(mean_out, &mean);
-        assert_eq!(var_out, &var);
+        let mean_out_vec: Vec<f64> = mean_out.to_vec1().unwrap();
+        let mean_vec: Vec<f64> = mean.to_vec1().unwrap();
+        let var_out_vec: Vec<f64> = var_out.to_vec1().unwrap();
+        let var_vec: Vec<f64> = var.to_vec1().unwrap();
+        assert_eq!(mean_out_vec, mean_vec);
+        assert_eq!(var_out_vec, var_vec);
     }
 
     #[test]
     fn test_most_probable() {
-        let mean = Tensor::from_slice(&[0.0, 1.0]).view([1, 2]);
-        let var = Tensor::from_slice(&[1.0, 4.0]).view([1, 2]);
-        let gaussian: GaussianDistribution = GaussianDistribution::new(mean.shallow_clone(), var);
+        let mean = Tensor::from_slice(&[0.0, 1.0], &[2], &Device::Cpu).unwrap();
+        let var = Tensor::from_slice(&[1.0, 4.0], &[2], &Device::Cpu).unwrap();
+        let gaussian: GaussianDistribution = GaussianDistribution::new(mean.clone(), var);
 
-        let most_probable = gaussian.most_probable();
-        assert_eq!(most_probable, mean);
+        let most_probable = gaussian.most_probable().unwrap();
+        let most_probable_vec: Vec<f64> = most_probable.to_vec1().unwrap();
+        let mean_vec: Vec<f64> = mean.to_vec1().unwrap();
+        assert_eq!(most_probable_vec, mean_vec);
     }
 
     #[test]
     fn test_sample() {
-        let mean = Tensor::from_slice(&[0.0, 1.0]).view([1, 2]);
-        let var = Tensor::from_slice(&[1.0, 4.0]).view([1, 2]);
+        let mean = Tensor::from_slice(&[0.0, 1.0], &[2], &Device::Cpu).unwrap();
+        let var = Tensor::from_slice(&[1.0, 4.0], &[2], &Device::Cpu).unwrap();
         let gaussian: GaussianDistribution = GaussianDistribution::new(mean, var);
 
-        let sample = gaussian.sample();
-        assert_eq!(sample.size(), vec![1, 2]);
+        let sample = gaussian.sample().unwrap();
+        assert_eq!(sample.dims(), vec![2]);
     }
 
     #[test]
     fn test_log_prob() {
-        let mean = Tensor::from_slice(&[0.0]).view([1, 1]);
-        let var = Tensor::from_slice(&[1.0]).view([1, 1]);
+        let mean = Tensor::from_slice(&[0.0, 0.0], &[2], &Device::Cpu).unwrap();
+        let var = Tensor::from_slice(&[1.0, 1.0], &[2], &Device::Cpu).unwrap();
         let gaussian = GaussianDistribution::new(mean, var);
 
-        let x = Tensor::from_slice(&[1.0, 2.0, 3.0]).view([1, 3]);
-        let log_prob = gaussian.log_prob(&x);
-        let expected_log_prob: f64 = -9.7568156;
-        assert!((log_prob.double_value(&[]) - expected_log_prob).abs() < 1e-6);
+        let x = Tensor::from_slice(&[1.0, 2.0, 3.0], &[3], &Device::Cpu)
+            .unwrap()
+            .broadcast_as(&[2, 3])
+            .unwrap();
+        let log_prob: Vec<f64> = gaussian.log_prob(&x).unwrap().to_vec1().unwrap();
+        let expected_log_prob: Vec<f64> = vec![-9.7568156, -9.7568156];
+        assert!(log_prob
+            .iter()
+            .zip(expected_log_prob.iter())
+            .all(|(x, y)| (x - y).abs() <= 1e-6));
     }
 
     #[test]
     fn test_kl_divergence() {
-        let mean_p = Tensor::from_slice(&[0.0]).view([1, 1]);
-        let var_p = Tensor::from_slice(&[1.0]).view([1, 1]);
+        let mean_p = Tensor::from_slice(&[0.0, 0.0], &[2], &Device::Cpu).unwrap();
+        let var_p = Tensor::from_slice(&[1.0, 1.0], &[2], &Device::Cpu).unwrap();
         let gaussian_p: GaussianDistribution = GaussianDistribution::new(mean_p, var_p);
 
-        let mean_q = Tensor::from_slice(&[0.8]).view([1, 1]);
-        let var_q = Tensor::from_slice(&[1.5]).view([1, 1]);
+        let mean_q = Tensor::from_slice(&[0.8, 0.8], &[2], &Device::Cpu).unwrap();
+        let var_q = Tensor::from_slice(&[1.5, 1.5], &[2], &Device::Cpu).unwrap();
         let gaussian_q: Box<dyn BaseDistribution> =
             Box::new(GaussianDistribution::new(mean_q, var_q));
 
-        let kl_div = gaussian_p.kl(gaussian_q);
-        let expected_kl: f64 = 0.249399221;
-        assert!((kl_div.double_value(&[]) - expected_kl).abs() < 1e-6);
+        let kl_div: Vec<f64> = gaussian_p.kl(gaussian_q).unwrap().to_vec1().unwrap();
+        let expected_kl: Vec<f64> = vec![0.249399221, 0.249399221];
+        assert!(kl_div
+            .iter()
+            .zip(expected_kl.iter())
+            .all(|(x, y)| (x - y).abs() <= 1e-6));
     }
 
     #[test]
     fn test_entropy() {
-        let mean = Tensor::from_slice(&[0.0]).view([1, 1]);
-        let var = Tensor::from_slice(&[1.0]).view([1, 1]);
+        let mean = Tensor::from_slice(&[0.0], &[1], &Device::Cpu).unwrap();
+        let var = Tensor::from_slice(&[1.0], &[1], &Device::Cpu).unwrap();
         let gaussian: GaussianDistribution = GaussianDistribution::new(mean, var);
 
-        let entropy = gaussian.entropy();
+        let entropy: f64 = gaussian.entropy().unwrap().to_vec0().unwrap();
         let expected_entropy: f64 = 1.418938533;
-        assert!((entropy.double_value(&[]) - expected_entropy).abs() < 1e-6);
+        assert!((entropy - expected_entropy).abs() < 1e-6);
 
-        let mean = Tensor::from_slice(&[0.0, 0.0]).view([1, 2]);
-        let var = Tensor::from_slice(&[1.0, 1.0]).view([1, 2]);
+        let mean = Tensor::from_slice(&[0.0, 0.0], &[2], &Device::Cpu).unwrap();
+        let var = Tensor::from_slice(&[1.0, 1.0], &[2], &Device::Cpu).unwrap();
         let gaussian: GaussianDistribution = GaussianDistribution::new(mean, var);
 
-        let entropy = gaussian.entropy();
+        let entropy: f64 = gaussian.entropy().unwrap().to_vec0().unwrap();
         let expected_entropy: f64 = 1.418938533 * 2.0;
-        assert!((entropy.double_value(&[]) - expected_entropy).abs() < 1e-6);
+        assert!((entropy - expected_entropy).abs() < 1e-6);
     }
 }

@@ -1,6 +1,6 @@
 use crate::memory::{Experience, ReplayBuffer};
 use std::rc::Rc;
-use tch::Tensor;
+use candle_core::Tensor;
 
 pub struct ShortMemory {
     replay_buffer: ReplayBuffer,
