@@ -1,4 +1,4 @@
-//mod misc;
+mod misc;
 
 //pub mod agents;
 //pub mod explorers;
