@@ -1,9 +1,9 @@
 use crate::misc::bounded_vec_deque::BoundedVecDeque;
 use crate::misc::cumsum;
 use crate::misc::random_access_queue::RandomAccessQueue;
+use candle_core::Tensor;
 use std::cell::RefCell;
 use std::rc::Rc;
-use candle_core::{NoGradGuard, Tensor};
 
 pub struct ReplayBuffer {
     memory: RandomAccessQueue<Rc<Experience>>,
@@ -116,7 +116,7 @@ impl ReplayBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use candle_core::Tensor;
+    use candle_core::{Device, Tensor};
 
     #[test]
     fn test_replay_buffer_new() {
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn test_replay_buffer_append_and_len() {
         let mut buffer = ReplayBuffer::new(100, 1);
-        let state = Tensor::from_slice(&[1.0]);
+        let state = Tensor::from_slice(&[1.0], &[1], &Device::Cpu).unwrap();
         buffer.append(state.clone(), None, 1.0, false, 1.0);
         assert_eq!(buffer.len(), 0);
         buffer.append(state.clone(), None, 1.0, false, 1.0);
@@ -140,7 +140,7 @@ mod tests {
     fn test_replay_buffer_sample() {
         let mut buffer = ReplayBuffer::new(100, 5);
         for i in 0..10 {
-            let state = Tensor::from_slice(&[i as f64]);
+            let state = Tensor::from_slice(&[i as f64], &[1], &Device::Cpu).unwrap();
             buffer.append(state, None, i as f64, false, 1.0);
         }
         let samples = buffer.sample(3, false);
@@ -151,7 +151,7 @@ mod tests {
     fn test_replay_buffer_terminal_state() {
         let mut buffer = ReplayBuffer::new(100, 5);
         for i in 0..5 {
-            let state = Tensor::from_slice(&[i as f64]);
+            let state = Tensor::from_slice(&[i as f64], &[1], &Device::Cpu).unwrap();
             buffer.append(state, None, i as f64, i == 4, 1.0);
         }
         assert_eq!(buffer.last_n_experiences.clone().len(), 0);
@@ -160,15 +160,15 @@ mod tests {
     #[test]
     fn test_q_value_and_next_experience_update() {
         let mut buffer = ReplayBuffer::new(100, 2);
-        let state1 = Tensor::from_slice(&[0.0]);
-        let state2 = Tensor::from_slice(&[1.0]);
-        let state3 = Tensor::from_slice(&[2.0]);
-        let state4 = Tensor::from_slice(&[3.0]);
-        let state5 = Tensor::from_slice(&[4.0]);
-        let state6 = Tensor::from_slice(&[5.0]);
-        let state7 = Tensor::from_slice(&[6.0]);
-        let state8 = Tensor::from_slice(&[7.0]);
-        let state9 = Tensor::from_slice(&[8.0]);
+        let state1 = Tensor::from_slice(&[0.0], &[1], &Device::Cpu).unwrap();
+        let state2 = Tensor::from_slice(&[1.0], &[1], &Device::Cpu).unwrap();
+        let state3 = Tensor::from_slice(&[2.0], &[1], &Device::Cpu).unwrap();
+        let state4 = Tensor::from_slice(&[3.0], &[1], &Device::Cpu).unwrap();
+        let state5 = Tensor::from_slice(&[4.0], &[1], &Device::Cpu).unwrap();
+        let state6 = Tensor::from_slice(&[5.0], &[1], &Device::Cpu).unwrap();
+        let state7 = Tensor::from_slice(&[6.0], &[1], &Device::Cpu).unwrap();
+        let state8 = Tensor::from_slice(&[7.0], &[1], &Device::Cpu).unwrap();
+        let state9 = Tensor::from_slice(&[8.0], &[1], &Device::Cpu).unwrap();
 
         buffer.append(state1, None, 0.0, false, 0.9);
         buffer.append(state2, None, 2.0, false, 0.9);
@@ -184,31 +184,31 @@ mod tests {
             let n_step_discounted_reward = *experience.n_step_discounted_reward.borrow();
             let n_step_after_experience = experience.n_step_after_experience.borrow();
             let expected_q_value;
-            if experience.state.double_value(&[]) == 0.0 {
+            if experience.state.to_vec1::<f64>().unwrap()[0] == 0.0 {
                 expected_q_value = 2.0 + 0.9 * 3.0;
                 assert!((n_step_discounted_reward.unwrap() - expected_q_value).abs() < 1e-6);
                 assert!(n_step_after_experience.is_some());
-            } else if experience.state.double_value(&[]) == 1.0 {
+            } else if experience.state.to_vec1::<f64>().unwrap()[0] == 1.0 {
                 expected_q_value = 3.0;
                 assert!((n_step_discounted_reward.unwrap() - expected_q_value).abs() < 1e-6);
                 assert!(n_step_after_experience.is_none());
-            } else if experience.state.double_value(&[]) == 3.0 {
+            } else if experience.state.to_vec1::<f64>().unwrap()[0] == 3.0 {
                 expected_q_value = 0.0;
                 assert!((n_step_discounted_reward.unwrap() - expected_q_value).abs() < 1e-6);
                 assert!(n_step_after_experience.is_some());
-            } else if experience.state.double_value(&[]) == 4.0 {
+            } else if experience.state.to_vec1::<f64>().unwrap()[0] == 4.0 {
                 expected_q_value = 0.0;
                 assert!((n_step_discounted_reward.unwrap() - expected_q_value).abs() < 1e-6);
                 assert!(n_step_after_experience.is_some());
-            } else if experience.state.double_value(&[]) == 5.0 {
+            } else if experience.state.to_vec1::<f64>().unwrap()[0] == 5.0 {
                 expected_q_value = 0.0;
                 assert!((n_step_discounted_reward.unwrap() - expected_q_value).abs() < 1e-6);
                 assert!(n_step_after_experience.is_some());
-            } else if experience.state.double_value(&[]) == 6.0 {
+            } else if experience.state.to_vec1::<f64>().unwrap()[0] == 6.0 {
                 expected_q_value = 0.9 * 5.0;
                 assert!((n_step_discounted_reward.unwrap() - expected_q_value).abs() < 1e-6);
                 assert!(n_step_after_experience.is_some());
-            } else if experience.state.double_value(&[]) == 7.0 {
+            } else if experience.state.to_vec1::<f64>().unwrap()[0] == 7.0 {
                 expected_q_value = 5.0;
                 assert!((n_step_discounted_reward.unwrap() - expected_q_value).abs() < 1e-6);
                 assert!(n_step_after_experience.is_none());
