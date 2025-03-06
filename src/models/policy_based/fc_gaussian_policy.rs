@@ -3,8 +3,8 @@ use super::base_policy_network::BasePolicy;
 use crate::misc::weight_initializer::{he_init, xavier_init};
 use crate::prob_distributions::BaseDistribution;
 use crate::prob_distributions::GaussianDistribution;
-use candle_nn::{Init, Linear, LinearConfig, Module};
 use candle_core::{nn, Tensor};
+use candle_nn::{Init, Linear, LinearConfig, Module};
 
 pub struct FCGaussianPolicy {
     layers: Vec<Linear>,
@@ -267,7 +267,10 @@ mod tests {
             1e-3,
         );
 
-        let input = Tensor::randn(&[3, n_input_channels], (candle_core::DType::F32, Device::Cpu));
+        let input = Tensor::randn(
+            &[3, n_input_channels],
+            (candle_core::DType::F32, Device::Cpu),
+        );
         let h = policy.compute_medium_layer(&input);
         let (mean, var) = policy.compute_mean_and_var(&h);
 
@@ -324,7 +327,10 @@ mod tests {
             1e-3,
         );
 
-        let input = Tensor::randn(&[3, n_input_channels], (candle_core::DType::F32, Device::Cpu));
+        let input = Tensor::randn(
+            &[3, n_input_channels],
+            (candle_core::DType::F32, Device::Cpu),
+        );
         let action_distribution = policy.forward(&input).0;
 
         let (mean, var) = action_distribution.params();
