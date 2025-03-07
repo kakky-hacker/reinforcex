@@ -81,7 +81,7 @@ impl FCGaussianPolicy {
         };
         let var_layer = Linear::new(
             vb.get_with_hints(
-                (n_hidden_channels, var_size),
+                (var_size, n_hidden_channels),
                 "weight_var",
                 he_init(n_hidden_channels),
             )
@@ -119,9 +119,8 @@ impl FCGaussianPolicy {
         } else {
             mean
         };
-
         let var = ((1.0 + self.var_layer.forward(&x)?.exp()?)?.log()? + self.min_var)?;
-        let var = var.expand(mean.dims())?;
+        let var = var.broadcast_as(mean.dims())?;
         Ok((mean, var))
     }
 
@@ -131,8 +130,8 @@ impl FCGaussianPolicy {
         }
         let min_action = self.min_action.as_ref().unwrap();
         let max_action = self.max_action.as_ref().unwrap();
-        let scale = ((max_action - min_action)? / 2.0)?;
-        let x_mean = ((max_action + min_action)? / 2.0)?;
+        let scale = ((max_action - min_action)? / 2.0)?.broadcast_as(x.dims())?;
+        let x_mean = ((max_action + min_action)? / 2.0)?.broadcast_as(x.dims())?;
         x.tanh() * scale + x_mean
     }
 }
