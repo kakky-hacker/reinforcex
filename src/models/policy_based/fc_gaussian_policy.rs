@@ -165,11 +165,14 @@ impl FCGaussianPolicyWithValue {
         let value_layer = Linear::new(
             vb.get_with_hints(
                 (n_hidden_channels, 1),
-                "weight_var",
+                "weight_value",
                 he_init(n_hidden_channels),
             )
             .unwrap(),
-            Some(vb.get_with_hints(1, "bias_var", Init::Const(0.0)).unwrap()),
+            Some(
+                vb.get_with_hints(1, "bias_value", Init::Const(0.0))
+                    .unwrap(),
+            ),
         );
 
         let base_policy = FCGaussianPolicy::new(
