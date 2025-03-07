@@ -25,31 +25,40 @@ impl FCQNetwork {
         layers.push(Linear::new(
             vb.get_with_hints(
                 (n_hidden_channels, n_input_channels),
-                "weight1",
+                "weight_input",
                 he_init(n_input_channels),
             )
             .unwrap(),
-            Some(vb.get_with_hints(1, "bias1", Init::Const(0.0)).unwrap()),
+            Some(
+                vb.get_with_hints(1, "bias_input", Init::Const(0.0))
+                    .unwrap(),
+            ),
         ));
-        for _ in 0..n_hidden_layers {
+        for i in 0..n_hidden_layers {
             layers.push(Linear::new(
                 vb.get_with_hints(
                     (n_hidden_channels, n_hidden_channels),
-                    "weight2",
+                    format!("weight_medium_{}", i).as_str(),
                     he_init(n_hidden_channels),
                 )
                 .unwrap(),
-                Some(vb.get_with_hints(1, "bias2", Init::Const(0.0)).unwrap()),
+                Some(
+                    vb.get_with_hints(1, format!("bias_medium_{}", i).as_str(), Init::Const(0.0))
+                        .unwrap(),
+                ),
             ));
         }
         layers.push(Linear::new(
             vb.get_with_hints(
                 (action_size, n_hidden_channels),
-                "weight3",
+                "weight_output",
                 xavier_init(n_hidden_channels, action_size),
             )
             .unwrap(),
-            Some(vb.get_with_hints(1, "bias3", Init::Const(0.0)).unwrap()),
+            Some(
+                vb.get_with_hints(1, "bias_output", Init::Const(0.0))
+                    .unwrap(),
+            ),
         ));
 
         FCQNetwork {
