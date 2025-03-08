@@ -5,7 +5,7 @@ use crate::models::BasePolicy;
 use crate::prob_distributions::BaseDistribution;
 use std::collections::HashSet;
 use std::fs;
-use tch::{nn, no_grad, Device, Tensor};
+use candle_core::{nn, no_grad, Device, Tensor};
 
 pub struct REINFORCE {
     model: Box<dyn BasePolicy>,
@@ -91,14 +91,14 @@ impl REINFORCE {
                 .zip(v_seq.iter())
             {
                 let loss;
-                let g_tensor = tch::no_grad(|| Tensor::from(*g));
+                let g_tensor = candle_core::no_grad(|| Tensor::from(*g));
                 if v.is_none() {
                     loss = (-g_tensor * log_prob - self.beta * entropy) / r_seq.len() as f64;
                 } else {
                     let v_tensor = v.as_ref().unwrap().copy();
                     let advantage = &g_tensor - v_tensor.detach();
                     let actor_loss = -advantage * log_prob - self.beta * entropy;
-                    let critic_loss = (v_tensor - &g_tensor).pow_tensor_scalar(2.0);
+                    let critic_loss = (v_tensor - &g_tensor).powf(2.0);
                     loss = (actor_loss + critic_loss) / r_seq.len() as f64;
                 }
                 losses.push(loss)
@@ -146,7 +146,7 @@ impl REINFORCE {
 
 impl BaseAgent for REINFORCE {
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor {
-        let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
+        let state = batch_states(&vec![obs.clone()], self.model.is_cuda());
 
         // Get action distribution from the model
         let (action_distrib, value) = self.model.forward(&state);
@@ -182,7 +182,7 @@ impl BaseAgent for REINFORCE {
 
     fn act(&self, obs: &Tensor) -> Tensor {
         no_grad(|| {
-            let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
+            let state = batch_states(&vec![obs.clone()], self.model.is_cuda());
 
             // Get action distribution from the model
             let action_distrib: Box<dyn BaseDistribution> = self.model.forward(&state).0;

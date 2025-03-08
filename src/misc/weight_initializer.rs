@@ -1,14 +1,14 @@
-use tch::nn::Init;
+use candle_nn::Init;
 
 /// Xavier Initialization
-pub fn xavier_init(nin: i64, nout: i64) -> Init {
+pub fn xavier_init(nin: usize, nout: usize) -> Init {
     let lo = -(6.0 / (nin + nout) as f64).sqrt();
     let up = (6.0 / (nin + nout) as f64).sqrt();
     Init::Uniform { lo, up }
 }
 
 /// He Initialization
-pub fn he_init(nin: i64) -> Init {
+pub fn he_init(nin: usize) -> Init {
     let mean = 0.0;
     let stdev = (2.0 / nin as f64).sqrt();
     Init::Randn { mean, stdev }
