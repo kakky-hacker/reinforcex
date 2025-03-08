@@ -3,11 +3,12 @@ use crate::explorers::BaseExplorer;
 use crate::memory::ReplayBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::BaseQFunction;
-use candle_core::{nn, no_grad, Device, Tensor};
+use candle_core::{Device, Result, Tensor};
+use candle_nn::optim::Optimizer;
 
-pub struct DQN {
+pub struct DQN<T: Optimizer> {
     model: Box<dyn BaseQFunction>,
-    optimizer: nn::Optimizer,
+    optimizer: T,
     replay_buffer: ReplayBuffer,
     explorer: Box<dyn BaseExplorer>,
     action_size: usize,
@@ -20,10 +21,10 @@ pub struct DQN {
     t: usize,
 }
 
-impl DQN {
+impl<T: Optimizer> DQN<T> {
     pub fn new(
         model: Box<dyn BaseQFunction>,
-        optimizer: nn::Optimizer,
+        optimizer: T,
         action_size: usize,
         batch_size: usize,
         replay_buffer_capacity: usize,
@@ -50,9 +51,9 @@ impl DQN {
         }
     }
 
-    fn _update(&mut self) {
+    fn _update(&mut self) -> Result<()> {
         if self.replay_buffer.len() < self.batch_size {
-            return;
+            return Ok(());
         }
         let experiences = self.replay_buffer.sample(self.batch_size, true);
         let mut states: Vec<Tensor> = vec![];
@@ -78,12 +79,11 @@ impl DQN {
             actions.push(action);
             n_step_discounted_rewards.push(n_step_discounted_reward);
         }
-        let q_values = self._compute_q_values(&n_step_after_states, n_step_discounted_rewards);
-        let pred_q_values = self._compute_pred_q_values(&states, actions);
-        let loss = self._compute_loss(q_values, pred_q_values);
-        self.optimizer.zero_grad();
-        loss.backward();
-        self.optimizer.step();
+        let q_values = self._compute_q_values(&n_step_after_states, n_step_discounted_rewards)?;
+        let pred_q_values = self._compute_pred_q_values(&states, actions)?;
+        let loss = self._compute_loss(q_values, pred_q_values)?;
+        self.optimizer.backward_step(&loss)?;
+        return Ok(());
     }
 
     fn _sync_target_model(&mut self) {
@@ -94,76 +94,76 @@ impl DQN {
         &self,
         n_step_after_states: &Vec<Tensor>,
         n_step_discounted_rewards: Vec<f64>,
-    ) -> Tensor {
+    ) -> Result<Tensor> {
         assert_eq!(n_step_after_states.len(), n_step_discounted_rewards.len());
-        let _states = batch_states(n_step_after_states, self.model.is_cuda());
-        let pred_q_values = self.target_model.forward(&_states);
-        let max_q_values = pred_q_values.max_dim(1, false).0;
+        let _states = batch_states(n_step_after_states, self.model.is_cuda())?;
+        let pred_q_values = self.target_model.forward(&_states)?;
+        let max_q_values = pred_q_values.max(1)?;
         let gamma_n = self.gamma.powi(self.n_steps as i32);
-        let n_step_discounted_rewards_tensor = Tensor::from_slice(&n_step_discounted_rewards);
-        let updated_q_values = max_q_values * gamma_n + n_step_discounted_rewards_tensor;
-        updated_q_values
+        let n_step_discounted_rewards_tensor = Tensor::from_slice(
+            &n_step_discounted_rewards,
+            &[n_step_discounted_rewards.len()],
+            &Device::Cpu,
+        )?;
+        let q_values = (max_q_values * gamma_n as f64 + n_step_discounted_rewards_tensor)?;
+        Ok(q_values)
     }
 
-    fn _compute_pred_q_values(&self, states: &Vec<Tensor>, actions: Vec<Tensor>) -> Tensor {
+    fn _compute_pred_q_values(&self, states: &Vec<Tensor>, actions: Vec<Tensor>) -> Result<Tensor> {
         assert_eq!(states.len(), actions.len());
-        let _states = batch_states(states, self.model.is_cuda());
-        let pred_q_values = self.model.forward(&_states);
-        let actions = Tensor::stack(&actions, 0).to_kind(candle_core::DType::I64);
-        let pred_q_values_selected = pred_q_values.gather(1, &actions, false).squeeze();
-        pred_q_values_selected
+        let _states = batch_states(states, self.model.is_cuda())?;
+        let pred_q_values = self.model.forward(&_states)?;
+        let actions = Tensor::stack(&actions, 0)?.to_dtype(candle_core::DType::U32)?;
+        let pred_q_values_selected = pred_q_values.gather(&actions, 1)?.squeeze(1)?;
+        Ok(pred_q_values_selected)
     }
 
-    fn _compute_loss(&self, q_values: Tensor, pred_q_values: Tensor) -> Tensor {
-        let loss = (q_values - pred_q_values).square().mean(candle_core::DType::F32);
-        loss
+    fn _compute_loss(&self, q_values: Tensor, pred_q_values: Tensor) -> Result<Tensor> {
+        let loss = (q_values - pred_q_values)?.sqr()?.mean_all()?;
+        Ok(loss)
     }
 }
 
-impl BaseAgent for DQN {
-    fn act(&self, obs: &Tensor) -> Tensor {
-        no_grad(|| {
-            let state = batch_states(&vec![obs.clone()], self.model.is_cuda());
-            let q_values = self.model.forward(&state);
-            q_values.argmax(1, false).to_device(Device::Cpu)
-        })
+impl<T: Optimizer> BaseAgent for DQN<T> {
+    fn act(&self, obs: &Tensor) -> Result<Tensor> {
+        let state = batch_states(&vec![obs.clone()], self.model.is_cuda())?.detach();
+        let q_values = self.model.forward(&state)?.detach();
+        let action = q_values.argmax(1)?.to_device(&Device::Cpu)?;
+        Ok(action)
     }
 
-    fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor {
+    fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Result<Tensor> {
         self.t += 1;
-        let state = batch_states(&vec![obs.clone()], self.model.is_cuda());
-        let q_values = self.model.forward(&state);
+        let state = batch_states(&vec![obs.clone()], self.model.is_cuda())?;
+        let q_values = self.model.forward(&state)?;
 
-        let greedy_action_func = || q_values.argmax(1, false).int64_value(&[0]) as usize;
-        let random_action_func = || rand::random::<usize>() % self.action_size;
+        let greedy_action_func =
+            || -> Result<usize> { Ok(q_values.argmax(1)?.to_vec1::<u32>()?[0] as usize) };
+        let random_action_func =
+            || -> Result<usize> { Ok(rand::random::<usize>() % self.action_size) };
 
         let action_idx =
             self.explorer
-                .select_action(self.t, &random_action_func, &greedy_action_func);
-        let action = Tensor::from_slice(&[action_idx as i64])
-            .detach()
-            .to_device(Device::Cpu);
+                .select_action(self.t, &random_action_func, &greedy_action_func)?;
 
-        self.replay_buffer.append(
-            state,
-            Some(action.clone()),
-            reward,
-            false,
-            self.gamma,
-        );
+        let action = Tensor::from_slice(&[action_idx as u32], &[1], &Device::Cpu)?.detach();
+
+        self.replay_buffer
+            .append(state, Some(action.clone()), reward, false, self.gamma);
         if self.t % self.update_interval == 0 {
-            self._update();
+            self._update()?;
         }
         if self.t % self.target_update_interval == 0 {
             self._sync_target_model();
         }
-        action
+        Ok(action)
     }
 
-    fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
-        let state = batch_states(&vec![obs.clone()], self.model.is_cuda());
+    fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) -> Result<()> {
+        let state = batch_states(&vec![obs.clone()], self.model.is_cuda())?;
         self.replay_buffer
             .append(state, None, reward, true, self.gamma);
+        Ok(())
     }
 }
 
@@ -172,13 +172,17 @@ mod tests {
     use super::*;
     use crate::explorers::EpsilonGreedy;
     use crate::models::FCQNetwork;
-    use candle_core::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
+    use candle_core::{DType, Device, Tensor};
+    use candle_nn::{optim, VarBuilder, VarMap};
 
     #[test]
     fn test_dqn_new() {
-        let vs = nn::VarStore::new(Device::Cpu);
-        let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
-        let model = FCQNetwork::new(&vs, 4, 2, 2, Some(64));
+        let var_map = VarMap::new();
+        let device = Device::Cpu;
+        let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
+        let model = FCQNetwork::new(vb, 4, 2, 2, Some(64));
+        let optimizer =
+            optim::AdamW::new(var_map.all_vars(), optim::ParamsAdamW::default()).unwrap();
         let explorer = EpsilonGreedy::new(1.0, 0.1, 1000);
 
         let dqn = DQN::new(
@@ -205,9 +209,15 @@ mod tests {
 
     #[test]
     fn test_dqn_act_and_train() {
-        let vs = nn::VarStore::new(Device::Cpu);
-        let optimizer = nn::Adam::default().build(&vs, 1e-2).unwrap();
-        let model = FCQNetwork::new(&vs, 4, 4, 2, Some(128));
+        let var_map = VarMap::new();
+        let device = Device::Cpu;
+        let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
+        let model = FCQNetwork::new(vb, 4, 4, 2, Some(128));
+        let params = optim::ParamsAdamW {
+            lr: 0.1,
+            ..Default::default()
+        };
+        let optimizer = optim::AdamW::new(var_map.all_vars(), params).unwrap();
         let explorer = EpsilonGreedy::new(1.0, 0.0, 1000);
         let mut dqn = DQN::new(
             Box::new(model),
@@ -224,9 +234,9 @@ mod tests {
 
         let mut reward = 0.0;
         for i in 0..2000 {
-            let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(DType::F32);
-            let action = dqn.act_and_train(&obs, reward);
-            let action_value = i64::from(action.int64_value(&[]));
+            let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[4], &Device::Cpu).unwrap();
+            let action = dqn.act_and_train(&obs, reward).unwrap();
+            let action_value = action.to_vec1::<u32>().unwrap()[0];
             if action_value == 2 {
                 reward = 100.0;
             } else {
@@ -238,12 +248,12 @@ mod tests {
                 assert_eq!(action_value, 2);
             }
         }
-        let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(DType::F32);
-        dqn.stop_episode_and_train(&obs, 1.0);
+        let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[4], &Device::Cpu).unwrap();
+        dqn.stop_episode_and_train(&obs, 1.0).unwrap();
 
         for _ in 0..1000 {
-            let action = dqn.act(&obs);
-            let action_value = i64::from(action.int64_value(&[]));
+            let action = dqn.act(&obs).unwrap();
+            let action_value = action.to_vec1::<u32>().unwrap()[0];
             assert_eq!(action_value, 2);
         }
     }

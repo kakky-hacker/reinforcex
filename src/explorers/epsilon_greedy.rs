@@ -1,4 +1,5 @@
 use super::base_explorer::BaseExplorer;
+use candle_core::Result;
 use rand::Rng;
 
 pub struct EpsilonGreedy {
@@ -23,9 +24,9 @@ impl BaseExplorer for EpsilonGreedy {
     fn select_action(
         &self,
         t: usize,
-        random_action_func: &dyn Fn() -> usize,
-        greedy_action_func: &dyn Fn() -> usize,
-    ) -> usize {
+        random_action_func: &dyn Fn() -> Result<usize>,
+        greedy_action_func: &dyn Fn() -> Result<usize>,
+    ) -> Result<usize> {
         let epsilon;
         if t > self.decay_steps {
             epsilon = self.end_epsilon
@@ -65,34 +66,40 @@ mod tests {
     #[test]
     fn test_select_action_exploration() {
         let explorer = EpsilonGreedy::new(1.0, 1.0, 100);
-        let random_action = || 456;
-        let greedy_action = || 123;
+        let random_action = || -> Result<usize> { Ok(456) };
+        let greedy_action = || -> Result<usize> { Ok(123) };
 
-        let action = explorer.select_action(0, &random_action, &greedy_action);
+        let action = explorer
+            .select_action(0, &random_action, &greedy_action)
+            .unwrap();
         assert_eq!(action, 456);
     }
 
     #[test]
     fn test_select_action_exploitation() {
         let explorer = EpsilonGreedy::new(0.0, 0.0, 100);
-        let random_action = || 456;
-        let greedy_action = || 123;
+        let random_action = || -> Result<usize> { Ok(456) };
+        let greedy_action = || -> Result<usize> { Ok(123) };
 
-        let action = explorer.select_action(50, &random_action, &greedy_action);
+        let action = explorer
+            .select_action(50, &random_action, &greedy_action)
+            .unwrap();
         assert_eq!(action, 123);
     }
 
     #[test]
     fn test_select_action_decay() {
         let explorer = EpsilonGreedy::new(1.0, 0.3, 100);
-        let random_action = || 456;
-        let greedy_action = || 123;
+        let random_action = || -> Result<usize> { Ok(456) };
+        let greedy_action = || -> Result<usize> { Ok(123) };
 
         let mut random_count = 0;
         let mut greedy_count = 0;
 
         for t in 0..100 {
-            let action = explorer.select_action(t, &random_action, &greedy_action);
+            let action = explorer
+                .select_action(t, &random_action, &greedy_action)
+                .unwrap();
             if action == 456 {
                 random_count += 1;
             } else {

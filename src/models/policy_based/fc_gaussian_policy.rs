@@ -221,7 +221,7 @@ mod tests {
     fn test_initialization() {
         let var_map = VarMap::new();
         let device = Device::Cpu;
-        let vb = VarBuilder::from_varmap(&var_map, DType::F64, &device);
+        let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
         let n_input_channels = 4;
         let action_size = 2;
         let n_hidden_layers = 2;
@@ -257,7 +257,7 @@ mod tests {
     fn test_compute_mean_and_var() {
         let var_map = VarMap::new();
         let device = Device::Cpu;
-        let vb = VarBuilder::from_varmap(&var_map, DType::F64, &device);
+        let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
         let n_input_channels = 4;
         let action_size = 6;
         let policy = FCGaussianPolicy::new(
@@ -288,7 +288,7 @@ mod tests {
     fn test_bound_by_tanh() {
         let var_map = VarMap::new();
         let device = Device::Cpu;
-        let vb = VarBuilder::from_varmap(&var_map, DType::F64, &device);
+        let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
         let n_input_channels = 4;
         let action_size = 2;
         let min_action = Tensor::from_slice(&[-1.0], &[], &Device::Cpu).unwrap();
@@ -324,7 +324,7 @@ mod tests {
     fn test_forward() {
         let var_map = VarMap::new();
         let device = Device::Cpu;
-        let vb = VarBuilder::from_varmap(&var_map, DType::F64, &device);
+        let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
         let n_input_channels = 4;
         let action_size = 6;
         let policy = FCGaussianPolicy::new(

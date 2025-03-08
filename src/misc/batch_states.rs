@@ -1,4 +1,4 @@
-use candle_core::{Device, Result, Tensor};
+use candle_core::{DType, Device, Result, Tensor};
 
 /// The default method for making batch of observations.
 /// Args:
@@ -14,7 +14,9 @@ pub(crate) fn batch_states(states: &Vec<Tensor>, is_cuda: bool) -> Result<Tensor
     } else {
         device = Device::Cpu;
     }
-    let res = Tensor::stack(&states, 0)?.to_device(&device)?;
+    let res = Tensor::stack(&states, 0)?
+        .to_dtype(DType::F32)?
+        .to_device(&device)?;
     Ok(res)
 }
 
@@ -32,11 +34,13 @@ mod tests {
         let result = batch_states(&states, false).unwrap();
         assert!(result.device().is_cpu());
 
-        let expected =
-            Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3], &Device::Cpu).unwrap();
+        let expected = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3], &Device::Cpu)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap();
         assert_eq!(
-            result.to_vec2::<f64>().unwrap(),
-            expected.to_vec2::<f64>().unwrap()
+            result.to_vec2::<f32>().unwrap(),
+            expected.to_vec2::<f32>().unwrap()
         );
     }
 

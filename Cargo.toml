@@ -15,7 +15,7 @@ exclude = ["src/examples", "src/main.rs"]
 [dependencies]
 rand = "0.8"
 ndarray = "0.15"
-candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.8.3", features = [] }
+candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.8.3", features = ["cuda"] }
 candle-nn = { git = "https://github.com/huggingface/candle.git", version = "0.8.3" }
 gym = { git = "https://github.com/kakky-hacker/gym-rs.git", branch = "master", version="2.2.1", optional = true }
 

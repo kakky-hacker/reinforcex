@@ -80,7 +80,7 @@ impl BaseQFunction for FCQNetwork {
                 h = h.relu()?;
             }
         }
-        h.reshape(((), self.action_size))
+        h.reshape(((), self.action_size))?.to_dtype(DType::F64)
     }
 
     fn is_cuda(&self) -> bool {
@@ -107,7 +107,7 @@ mod tests {
     fn test_fcqnetwork_forward() {
         let var_map = VarMap::new();
         let device = Device::Cpu;
-        let vb = VarBuilder::from_varmap(&var_map, DType::F64, &device);
+        let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
         let n_input_channels = 4;
         let action_size = 2;
         let n_hidden_layers = 2;
@@ -121,7 +121,10 @@ mod tests {
             n_hidden_channels,
         );
 
-        let input = Tensor::randn(0.0, 1.0, &[1, n_input_channels], &Device::Cpu).unwrap();
+        let input = Tensor::randn(0.0, 1.0, &[1, n_input_channels], &Device::Cpu)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap();
         let output = network.forward(&input).unwrap();
 
         assert_eq!(output.dims(), vec![1, action_size]);
@@ -131,7 +134,7 @@ mod tests {
     fn test_fcqnetwork_clone() {
         let var_map = VarMap::new();
         let device = Device::Cpu;
-        let vb = VarBuilder::from_varmap(&var_map, DType::F64, &device);
+        let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
         let n_input_channels = 4;
         let action_size = 2;
         let n_hidden_layers = 2;
@@ -146,7 +149,10 @@ mod tests {
         );
         let cloned_network = network.clone();
 
-        let input = Tensor::randn(0.0, 1.0, &[1, n_input_channels], &Device::Cpu).unwrap();
+        let input = Tensor::randn(0.0, 1.0, &[1, n_input_channels], &Device::Cpu)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap();
         let output_original = network.forward(&input).unwrap();
         let output_cloned = cloned_network.forward(&input).unwrap();
 
