@@ -96,7 +96,7 @@ impl<T: Optimizer> DQN<T> {
         n_step_discounted_rewards: Vec<f64>,
     ) -> Result<Tensor> {
         assert_eq!(n_step_after_states.len(), n_step_discounted_rewards.len());
-        let _states = batch_states(n_step_after_states, self.model.is_cuda())?;
+        let _states = batch_states(n_step_after_states, self.model.get_device())?;
         let pred_q_values = self
             .target_model
             .forward(&_states)?
@@ -114,7 +114,7 @@ impl<T: Optimizer> DQN<T> {
 
     fn _compute_pred_q_values(&self, states: &Vec<Tensor>, actions: Vec<Tensor>) -> Result<Tensor> {
         assert_eq!(states.len(), actions.len());
-        let _states = batch_states(states, self.model.is_cuda())?;
+        let _states = batch_states(states, self.model.get_device())?;
         let pred_q_values = self.model.forward(&_states)?.to_device(&Device::Cpu)?;
         let actions = Tensor::stack(&actions, 0)?.to_dtype(candle_core::DType::U32)?;
         let pred_q_values_selected = pred_q_values.gather(&actions, 1)?.squeeze(1)?;
@@ -129,7 +129,7 @@ impl<T: Optimizer> DQN<T> {
 
 impl<T: Optimizer> BaseAgent for DQN<T> {
     fn act(&self, obs: &Tensor) -> Result<Tensor> {
-        let state = batch_states(&vec![obs.clone()], self.model.is_cuda())?.detach();
+        let state = batch_states(&vec![obs.clone()], self.model.get_device())?.detach();
         let q_values = self.model.forward(&state)?.detach();
         let action = q_values.argmax(1)?.to_device(&Device::Cpu)?;
         Ok(action)
@@ -137,7 +137,7 @@ impl<T: Optimizer> BaseAgent for DQN<T> {
 
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Result<Tensor> {
         self.t += 1;
-        let state = batch_states(&vec![obs.clone()], self.model.is_cuda())?;
+        let state = batch_states(&vec![obs.clone()], self.model.get_device())?;
         let q_values = self.model.forward(&state)?.to_device(&Device::Cpu)?;
 
         let greedy_action_func =
@@ -163,7 +163,7 @@ impl<T: Optimizer> BaseAgent for DQN<T> {
     }
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) -> Result<()> {
-        let state = batch_states(&vec![obs.clone()], self.model.is_cuda())?;
+        let state = batch_states(&vec![obs.clone()], self.model.get_device())?;
         self.replay_buffer
             .append(state, None, reward, true, self.gamma);
         Ok(())
@@ -213,11 +213,11 @@ mod tests {
     #[test]
     fn test_dqn_act_and_train() {
         let var_map = VarMap::new();
-        let device = Device::Cpu;
+        let device = Device::cuda_if_available(0).unwrap();
         let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
-        let model = FCQNetwork::new(vb, 4, 4, 2, Some(128));
+        let model = FCQNetwork::new(vb, 4, 4, 6, Some(4096));
         let params = optim::ParamsAdamW {
-            lr: 0.1,
+            lr: 0.0001,
             ..Default::default()
         };
         let optimizer = optim::AdamW::new(var_map.all_vars(), params).unwrap();

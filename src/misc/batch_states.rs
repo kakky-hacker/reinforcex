@@ -1,4 +1,4 @@
-use candle_core::{DType, Device, Result, Tensor};
+use candle_core::{cuda::cudarc::driver::result::device, DType, Device, Result, Tensor};
 
 /// The default method for making batch of observations.
 /// Args:
@@ -7,13 +7,7 @@ use candle_core::{DType, Device, Result, Tensor};
 /// Return:
 ///     the object which will be given as input to the model.
 
-pub(crate) fn batch_states(states: &Vec<Tensor>, is_cuda: bool) -> Result<Tensor> {
-    let device;
-    if is_cuda {
-        device = Device::cuda_if_available(0)?;
-    } else {
-        device = Device::Cpu;
-    }
+pub(crate) fn batch_states(states: &Vec<Tensor>, device: &Device) -> Result<Tensor> {
     let res = Tensor::stack(&states, 0)?
         .to_dtype(DType::F32)?
         .to_device(&device)?;
@@ -31,7 +25,7 @@ mod tests {
             Tensor::from_slice(&[4.0, 5.0, 6.0], &[3], &Device::Cpu).unwrap(),
         ];
 
-        let result = batch_states(&states, false).unwrap();
+        let result = batch_states(&states, &Device::Cpu).unwrap();
         assert!(result.device().is_cpu());
 
         let expected = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3], &Device::Cpu)
@@ -52,7 +46,7 @@ mod tests {
                 Tensor::from_slice(&[4.0, 5.0, 6.0], &[3], &Device::Cpu).unwrap(),
             ];
 
-            let result = batch_states(&states, true).unwrap();
+            let result = batch_states(&states, &Device::cuda_if_available(0).unwrap()).unwrap();
 
             assert!(result.device().is_cuda());
         } else {
