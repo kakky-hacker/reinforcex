@@ -84,7 +84,7 @@ impl BaseQFunction for FCQNetwork {
     }
 
     fn is_cuda(&self) -> bool {
-        false
+        self.layers[0].weight().device().is_cuda()
     }
 
     fn clone(&self) -> Box<dyn BaseQFunction> {

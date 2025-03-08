@@ -97,7 +97,10 @@ impl<T: Optimizer> DQN<T> {
     ) -> Result<Tensor> {
         assert_eq!(n_step_after_states.len(), n_step_discounted_rewards.len());
         let _states = batch_states(n_step_after_states, self.model.is_cuda())?;
-        let pred_q_values = self.target_model.forward(&_states)?;
+        let pred_q_values = self
+            .target_model
+            .forward(&_states)?
+            .to_device(&Device::Cpu)?;
         let max_q_values = pred_q_values.max(1)?;
         let gamma_n = self.gamma.powi(self.n_steps as i32);
         let n_step_discounted_rewards_tensor = Tensor::from_slice(
@@ -112,7 +115,7 @@ impl<T: Optimizer> DQN<T> {
     fn _compute_pred_q_values(&self, states: &Vec<Tensor>, actions: Vec<Tensor>) -> Result<Tensor> {
         assert_eq!(states.len(), actions.len());
         let _states = batch_states(states, self.model.is_cuda())?;
-        let pred_q_values = self.model.forward(&_states)?;
+        let pred_q_values = self.model.forward(&_states)?.to_device(&Device::Cpu)?;
         let actions = Tensor::stack(&actions, 0)?.to_dtype(candle_core::DType::U32)?;
         let pred_q_values_selected = pred_q_values.gather(&actions, 1)?.squeeze(1)?;
         Ok(pred_q_values_selected)
@@ -135,7 +138,7 @@ impl<T: Optimizer> BaseAgent for DQN<T> {
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Result<Tensor> {
         self.t += 1;
         let state = batch_states(&vec![obs.clone()], self.model.is_cuda())?;
-        let q_values = self.model.forward(&state)?;
+        let q_values = self.model.forward(&state)?.to_device(&Device::Cpu)?;
 
         let greedy_action_func =
             || -> Result<usize> { Ok(q_values.argmax(1)?.to_vec1::<u32>()?[0] as usize) };

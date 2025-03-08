@@ -144,7 +144,7 @@ impl BasePolicy for FCGaussianPolicy {
     }
 
     fn is_cuda(&self) -> bool {
-        false
+        self.layers[0].weight().device().is_cuda()
     }
 }
 
