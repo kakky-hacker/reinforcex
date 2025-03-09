@@ -281,7 +281,10 @@ mod tests {
             1e-3,
         );
 
-        let input = Tensor::randn(0.0, 1.0, &[3, n_input_channels], &Device::Cpu).unwrap();
+        let input = Tensor::randn(0.0, 1.0, &[3, n_input_channels], &Device::Cpu)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap();
         let h = policy.compute_medium_layer(&input).unwrap();
         let (mean, var) = policy.compute_mean_and_var(&h).unwrap();
 
@@ -289,7 +292,7 @@ mod tests {
         assert_eq!(mean.dims()[1], action_size);
         assert_eq!(var.dims()[0], 3);
         assert_eq!(var.dims()[1], action_size);
-        assert!(var.min_all().unwrap().to_scalar::<f64>().unwrap() >= 1e-3);
+        assert!(var.min_all().unwrap().to_scalar::<f32>().unwrap() >= 1e-3);
     }
 
     #[test]
@@ -299,8 +302,16 @@ mod tests {
         let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
         let n_input_channels = 4;
         let action_size = 2;
-        let min_action = Tensor::from_slice(&[-1.0], &[], &Device::Cpu).unwrap();
-        let max_action = Tensor::from_slice(&[1.0], &[], &Device::Cpu).unwrap();
+        let min_action = Tensor::from_slice(&[-1.0], &[], &Device::Cpu)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap();
+        let max_action = Tensor::from_slice(&[1.0], &[], &Device::Cpu)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap();
 
         let policy = FCGaussianPolicy::new(
             vb,
@@ -315,16 +326,21 @@ mod tests {
             1e-3,
         );
 
-        let unbounded_mean = Tensor::from_slice(&[-2.0, 0.0, 2.0], &[1, 3], &Device::Cpu).unwrap();
+        let unbounded_mean = Tensor::from_slice(&[-2.0, 0.0, 2.0], &[1, 3], &Device::Cpu)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap();
         let bounded_mean = policy.bound_by_tanh(unbounded_mean).unwrap();
 
         assert!(
-            bounded_mean.min_all().unwrap().to_scalar::<f64>().unwrap()
-                >= min_action.to_scalar::<f64>().unwrap()
+            bounded_mean.min_all().unwrap().to_scalar::<f32>().unwrap()
+                >= min_action.to_scalar::<f32>().unwrap()
         );
         assert!(
-            bounded_mean.max_all().unwrap().to_scalar::<f64>().unwrap()
-                <= max_action.to_scalar::<f64>().unwrap()
+            bounded_mean.max_all().unwrap().to_scalar::<f32>().unwrap()
+                <= max_action.to_scalar::<f32>().unwrap()
         );
     }
 
@@ -348,7 +364,10 @@ mod tests {
             1e-3,
         );
 
-        let input = Tensor::randn(0.0, 1.0, &[3, n_input_channels], &Device::Cpu).unwrap();
+        let input = Tensor::randn(0.0, 1.0, &[3, n_input_channels], &Device::Cpu)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap();
         let action_distribution = policy.forward(&input).unwrap().0;
 
         let (mean, var) = action_distribution.params();

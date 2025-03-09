@@ -1,6 +1,8 @@
 use gym::client::MakeOptions;
 extern crate gym;
-use candle_core::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
+use candle_core::{DType, Device, Tensor};
+use candle_nn::optim::Optimizer;
+use candle_nn::{optim, VarBuilder, VarMap};
 use gym::Action;
 use reinforcex::agents::{BaseAgent, DQN};
 use reinforcex::explorers::EpsilonGreedy;
@@ -9,22 +11,27 @@ use reinforcex::models::FCQNetwork;
 pub fn train_cartpole_with_dqn() {
     println!("train_cartpole_with_dqn");
 
-    let device = Device::cuda_if_available();
-    let vs = nn::VarStore::new(device);
+    let var_map = VarMap::new();
+    let device = Device::cuda_if_available(0).unwrap();
+    let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
     let n_input_channels = 4;
     let action_size = 2;
     let n_hidden_layers = 2;
     let n_hidden_channels = Some(128);
 
     let model = Box::new(FCQNetwork::new(
-        &vs,
+        vb,
         n_input_channels,
         action_size,
         n_hidden_layers,
         n_hidden_channels,
     ));
 
-    let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
+    let params = optim::ParamsAdamW {
+        lr: 3e-4,
+        ..Default::default()
+    };
+    let optimizer = optim::AdamW::new(var_map.all_vars(), params).unwrap();
     let explorer = EpsilonGreedy::new(0.5, 0.1, 50000);
     let gamma = 0.97;
     let n_steps = 3;
@@ -62,11 +69,12 @@ pub fn train_cartpole_with_dqn() {
         let mut reward = 0.0;
         let mut obs = vec![0.0; 4];
         for step in 0..10000 {
-            let obs_ = Tensor::from_slice(&obs).to_kind(DType::F32);
-            let action_;
-            action_ = agent.act_and_train(&obs_, reward);
+            let obs_ = Tensor::from_slice(&obs, &[n_input_channels], &Device::Cpu).unwrap();
+            let action = agent.act_and_train(&obs_, reward).unwrap();
             let state = env
-                .step(&Action::Discrete(action_.int64_value(&[]) as usize))
+                .step(&Action::Discrete(
+                    action.to_vec1::<u32>().unwrap()[0] as usize,
+                ))
                 .unwrap();
             obs = state.observation.get_box().unwrap().to_vec();
             if step % 20 == 0 {
@@ -77,7 +85,7 @@ pub fn train_cartpole_with_dqn() {
             env.render();
             total_reward += reward;
             if state.is_done {
-                let obs_ = Tensor::from_slice(&obs).to_kind(DType::F32);
+                let obs_ = Tensor::from_slice(&obs, &[n_input_channels], &Device::Cpu).unwrap();
                 agent.stop_episode_and_train(&obs_, -30.0);
                 break;
             }

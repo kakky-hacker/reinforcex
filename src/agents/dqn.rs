@@ -215,7 +215,7 @@ mod tests {
         let var_map = VarMap::new();
         let device = Device::cuda_if_available(0).unwrap();
         let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
-        let model = FCQNetwork::new(vb, 4, 4, 6, Some(4096));
+        let model = FCQNetwork::new(vb, 4, 4, 3, Some(1024));
         let params = optim::ParamsAdamW {
             lr: 0.0001,
             ..Default::default()
