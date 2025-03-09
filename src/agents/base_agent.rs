@@ -1,25 +1,14 @@
 use std::collections::HashSet;
 use std::fs;
 
-use tch::Tensor;
+use candle_core::{Result, Tensor};
 
 pub trait BaseAgent {
-    fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor;
+    fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Result<Tensor>;
 
-    fn act(&self, obs: &Tensor) -> Tensor;
+    fn act(&self, obs: &Tensor) -> Result<Tensor>;
 
-    fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
-        // Implementation specific logic
-        println!(
-            "Stop episode and train: state = {}, reward = {}",
-            obs, reward
-        );
-    }
-
-    fn stop_episode(&mut self) {
-        // Implementation specific logic
-        println!("Stop episode");
-    }
+    fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) -> Result<()>;
 
     fn get_statistics(&self) -> Vec<(String, f64)> {
         // Implement logic for getting statistics

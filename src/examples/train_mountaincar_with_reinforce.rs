@@ -1,10 +1,10 @@
 use gym::client::MakeOptions;
 extern crate gym;
+use candle_core::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 use gym::Action;
 use ndarray::Array1;
 use reinforcex::agents::{BaseAgent, REINFORCE};
 use reinforcex::models::FCGaussianPolicy;
-use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
 pub fn train_mountaincar_with_reinforce() {
     println!("train_mountaincar_with_reinforce");
@@ -70,7 +70,7 @@ pub fn train_mountaincar_with_reinforce() {
         let mut reward = 0.0;
         let mut obs = vec![0.0; 2];
         for step in 0..10000 {
-            let obs_ = Tensor::from_slice(&obs).to_kind(Kind::Float);
+            let obs_ = Tensor::from_slice(&obs).to_kind(DType::F32);
             let action_;
             action_ = agent.act_and_train(&obs_, reward);
             let array = Array1::from(Vec::<f64>::try_from(action_.view(-1)).unwrap());
@@ -80,7 +80,7 @@ pub fn train_mountaincar_with_reinforce() {
             env.render();
             total_reward += reward;
             if state.is_done || step == 1500 {
-                let obs_ = Tensor::from_slice(&obs).to_kind(Kind::Float);
+                let obs_ = Tensor::from_slice(&obs).to_kind(DType::F32);
                 agent.stop_episode_and_train(&obs_, reward);
                 break;
             }
