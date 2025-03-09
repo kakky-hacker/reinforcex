@@ -146,6 +146,10 @@ impl BasePolicy for FCGaussianPolicy {
     fn is_cuda(&self) -> bool {
         self.layers[0].weight().device().is_cuda()
     }
+
+    fn get_device(&self) -> &Device {
+        self.layers[0].weight().device()
+    }
 }
 
 impl FCGaussianPolicyWithValue {
@@ -209,6 +213,10 @@ impl BasePolicy for FCGaussianPolicyWithValue {
 
     fn is_cuda(&self) -> bool {
         self.base_policy.is_cuda()
+    }
+
+    fn get_device(&self) -> &Device {
+        self.base_policy.get_device()
     }
 }
 

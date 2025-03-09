@@ -105,6 +105,10 @@ impl BasePolicy for FCSoftmaxPolicy {
     fn is_cuda(&self) -> bool {
         self.layers[0].weight().device().is_cuda()
     }
+
+    fn get_device(&self) -> &Device {
+        self.layers[0].weight().device()
+    }
 }
 
 impl FCSoftmaxPolicyWithValue {
@@ -162,5 +166,9 @@ impl BasePolicy for FCSoftmaxPolicyWithValue {
 
     fn is_cuda(&self) -> bool {
         self.base_policy.is_cuda()
+    }
+
+    fn get_device(&self) -> &Device {
+        self.base_policy.get_device()
     }
 }
