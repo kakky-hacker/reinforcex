@@ -1,6 +1,4 @@
-mod replay_buffer;
-mod short_memory;
+mod transition_buffer;
 
-pub use replay_buffer::Experience;
-pub use replay_buffer::ReplayBuffer;
-pub use short_memory::ShortMemory;
+pub use transition_buffer::Experience;
+pub use transition_buffer::TransitionBuffer;

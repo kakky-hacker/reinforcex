@@ -1,6 +1,6 @@
 use super::base_agent::BaseAgent;
 use crate::explorers::BaseExplorer;
-use crate::memory::ReplayBuffer;
+use crate::memory::TransitionBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::BaseQFunction;
 use tch::{nn, no_grad, Device, Tensor};
@@ -8,7 +8,7 @@ use tch::{nn, no_grad, Device, Tensor};
 pub struct DQN {
     model: Box<dyn BaseQFunction>,
     optimizer: nn::Optimizer,
-    replay_buffer: ReplayBuffer,
+    transition_buffer: TransitionBuffer,
     explorer: Box<dyn BaseExplorer>,
     action_size: usize,
     batch_size: usize,
@@ -37,7 +37,7 @@ impl DQN {
         DQN {
             model,
             optimizer,
-            replay_buffer: ReplayBuffer::new(replay_buffer_capacity, n_steps),
+            transition_buffer: TransitionBuffer::new(replay_buffer_capacity, n_steps),
             explorer,
             action_size,
             batch_size,
@@ -51,10 +51,10 @@ impl DQN {
     }
 
     fn _update(&mut self) {
-        if self.replay_buffer.len() < self.batch_size {
+        if self.transition_buffer.len() < self.batch_size {
             return;
         }
-        let experiences = self.replay_buffer.sample(self.batch_size, true);
+        let experiences = self.transition_buffer.sample(self.batch_size, true);
         let mut states: Vec<Tensor> = vec![];
         let mut n_step_after_states: Vec<Tensor> = vec![];
         let mut actions: Vec<Tensor> = vec![];
@@ -144,7 +144,7 @@ impl BaseAgent for DQN {
             .detach()
             .to_device(Device::Cpu);
 
-        self.replay_buffer.append(
+        self.transition_buffer.append(
             state,
             Some(action.shallow_clone()),
             reward,
@@ -162,7 +162,7 @@ impl BaseAgent for DQN {
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
-        self.replay_buffer
+        self.transition_buffer
             .append(state, None, reward, true, self.gamma);
     }
 }

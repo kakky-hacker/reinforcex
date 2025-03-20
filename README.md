@@ -18,7 +18,7 @@ cargo add reinforcex
 | --- | --- |
 | REINFORCE | Done |
 | DQN | Done |
-| PPO | Not yet |
+| PPO | WIP |
 | SAC | Not yet |
 
 # API

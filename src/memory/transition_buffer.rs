@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use tch::{NoGradGuard, Tensor};
 
-pub struct ReplayBuffer {
+pub struct TransitionBuffer {
     memory: RandomAccessQueue<Rc<Experience>>,
     last_n_experiences: BoundedVecDeque<Rc<Experience>>,
 }
@@ -18,11 +18,11 @@ pub struct Experience {
     pub n_step_after_experience: RefCell<Option<Rc<Experience>>>,
 }
 
-impl ReplayBuffer {
+impl TransitionBuffer {
     pub fn new(capacity: usize, n_steps: usize) -> Self {
         assert!(capacity > 0);
         assert!(n_steps > 0);
-        ReplayBuffer {
+        TransitionBuffer {
             memory: RandomAccessQueue::new(capacity),
             last_n_experiences: BoundedVecDeque::new(n_steps),
         }
@@ -120,13 +120,13 @@ mod tests {
 
     #[test]
     fn test_replay_buffer_new() {
-        let buffer = ReplayBuffer::new(100, 5);
+        let buffer = TransitionBuffer::new(100, 5);
         assert_eq!(buffer.len(), 0);
     }
 
     #[test]
     fn test_replay_buffer_append_and_len() {
-        let mut buffer = ReplayBuffer::new(100, 1);
+        let mut buffer = TransitionBuffer::new(100, 1);
         let state = Tensor::from_slice(&[1.0]);
         buffer.append(state.shallow_clone(), None, 1.0, false, 1.0);
         assert_eq!(buffer.len(), 0);
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_replay_buffer_sample() {
-        let mut buffer = ReplayBuffer::new(100, 5);
+        let mut buffer = TransitionBuffer::new(100, 5);
         for i in 0..10 {
             let state = Tensor::from_slice(&[i as f64]);
             buffer.append(state, None, i as f64, false, 1.0);
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_replay_buffer_terminal_state() {
-        let mut buffer = ReplayBuffer::new(100, 5);
+        let mut buffer = TransitionBuffer::new(100, 5);
         for i in 0..5 {
             let state = Tensor::from_slice(&[i as f64]);
             buffer.append(state, None, i as f64, i == 4, 1.0);
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_q_value_and_next_experience_update() {
-        let mut buffer = ReplayBuffer::new(100, 2);
+        let mut buffer = TransitionBuffer::new(100, 2);
         let state1 = Tensor::from_slice(&[0.0]);
         let state2 = Tensor::from_slice(&[1.0]);
         let state3 = Tensor::from_slice(&[2.0]);
