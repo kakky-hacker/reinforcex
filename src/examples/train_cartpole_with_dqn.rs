@@ -31,13 +31,14 @@ pub fn train_cartpole_with_dqn() {
     let batchsize = 16;
     let update_interval = 8;
     let target_update_interval = 100;
+    let replay_buffer_capacity = 2000;
 
     let mut agent = DQN::new(
         model,
         optimizer,
         action_size as usize,
         batchsize,
-        2000,
+        replay_buffer_capacity,
         update_interval,
         target_update_interval,
         Box::new(explorer),
@@ -57,11 +58,15 @@ pub fn train_cartpole_with_dqn() {
         .expect("Unable to create environment");
 
     let mut total_reward = 0.0;
-    for episode in 1..1000000 {
+    let mut total_steps = 0;
+    let log_interval = 100;
+    let max_step = 500;
+    let max_episode = 10000;
+    for episode in 1..max_episode {
         env.reset(None).unwrap();
         let mut reward = 0.0;
         let mut obs = vec![0.0; 4];
-        for step in 0..10000 {
+        for step in 1..max_step {
             let obs_ = Tensor::from_slice(&obs).to_kind(Kind::Float);
             let action_;
             action_ = agent.act_and_train(&obs_, reward);
@@ -74,21 +79,27 @@ pub fn train_cartpole_with_dqn() {
             } else {
                 reward = 0.0;
             }
-            env.render();
-            total_reward += reward;
-            if state.is_done {
+            if state.is_done || step == max_step {
                 let obs_ = Tensor::from_slice(&obs).to_kind(Kind::Float);
-                agent.stop_episode_and_train(&obs_, -30.0);
+                if step != max_step {
+                    reward = -30.0;
+                }
+                agent.stop_episode_and_train(&obs_, reward);
                 break;
             }
+            env.render();
+            total_reward += reward;
+            total_steps += 1;
         }
-        if episode % 100 == 0 {
+        if episode % log_interval == 0 {
             println!(
-                "{} episode, average reward:{}",
+                "{} episode, average reward:{}, average steps:{}",
                 episode,
-                total_reward / 100 as f64
+                total_reward / log_interval as f64,
+                total_steps / log_interval,
             );
             total_reward = 0.0;
+            total_steps = 0;
         }
     }
     env.close();
