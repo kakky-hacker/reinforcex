@@ -1,6 +1,7 @@
 use crate::misc::bounded_vec_deque::BoundedVecDeque;
 use crate::misc::cumsum;
 use crate::misc::random_access_queue::RandomAccessQueue;
+use crate::prob_distributions::BaseDistribution;
 use std::cell::RefCell;
 use std::rc::Rc;
 use tch::{NoGradGuard, Tensor};
