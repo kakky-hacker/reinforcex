@@ -1,32 +1,39 @@
 use super::base_distribution::BaseDistribution;
-use tch::Tensor;
+use tch::{Kind, Tensor};
 
 pub struct SoftmaxDistribution {
     logits: Tensor,
     beta: f64,
     min_prob: f64,
-    n: f64,
+    n_classes: i64,
 }
 
 impl SoftmaxDistribution {
     pub fn new(logits: Tensor, beta: f64, min_prob: f64) -> Self {
-        let n = logits.size()[1] as f64;
-        assert!(min_prob * n <= 1.0, "Invalid min_prob value");
+        assert!(
+            logits.dim() == 2,
+            "Logits must be 2D: (batch_size, n_classes)"
+        );
+        let n_classes = logits.size()[1];
+        assert!(
+            min_prob * (n_classes as f64) <= 1.0,
+            "Invalid min_prob value"
+        );
         Self {
             logits,
             beta,
             min_prob,
-            n,
+            n_classes,
         }
     }
 
     fn all_prob(&self) -> Tensor {
         let scaled_logits = &self.logits * self.beta;
+        let softmax = scaled_logits.softmax(-1, Kind::Float);
         if self.min_prob > 0.0 {
-            let softmax = scaled_logits.softmax(-1, tch::Kind::Float);
-            softmax * (1.0 - self.min_prob * self.n) + self.min_prob
+            softmax * (1.0 - self.min_prob * (self.n_classes as f64)) + self.min_prob
         } else {
-            scaled_logits.softmax(-1, tch::Kind::Float)
+            softmax
         }
     }
 
@@ -34,7 +41,7 @@ impl SoftmaxDistribution {
         if self.min_prob > 0.0 {
             self.all_prob().log()
         } else {
-            (&self.logits * self.beta).log_softmax(-1, tch::Kind::Float)
+            (&self.logits * self.beta).log_softmax(-1, Kind::Float)
         }
     }
 }
@@ -46,37 +53,29 @@ impl BaseDistribution for SoftmaxDistribution {
 
     fn kl(&self, q: Box<dyn BaseDistribution>) -> Tensor {
         let q_log_prob = q.log_prob(&self.all_prob());
-        self.all_prob()
-            * (self.all_log_prob() - q_log_prob).sum_dim_intlist(
-                [-1].as_ref(),
-                false,
-                tch::Kind::Float,
-            )
+        (self.all_prob() * (self.all_log_prob() - q_log_prob)).sum_dim_intlist(
+            [-1].as_ref(),
+            false,
+            Kind::Float,
+        )
     }
 
     fn entropy(&self) -> Tensor {
-        -(&self.all_prob() * self.all_log_prob()).sum_dim_intlist(
-            [-1].as_ref(),
-            false,
-            tch::Kind::Float,
-        )
+        -(self.all_prob() * self.all_log_prob()).sum_dim_intlist([-1].as_ref(), false, Kind::Float)
     }
 
     fn sample(&self) -> Tensor {
         let probs = self.all_prob();
-        let noise = Tensor::rand(&probs.size(), (tch::Kind::Float, probs.device())).log() * -1.0;
-        let logits_with_noise = (probs.log() + noise).argmax(-1, false);
-        logits_with_noise
+        let noise = Tensor::rand(&probs.size(), (Kind::Float, probs.device())).log() * -1.0;
+        (probs.log() + noise).argmax(-1, false)
     }
 
     fn prob(&self, x: &Tensor) -> Tensor {
-        self.all_prob().gather(-1, x, false).squeeze_dim(-1)
+        self.all_prob().gather(-1, &x, false).squeeze_dim(-1)
     }
 
     fn log_prob(&self, x: &Tensor) -> Tensor {
-        self.all_log_prob()
-            .gather(-1, &x.reshape(&[1, 1]), false)
-            .squeeze_dim(-1)
+        self.all_log_prob().gather(-1, &x, false).squeeze_dim(-1)
     }
 
     fn copy(&self) -> Box<dyn BaseDistribution> {
@@ -104,7 +103,18 @@ mod tests {
 
         // Test probabilities sum to 1
         let all_prob = dist.all_prob();
+        assert_eq!(all_prob.dim(), 2);
+        assert_eq!(all_prob.size()[0], 1);
         assert!(all_prob.sum(Kind::Float).double_value(&[]) - 1.0 < 1e-6);
+
+        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0]).reshape(&[2, 4]);
+        let dist = SoftmaxDistribution::new(logits, 1.0, 0.0);
+
+        // Test probabilities sum to 1
+        let all_prob = dist.all_prob();
+        assert_eq!(all_prob.dim(), 2);
+        assert_eq!(all_prob.size()[0], 2);
+        // assert!(all_prob.sum(Kind::Float).allclose(&Tensor::from_slice(&[1.0, 1.0]).to_kind(Kind::Float), 1e-6, 1e-6, true));
     }
 
     #[test]
@@ -138,6 +148,11 @@ mod tests {
         assert_eq!(sample.size(), [1]);
         assert!(0 <= sample.double_value(&[]) as i64);
         assert!(sample.double_value(&[]) as i64 <= 3);
+
+        let logits = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0]).reshape(&[2, 4]);
+        let dist = SoftmaxDistribution::new(logits, 1.0, 0.0);
+        let sample = dist.sample();
+        assert_eq!(sample.size(), [2]);
     }
 
     #[test]
