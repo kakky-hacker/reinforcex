@@ -9,6 +9,7 @@ pub struct GaussianDistribution {
 
 impl GaussianDistribution {
     pub fn new(mean: Tensor, var: Tensor) -> Self {
+        assert_eq!(mean.size(), var.size(), "mean and var must have same shape");
         let ln_var = var.log();
         GaussianDistribution { mean, var, ln_var }
     }
@@ -24,13 +25,17 @@ impl BaseDistribution for GaussianDistribution {
         let mean_diff = (&self.mean - q_mean).pow_tensor_scalar(2.0);
         let term1 = q_var.log() - &self.ln_var;
         let term2 = (&self.var + mean_diff) / q_var;
-        0.5 * (term1 + term2 - Tensor::from(1.0)).sum(Kind::Float)
+        0.5 * (term1 + term2 - 1.0).sum_dim_intlist([-1].as_ref(), false, Kind::Float)
     }
 
     fn entropy(&self) -> Tensor {
-        let dim: i64 = self.mean.size()[1];
-        let log_term: f64 = 0.5 * ((2.0 * std::f64::consts::PI).ln() + 1.0);
-        log_term * dim as f64 + 0.5 * self.ln_var.sum(Kind::Float)
+        let dim = self.mean.size()[1];
+        let log_term = 0.5 * ((2.0 * std::f64::consts::PI).ln() + 1.0);
+        log_term * dim as f64
+            + 0.5
+                * self
+                    .ln_var
+                    .sum_dim_intlist([-1].as_ref(), false, Kind::Float)
     }
 
     fn sample(&self) -> Tensor {
@@ -47,15 +52,14 @@ impl BaseDistribution for GaussianDistribution {
         let diff = (x - &self.mean).pow_tensor_scalar(2.0);
         let eltwise_log_prob: Tensor =
             -0.5 * ((2.0 * std::f64::consts::PI).ln() + &self.ln_var + diff / &self.var);
-        eltwise_log_prob.sum_dim_intlist(&[1i64][..], false, Kind::Float)
+        eltwise_log_prob.sum_dim_intlist([-1].as_ref(), false, Kind::Float)
     }
 
     fn copy(&self) -> Box<dyn BaseDistribution> {
-        Box::new(GaussianDistribution {
-            mean: self.mean.shallow_clone(),
-            var: self.var.shallow_clone(),
-            ln_var: self.ln_var.shallow_clone(),
-        })
+        Box::new(Self::new(
+            self.mean.shallow_clone(),
+            self.var.shallow_clone(),
+        ))
     }
 
     fn most_probable(&self) -> Tensor {
