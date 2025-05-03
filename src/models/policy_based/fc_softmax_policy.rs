@@ -142,12 +142,12 @@ impl FCSoftmaxPolicyWithValue {
 impl BasePolicy for FCSoftmaxPolicyWithValue {
     fn forward(&self, x: &Tensor) -> (Box<dyn BaseDistribution>, Option<Tensor>) {
         let h = self.base_policy.compute_medium_layer(x);
-        let logits = self.base_policy.logits_layer.forward(&h).relu();
+        let logits = self.base_policy.logits_layer.forward(&h);
         let value = self.value_layer.forward(&h);
         (
             Box::new(SoftmaxDistribution::new(
                 logits,
-                1.0,
+                0.1,
                 self.base_policy.min_prob,
             )),
             Some(value),
