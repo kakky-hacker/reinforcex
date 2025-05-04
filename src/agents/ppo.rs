@@ -86,14 +86,10 @@ impl PPO {
             let probs = action_distribs.prob(&_batch_actions);
             let ratio = probs / &_batch_probs;
             let clipped_ratio = ratio.clip(1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon);
+            // TODO: shouldn't detach td_errors?
             let policy_loss: Tensor =
                 -1.0 * (clipped_ratio * td_errors.detach()).minimum(&(ratio * td_errors.detach()));
-            let loss = policy_loss.sum(Kind::Double)
-                + td_errors
-                    .square()
-                    .mean(tch::Kind::Float)
-                    .sum(Kind::Double)
-                    .sqrt();
+            let loss = policy_loss.sum(Kind::Double) + td_errors.square().mean(tch::Kind::Float);
             self.optimizer.zero_grad();
             loss.backward();
             self.optimizer.step();
