@@ -12,6 +12,7 @@ pub struct PPO {
     update_interval: usize,
     transition_buffer: TransitionBuffer,
     epoch: usize,
+    clip_epsilon: f64,
     n_steps: usize,
     t: usize,
 }
@@ -24,6 +25,7 @@ impl PPO {
         update_interval: usize,
         n_steps: usize,
         epoch: usize,
+        clip_epsilon: f64,
     ) -> Self {
         PPO {
             model,
@@ -32,6 +34,7 @@ impl PPO {
             update_interval,
             transition_buffer: TransitionBuffer::new(100000000, n_steps),
             epoch,
+            clip_epsilon,
             n_steps,
             t: 0,
         }
@@ -67,6 +70,12 @@ impl PPO {
         let _batch_states = batch_states(&states, self.model.is_cuda());
         let _batch_n_step_after_states = batch_states(&n_step_after_states, self.model.is_cuda());
         let _batch_actions = batch_states(&actions, self.model.is_cuda());
+        let _batch_probs = self
+            .model
+            .forward(&_batch_states)
+            .0
+            .prob(&_batch_actions)
+            .detach();
         for _ in 0..self.epoch {
             let (action_distribs, values) = self.model.forward(&_batch_states);
             let td_errors = self._compute_td_error(
@@ -74,9 +83,12 @@ impl PPO {
                 &n_step_discounted_rewards,
                 &_batch_n_step_after_states,
             );
-            let loss = self
-                ._compute_policy_loss(action_distribs, &_batch_actions, &td_errors)
-                .sum(Kind::Double)
+            let probs = action_distribs.prob(&_batch_actions);
+            let ratio = probs / &_batch_probs;
+            let clipped_ratio = ratio.clip(1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon);
+            let policy_loss: Tensor =
+                -1.0 * (clipped_ratio * td_errors.detach()).minimum(&(ratio * td_errors.detach()));
+            let loss = policy_loss.sum(Kind::Double)
                 + td_errors
                     .square()
                     .mean(tch::Kind::Float)
@@ -99,17 +111,6 @@ impl PPO {
         let gamma_n = self.gamma.powi(self.n_steps as i32);
         let td_error = n_step_discounted_rewards_tensor + pred_values.unwrap() * gamma_n - values;
         td_error
-    }
-
-    fn _compute_policy_loss(
-        &self,
-        action_distribs: Box<dyn BaseDistribution>,
-        actions: &Tensor,
-        td_errors: &Tensor,
-    ) -> Tensor {
-        let log_probs = action_distribs.log_prob(actions);
-        let policy_loss = -1.0 * log_probs * td_errors.detach();
-        policy_loss
     }
 }
 
@@ -165,7 +166,7 @@ mod tests {
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCSoftmaxPolicyWithValue::new(&vs, 4, 2, 2, Some(64), 0.0);
 
-        let ppo = PPO::new(Box::new(model), optimizer, 0.99, 100, 3, 8);
+        let ppo = PPO::new(Box::new(model), optimizer, 0.99, 100, 3, 8, 0.1);
 
         assert_eq!(ppo.update_interval, 100);
         assert_eq!(ppo.epoch, 8);
@@ -180,7 +181,7 @@ mod tests {
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCSoftmaxPolicyWithValue::new(&vs, 4, 4, 2, Some(64), 0.0);
 
-        let mut ppo = PPO::new(Box::new(model), optimizer, 0.5, 50, 1, 8);
+        let mut ppo = PPO::new(Box::new(model), optimizer, 0.5, 50, 1, 8, 0.1);
 
         let mut reward = 0.0;
         for i in 0..2000 {
