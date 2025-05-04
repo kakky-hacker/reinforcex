@@ -18,8 +18,8 @@ cargo add reinforcex
 | --- | --- |
 | REINFORCE | Done |
 | DQN | Done |
-| PPO | WIP |
-| SAC | Not yet |
+| PPO | Done |
+| SAC | WIP |
 
 # API
 Instantiate the agent.
