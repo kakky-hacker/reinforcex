@@ -13,6 +13,7 @@ pub struct PPO {
     transition_buffer: TransitionBuffer,
     epoch: usize,
     clip_epsilon: f64,
+    entropy_coef: f64,
     n_steps: usize,
     t: usize,
 }
@@ -26,6 +27,7 @@ impl PPO {
         n_steps: usize,
         epoch: usize,
         clip_epsilon: f64,
+        entropy_coef: f64,
     ) -> Self {
         PPO {
             model,
@@ -35,6 +37,7 @@ impl PPO {
             transition_buffer: TransitionBuffer::new(100000000, n_steps),
             epoch,
             clip_epsilon,
+            entropy_coef,
             n_steps,
             t: 0,
         }
@@ -89,7 +92,9 @@ impl PPO {
             // TODO: shouldn't detach td_errors?
             let policy_loss: Tensor =
                 -1.0 * (clipped_ratio * td_errors.detach()).minimum(&(ratio * td_errors.detach()));
-            let loss = policy_loss.sum(Kind::Double) + td_errors.square().mean(tch::Kind::Float);
+            let entropy = action_distribs.entropy();
+            let loss = policy_loss.sum(Kind::Double) + td_errors.square().mean(tch::Kind::Float)
+                - self.entropy_coef * entropy.mean(tch::Kind::Float);
             self.optimizer.zero_grad();
             loss.backward();
             self.optimizer.step();
@@ -162,7 +167,7 @@ mod tests {
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCSoftmaxPolicyWithValue::new(&vs, 4, 2, 2, Some(64), 0.0);
 
-        let ppo = PPO::new(Box::new(model), optimizer, 0.99, 100, 3, 8, 0.1);
+        let ppo = PPO::new(Box::new(model), optimizer, 0.99, 100, 3, 8, 0.1, 1.0);
 
         assert_eq!(ppo.update_interval, 100);
         assert_eq!(ppo.epoch, 8);
@@ -177,7 +182,7 @@ mod tests {
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCSoftmaxPolicyWithValue::new(&vs, 4, 4, 2, Some(64), 0.0);
 
-        let mut ppo = PPO::new(Box::new(model), optimizer, 0.5, 50, 1, 8, 0.1);
+        let mut ppo = PPO::new(Box::new(model), optimizer, 0.5, 50, 1, 8, 0.1, 1.0);
 
         let mut reward = 0.0;
         for i in 0..2000 {
