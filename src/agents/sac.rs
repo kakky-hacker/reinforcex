@@ -89,12 +89,10 @@ impl SAC {
 
         let rewards_tensor = Tensor::from_slice(&rewards).to_device(states_batch.device());
 
-        // 次状態での行動と log_prob を取得
         let (next_action_dist, _) = self.actor.forward(&next_states_batch);
         let next_actions = next_action_dist.sample();
         let log_probs = next_action_dist.log_prob(&next_actions);
 
-        // ターゲットQ値計算
         let q1_target = self
             .target_critic1
             .forward(&next_states_batch)
@@ -109,7 +107,6 @@ impl SAC {
         let q_target =
             rewards_tensor + self.gamma * (q_target_min - self.alpha * log_probs).detach();
 
-        // 現在のQ値
         let q1 = self
             .critic1
             .forward(&states_batch)
@@ -128,7 +125,6 @@ impl SAC {
         critic_loss.backward();
         self.critic_optimizer.step();
 
-        // actor の更新
         let (action_dist, _) = self.actor.forward(&states_batch);
         let actions_sampled = action_dist.sample();
         let log_probs = action_dist.log_prob(&actions_sampled);
