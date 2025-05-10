@@ -25,13 +25,13 @@ pub fn train_cartpole_with_ppo() {
         min_prob,
     ));
 
-    let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
-    let gamma = 0.97;
+    let optimizer = nn::Adam::default().build(&vs, 2.5e-4).unwrap();
+    let gamma = 0.99;
     let n_steps = 3;
-    let epoch = 8;
-    let update_interval = 8;
+    let epoch = 4;
+    let update_interval = 32;
     let clip_epsilon = 0.2;
-    let entropy_coef = 1.0;
+    let entropy_coef = 0.01;
 
     let mut agent = PPO::new(
         model,
