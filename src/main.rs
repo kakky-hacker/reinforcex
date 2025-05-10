@@ -3,6 +3,8 @@ use std::env;
 use examples::{
     train_cartpole_with_dqn, train_cartpole_with_reinforce, train_mountaincar_with_reinforce,
 };
+
+use crate::examples::train_cartpole_with_ppo;
 mod examples;
 
 fn main() {
@@ -32,6 +34,8 @@ fn main() {
 
     if env_value == "cartpole" && algo_value == "dqn" {
         train_cartpole_with_dqn();
+    } else if env_value == "cartpole" && algo_value == "ppo" {
+        train_cartpole_with_ppo();
     } else if env_value == "cartpole" && algo_value == "reinforce" {
         train_cartpole_with_reinforce();
     } else if env_value == "mountaincar" && algo_value == "reinforce" {
