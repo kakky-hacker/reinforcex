@@ -17,6 +17,7 @@ pub struct Experience {
     pub reward_for_this_state: f64,
     pub n_step_discounted_reward: RefCell<Option<f64>>,
     pub n_step_after_experience: RefCell<Option<Rc<Experience>>>,
+    pub is_episode_terminal: bool,
 }
 
 impl TransitionBuffer {
@@ -43,6 +44,7 @@ impl TransitionBuffer {
             reward_for_this_state: reward,
             n_step_discounted_reward: RefCell::new(None),
             n_step_after_experience: RefCell::new(None),
+            is_episode_terminal,
         });
 
         if !self.last_n_experiences.is_empty() {
