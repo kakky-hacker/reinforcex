@@ -10,7 +10,7 @@ pub struct TransitionBuffer {
 }
 
 pub struct Memory {
-    memory: RandomAccessQueue<Arc<Experience>>,
+    experiences: RandomAccessQueue<Arc<Experience>>,
     last_n_experiences: BoundedVecDeque<Arc<Experience>>,
 }
 
@@ -31,7 +31,7 @@ impl TransitionBuffer {
         assert!(n_steps > 0);
         Self {
             memory: Arc::new(Mutex::new(Memory {
-                memory: RandomAccessQueue::new(capacity),
+                experiences: RandomAccessQueue::new(capacity),
                 last_n_experiences: BoundedVecDeque::new(n_steps),
             })),
         }
@@ -45,7 +45,7 @@ impl TransitionBuffer {
         is_episode_terminal: bool,
         gamma: f64,
     ) {
-        let mut buffer = self.memory.lock().unwrap();
+        let mut memory = self.memory.lock().unwrap();
 
         let experience = Arc::new(Experience {
             state,
@@ -55,8 +55,8 @@ impl TransitionBuffer {
             n_step_after_experience: Mutex::new(None),
         });
 
-        if !buffer.last_n_experiences.is_empty() {
-            let mut rewards: Vec<f64> = buffer
+        if !memory.last_n_experiences.is_empty() {
+            let mut rewards: Vec<f64> = memory
                 .last_n_experiences
                 .clone()
                 .into_iter()
@@ -65,13 +65,13 @@ impl TransitionBuffer {
                 .collect();
             rewards.push(reward);
             let n_step_discounted_reward = cumsum::cumsum_rev(&rewards, gamma)[0];
-            *buffer
+            *memory
                 .last_n_experiences
                 .front_mut()
                 .n_step_discounted_reward
                 .lock()
                 .unwrap() = Some(n_step_discounted_reward);
-            *buffer
+            *memory
                 .last_n_experiences
                 .front_mut()
                 .n_step_after_experience
@@ -79,13 +79,13 @@ impl TransitionBuffer {
                 .unwrap() = Some(experience.clone());
         }
 
-        let n_step_before = buffer.last_n_experiences.push_back(experience.clone());
+        let n_step_before = memory.last_n_experiences.push_back(experience.clone());
         if let Some(exp) = n_step_before {
-            buffer.memory.append(exp);
+            memory.experiences.append(exp);
         }
 
         if is_episode_terminal {
-            let mut rewards: Vec<f64> = buffer
+            let mut rewards: Vec<f64> = memory
                 .last_n_experiences
                 .clone()
                 .into_iter()
@@ -94,7 +94,7 @@ impl TransitionBuffer {
                 .collect();
             rewards.push(0.0);
             let q_values = cumsum::cumsum_rev(&rewards, gamma);
-            for (exp, &q) in buffer
+            for (exp, &q) in memory
                 .last_n_experiences
                 .clone()
                 .into_iter()
@@ -103,22 +103,22 @@ impl TransitionBuffer {
                 *exp.n_step_discounted_reward.lock().unwrap() = Some(q);
                 *exp.n_step_after_experience.lock().unwrap() = Some(exp.clone());
             }
-            buffer.last_n_experiences.empty();
+            memory.last_n_experiences.empty();
         }
     }
 
     pub fn sample(&self, num_experiences: usize, replacement: bool) -> Vec<Arc<Experience>> {
-        let buffer = self.memory.lock().unwrap();
+        let memory = self.memory.lock().unwrap();
         if replacement {
-            buffer
-                .memory
+            memory
+                .experiences
                 .sample_with_replacement(num_experiences)
                 .into_iter()
                 .cloned()
                 .collect()
         } else {
-            buffer
-                .memory
+            memory
+                .experiences
                 .sample_without_replacement(num_experiences)
                 .into_iter()
                 .cloned()
@@ -127,13 +127,13 @@ impl TransitionBuffer {
     }
 
     pub fn len(&self) -> usize {
-        self.memory.lock().unwrap().memory.len()
+        self.memory.lock().unwrap().experiences.len()
     }
 
     pub fn clear(&self) {
-        let mut buffer = self.memory.lock().unwrap();
-        buffer.memory.clear();
-        buffer.last_n_experiences.empty();
+        let mut memory = self.memory.lock().unwrap();
+        memory.experiences.clear();
+        memory.last_n_experiences.empty();
     }
 }
 
@@ -248,19 +248,32 @@ mod tests {
     }
 
     #[test]
-    fn test_concurrent_appends_with_threads() {
-        let buffer = Arc::new(TransitionBuffer::new(200, 3));
+    fn test_concurrent_append_and_sample_with_threads() {
+        use rayon::prelude::*;
+        use std::{sync::Arc, thread::sleep, time::Duration};
+        use tch::Tensor;
 
-        (0..10).into_par_iter().for_each(|i| {
-            for j in 0..10 {
+        let buffer = Arc::new(TransitionBuffer::new(200, 3)); // internally Arc<Mutex<...>>
+        let n_threads = 10;
+
+        (0..n_threads).into_par_iter().for_each(|i| {
+            for j in 1..100 {
                 let state = Tensor::from_slice(&[i as f64, j as f64]);
                 buffer.append(state, None, 1.0, false, 0.99);
-                std::thread::sleep(Duration::from_millis(1));
+                sleep(Duration::from_millis(1));
+
+                if j % 3 == 0 {
+                    let samples = buffer.sample(3, true);
+                    assert!(samples.len() == 3);
+                    for s in samples {
+                        assert!(s.reward_for_this_state >= 0.0);
+                    }
+                }
             }
         });
 
         assert!(buffer.len() > 0);
-        let samples = buffer.sample(5, false);
+        let samples = buffer.sample(5, true);
         assert_eq!(samples.len(), 5);
     }
 }
