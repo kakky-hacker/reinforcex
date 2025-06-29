@@ -141,7 +141,8 @@ impl TransitionBuffer {
 mod tests {
     use super::*;
     use rayon::prelude::*;
-    use std::{sync::Arc, thread, time::Duration};
+    use std::sync::Arc;
+    use std::time::Duration;
     use tch::Tensor;
 
     #[test]
@@ -248,10 +249,6 @@ mod tests {
 
     #[test]
     fn test_concurrent_appends_with_threads() {
-        use rayon::prelude::*;
-        use std::sync::Arc;
-        use std::time::Duration;
-
         let buffer = Arc::new(TransitionBuffer::new(200, 3));
 
         (0..10).into_par_iter().for_each(|i| {
