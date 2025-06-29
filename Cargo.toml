@@ -18,7 +18,7 @@ tch = {version="0.18.0"}
 torch-sys = {version="0.18.0", features=["download-libtorch"]}
 ndarray = "0.15"
 gym = { git = "https://github.com/kakky-hacker/gym-rs.git", branch = "master", version="2.2.1", optional = true }
-tokio = { version = "1", features = ["time", "macros", "rt-multi-thread"] }
+rayon = "1.8"
 
 [features]
 default = []

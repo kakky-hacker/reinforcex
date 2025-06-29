@@ -22,6 +22,9 @@ pub struct Experience {
     pub n_step_after_experience: Mutex<Option<Arc<Experience>>>,
 }
 
+// Tensor does't have Sync trait, because it has row pointer to C_Tensor.
+unsafe impl Sync for Experience {}
+
 impl TransitionBuffer {
     pub fn new(capacity: usize, n_steps: usize) -> Self {
         assert!(capacity > 0);
@@ -137,9 +140,9 @@ impl TransitionBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rayon::prelude::*;
+    use std::{sync::Arc, thread, time::Duration};
     use tch::Tensor;
-    use tokio::task;
-    use tokio::task::LocalSet;
 
     #[test]
     fn test_replay_buffer_new() {
@@ -243,35 +246,24 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_concurrent_appends() {
-        let local = LocalSet::new();
+    #[test]
+    fn test_concurrent_appends_with_threads() {
+        use rayon::prelude::*;
+        use std::sync::Arc;
+        use std::time::Duration;
 
-        local
-            .run_until(async {
-                let buffer = TransitionBuffer::new(200, 3);
+        let buffer = Arc::new(TransitionBuffer::new(200, 3));
 
-                let tasks: Vec<_> = (0..10)
-                    .map(|i| {
-                        let buffer = buffer.clone();
-                        task::spawn_local(async move {
-                            for j in 0..10 {
-                                let state = tch::Tensor::from_slice(&[i as f64, j as f64]);
-                                buffer.append(state, None, 1.0, false, 0.99);
-                                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                            }
-                        })
-                    })
-                    .collect();
+        (0..10).into_par_iter().for_each(|i| {
+            for j in 0..10 {
+                let state = Tensor::from_slice(&[i as f64, j as f64]);
+                buffer.append(state, None, 1.0, false, 0.99);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
 
-                for t in tasks {
-                    t.await.unwrap();
-                }
-
-                assert!(buffer.len() > 0);
-                let samples = buffer.sample(5, false);
-                assert_eq!(samples.len(), 5);
-            })
-            .await;
+        assert!(buffer.len() > 0);
+        let samples = buffer.sample(5, false);
+        assert_eq!(samples.len(), 5);
     }
 }
