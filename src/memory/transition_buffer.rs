@@ -5,11 +5,11 @@ use std::sync::{Arc, Mutex};
 use tch::Tensor;
 
 #[derive(Clone)]
-pub struct SharedTransitionBuffer {
-    inner: Arc<Mutex<TransitionBuffer>>,
+pub struct TransitionBuffer {
+    memory: Arc<Mutex<Memory>>,
 }
 
-pub struct TransitionBuffer {
+pub struct Memory {
     memory: RandomAccessQueue<Arc<Experience>>,
     last_n_experiences: BoundedVecDeque<Arc<Experience>>,
 }
@@ -22,12 +22,12 @@ pub struct Experience {
     pub n_step_after_experience: Mutex<Option<Arc<Experience>>>,
 }
 
-impl SharedTransitionBuffer {
+impl TransitionBuffer {
     pub fn new(capacity: usize, n_steps: usize) -> Self {
         assert!(capacity > 0);
         assert!(n_steps > 0);
         Self {
-            inner: Arc::new(Mutex::new(TransitionBuffer {
+            memory: Arc::new(Mutex::new(Memory {
                 memory: RandomAccessQueue::new(capacity),
                 last_n_experiences: BoundedVecDeque::new(n_steps),
             })),
@@ -42,7 +42,7 @@ impl SharedTransitionBuffer {
         is_episode_terminal: bool,
         gamma: f64,
     ) {
-        let mut buffer = self.inner.lock().unwrap();
+        let mut buffer = self.memory.lock().unwrap();
 
         let experience = Arc::new(Experience {
             state,
@@ -105,7 +105,7 @@ impl SharedTransitionBuffer {
     }
 
     pub fn sample(&self, num_experiences: usize, replacement: bool) -> Vec<Arc<Experience>> {
-        let buffer = self.inner.lock().unwrap();
+        let buffer = self.memory.lock().unwrap();
         if replacement {
             buffer
                 .memory
@@ -124,11 +124,11 @@ impl SharedTransitionBuffer {
     }
 
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().memory.len()
+        self.memory.lock().unwrap().memory.len()
     }
 
     pub fn clear(&self) {
-        let mut buffer = self.inner.lock().unwrap();
+        let mut buffer = self.memory.lock().unwrap();
         buffer.memory.clear();
         buffer.last_n_experiences.empty();
     }
@@ -137,20 +137,19 @@ impl SharedTransitionBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use tch::Tensor;
     use tokio::task;
     use tokio::task::LocalSet;
 
     #[test]
     fn test_replay_buffer_new() {
-        let buffer = SharedTransitionBuffer::new(100, 5);
+        let buffer = TransitionBuffer::new(100, 5);
         assert_eq!(buffer.len(), 0);
     }
 
     #[test]
     fn test_replay_buffer_append_and_len() {
-        let buffer = SharedTransitionBuffer::new(100, 1);
+        let buffer = TransitionBuffer::new(100, 1);
         let state = Tensor::from_slice(&[1.0]);
         buffer.append(state.shallow_clone(), None, 1.0, false, 1.0);
         assert_eq!(buffer.len(), 0);
@@ -162,7 +161,7 @@ mod tests {
 
     #[test]
     fn test_replay_buffer_sample() {
-        let buffer = SharedTransitionBuffer::new(100, 5);
+        let buffer = TransitionBuffer::new(100, 5);
         for i in 0..10 {
             let state = Tensor::from_slice(&[i as f64]);
             buffer.append(state, None, i as f64, false, 1.0);
@@ -173,18 +172,18 @@ mod tests {
 
     #[test]
     fn test_replay_buffer_terminal_state() {
-        let buffer = SharedTransitionBuffer::new(100, 5);
+        let buffer = TransitionBuffer::new(100, 5);
         for i in 0..5 {
             let state = Tensor::from_slice(&[i as f64]);
             buffer.append(state, None, i as f64, i == 4, 1.0);
         }
-        let inner = buffer.inner.lock().unwrap();
-        assert_eq!(inner.last_n_experiences.clone().len(), 0);
+        let memory = buffer.memory.lock().unwrap();
+        assert_eq!(memory.last_n_experiences.clone().len(), 0);
     }
 
     #[test]
     fn test_q_value_and_next_experience_update() {
-        let buffer = SharedTransitionBuffer::new(100, 2);
+        let buffer = TransitionBuffer::new(100, 2);
         let state1 = Tensor::from_slice(&[0.0]);
         let state2 = Tensor::from_slice(&[1.0]);
         let state3 = Tensor::from_slice(&[2.0]);
@@ -250,7 +249,7 @@ mod tests {
 
         local
             .run_until(async {
-                let buffer = SharedTransitionBuffer::new(200, 3);
+                let buffer = TransitionBuffer::new(200, 3);
 
                 let tasks: Vec<_> = (0..10)
                     .map(|i| {
