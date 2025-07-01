@@ -16,7 +16,6 @@ cargo add reinforcex
 # Algorithms
 | Name | Status |
 | --- | --- |
-| REINFORCE | Done |
 | DQN | Done |
 | PPO | Done |
 | SAC | WIP |
