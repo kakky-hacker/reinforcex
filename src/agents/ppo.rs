@@ -153,6 +153,14 @@ impl BaseAgent for PPO {
         self.transition_buffer
             .append(state, None, reward, true, self.gamma);
     }
+
+    fn get_statistics(&self) -> Vec<(String, f64)> {
+        vec![]
+    }
+
+    fn save(&self, dirname: &str, ancestors: std::collections::HashSet<String>) {}
+
+    fn load(&self, dirname: &str, ancestors: std::collections::HashSet<String>) {}
 }
 
 #[cfg(test)]
