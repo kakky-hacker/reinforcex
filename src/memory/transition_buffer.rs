@@ -49,12 +49,6 @@ impl TransitionBuffer {
         is_episode_terminal: bool,
         gamma: f64,
     ) {
-        let mut memory = self.memory.lock().unwrap();
-        let last_n_experiences = memory
-            .last_n_experiences_by_episode
-            .entry(episode_id)
-            .or_insert_with(|| BoundedVecDeque::new(self.n_steps));
-
         let experience = Arc::new(Experience {
             state,
             action,
@@ -63,45 +57,45 @@ impl TransitionBuffer {
             n_step_after_experience: Mutex::new(None),
         });
 
-        if !last_n_experiences.is_empty() {
-            let mut rewards: Vec<f64> = last_n_experiences
-                .clone()
-                .into_iter()
-                .skip(1)
-                .map(|e| e.reward_for_this_state)
-                .collect();
-            rewards.push(reward);
-            let n_step_discounted_reward = cumsum::cumsum_rev(&rewards, gamma)[0];
-            *last_n_experiences
-                .front_mut()
-                .n_step_discounted_reward
-                .lock()
-                .unwrap() = Some(n_step_discounted_reward);
-            *last_n_experiences
-                .front_mut()
-                .n_step_after_experience
-                .lock()
-                .unwrap() = Some(experience.clone());
-        }
+        let mut memory = self.memory.lock().unwrap();
 
-        let n_step_before = last_n_experiences.push_back(experience.clone());
-        if let Some(exp) = n_step_before {
+        let last_n_experiences = memory
+            .last_n_experiences_by_episode
+            .entry(episode_id)
+            .or_insert_with(|| BoundedVecDeque::new(self.n_steps));
+
+        if let Some(exp) = last_n_experiences.push_back(experience.clone()) {
+            *exp.n_step_discounted_reward.lock().unwrap() = Some(
+                cumsum::cumsum_rev(
+                    last_n_experiences
+                        .clone()
+                        .into_iter()
+                        .map(|e| e.reward_for_this_state)
+                        .collect::<Vec<f64>>()
+                        .as_ref(),
+                    gamma,
+                )[0],
+            );
+            *exp.n_step_after_experience.lock().unwrap() = Some(experience.clone());
             memory.experiences.append(exp);
         }
 
         if is_episode_terminal {
-            if let Some(mut last_n_experiences) =
+            if let Some(last_n_experiences) =
                 memory.last_n_experiences_by_episode.remove(&episode_id)
             {
-                let mut rewards: Vec<f64> = last_n_experiences
+                let mut rewards = last_n_experiences
                     .clone()
                     .into_iter()
                     .skip(1)
                     .map(|e| e.reward_for_this_state)
-                    .collect();
+                    .collect::<Vec<f64>>();
                 rewards.push(0.0);
-                let q_values = cumsum::cumsum_rev(&rewards, gamma);
-                for (exp, &q) in last_n_experiences.clone().into_iter().zip(q_values.iter()) {
+                for (exp, &q) in last_n_experiences
+                    .clone()
+                    .into_iter()
+                    .zip(cumsum::cumsum_rev(&rewards, gamma).iter())
+                {
                     *exp.n_step_discounted_reward.lock().unwrap() = Some(q);
                     *exp.n_step_after_experience.lock().unwrap() = None;
                     memory.experiences.append(exp);
