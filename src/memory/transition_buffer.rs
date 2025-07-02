@@ -13,7 +13,7 @@ pub struct TransitionBuffer {
 
 pub struct Memory {
     experiences: RandomAccessQueue<Arc<Experience>>,
-    last_n_experiences: HashMap<usize, BoundedVecDeque<Arc<Experience>>>,
+    last_n_experiences_by_episode: HashMap<usize, BoundedVecDeque<Arc<Experience>>>,
 }
 
 pub struct Experience {
@@ -34,7 +34,7 @@ impl TransitionBuffer {
         Self {
             memory: Arc::new(Mutex::new(Memory {
                 experiences: RandomAccessQueue::new(capacity),
-                last_n_experiences: HashMap::new(),
+                last_n_experiences_by_episode: HashMap::new(),
             })),
             n_steps,
         }
@@ -50,8 +50,8 @@ impl TransitionBuffer {
         gamma: f64,
     ) {
         let mut memory = self.memory.lock().unwrap();
-        let deque = memory
-            .last_n_experiences
+        let last_n_experiences = memory
+            .last_n_experiences_by_episode
             .entry(episode_id)
             .or_insert_with(|| BoundedVecDeque::new(self.n_steps));
 
@@ -63,8 +63,8 @@ impl TransitionBuffer {
             n_step_after_experience: Mutex::new(None),
         });
 
-        if !deque.is_empty() {
-            let mut rewards: Vec<f64> = deque
+        if !last_n_experiences.is_empty() {
+            let mut rewards: Vec<f64> = last_n_experiences
                 .clone()
                 .into_iter()
                 .skip(1)
@@ -72,19 +72,28 @@ impl TransitionBuffer {
                 .collect();
             rewards.push(reward);
             let n_step_discounted_reward = cumsum::cumsum_rev(&rewards, gamma)[0];
-            *deque.front_mut().n_step_discounted_reward.lock().unwrap() =
-                Some(n_step_discounted_reward);
-            *deque.front_mut().n_step_after_experience.lock().unwrap() = Some(experience.clone());
+            *last_n_experiences
+                .front_mut()
+                .n_step_discounted_reward
+                .lock()
+                .unwrap() = Some(n_step_discounted_reward);
+            *last_n_experiences
+                .front_mut()
+                .n_step_after_experience
+                .lock()
+                .unwrap() = Some(experience.clone());
         }
 
-        let n_step_before = deque.push_back(experience.clone());
+        let n_step_before = last_n_experiences.push_back(experience.clone());
         if let Some(exp) = n_step_before {
             memory.experiences.append(exp);
         }
 
         if is_episode_terminal {
-            if let Some(mut deque) = memory.last_n_experiences.remove(&episode_id) {
-                let mut rewards: Vec<f64> = deque
+            if let Some(mut last_n_experiences) =
+                memory.last_n_experiences_by_episode.remove(&episode_id)
+            {
+                let mut rewards: Vec<f64> = last_n_experiences
                     .clone()
                     .into_iter()
                     .skip(1)
@@ -92,7 +101,7 @@ impl TransitionBuffer {
                     .collect();
                 rewards.push(0.0);
                 let q_values = cumsum::cumsum_rev(&rewards, gamma);
-                for (exp, &q) in deque.clone().into_iter().zip(q_values.iter()) {
+                for (exp, &q) in last_n_experiences.clone().into_iter().zip(q_values.iter()) {
                     *exp.n_step_discounted_reward.lock().unwrap() = Some(q);
                     *exp.n_step_after_experience.lock().unwrap() = None;
                     memory.experiences.append(exp);
@@ -127,7 +136,7 @@ impl TransitionBuffer {
     pub fn clear(&self) {
         let mut memory = self.memory.lock().unwrap();
         memory.experiences.clear();
-        memory.last_n_experiences.clear();
+        memory.last_n_experiences_by_episode.clear();
     }
 }
 
@@ -177,7 +186,7 @@ mod tests {
         let memory = buffer.memory.lock().unwrap();
         assert_eq!(
             memory
-                .last_n_experiences
+                .last_n_experiences_by_episode
                 .get(&0)
                 .map(|v| v.len())
                 .unwrap_or(0),
