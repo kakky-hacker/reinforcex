@@ -40,6 +40,10 @@ where
     pub fn front_mut(&mut self) -> &mut T {
         self.deque.front_mut().unwrap()
     }
+
+    pub fn len(&self) -> usize {
+        self.deque.len()
+    }
 }
 
 #[cfg(test)]
