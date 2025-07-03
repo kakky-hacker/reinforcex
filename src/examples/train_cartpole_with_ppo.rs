@@ -2,7 +2,9 @@ use gym::client::MakeOptions;
 extern crate gym;
 use gym::Action;
 use reinforcex::agents::{BaseAgent, PPO};
+use reinforcex::memory::TransitionBuffer;
 use reinforcex::models::FCSoftmaxPolicyWithValue;
+use std::sync::Arc;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
 pub fn train_cartpole_with_ppo() {
@@ -33,12 +35,14 @@ pub fn train_cartpole_with_ppo() {
     let clip_epsilon = 0.2;
     let entropy_coef = 0.01;
 
+    let transition_buffer = Arc::new(TransitionBuffer::new(100000, n_steps));
+
     let mut agent = PPO::new(
         model,
         optimizer,
+        transition_buffer,
         gamma,
         update_interval,
-        n_steps,
         epoch,
         clip_epsilon,
         entropy_coef,
