@@ -271,9 +271,9 @@ mod tests {
     fn test_concurrent_append_and_sample_with_threads() {
         let buffer = Arc::new(TransitionBuffer::new(200, 3));
         let n_threads = 10;
-        let episode_id = Ulid::new();
 
         (0..n_threads).into_par_iter().for_each(|i| {
+            let episode_id = Ulid::new();
             for j in 1..100 {
                 let state = Tensor::from_slice(&[i as f64, j as f64]);
                 buffer.append(episode_id, state, None, 1.0, false, 0.99);
