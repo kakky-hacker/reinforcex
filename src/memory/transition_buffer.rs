@@ -99,8 +99,11 @@ impl TransitionBuffer {
                     .into_iter()
                     .zip(cumsum::cumsum_rev(&rewards, gamma).iter())
                 {
+                    if exp.is_episode_terminal {
+                        continue;
+                    }
                     *exp.n_step_discounted_reward.lock().unwrap() = Some(q);
-                    *exp.n_step_after_experience.lock().unwrap() = None;
+                    *exp.n_step_after_experience.lock().unwrap() = Some(experience.clone());
                     memory.experiences.append(exp);
                 }
             }
@@ -224,7 +227,7 @@ mod tests {
         buffer.append(episode2_id, state8, None, 0.0, false, 0.9);
         buffer.append(episode2_id, state9, None, 5.0, true, 0.9);
 
-        for experience in buffer.sample(9, false) {
+        for experience in buffer.sample(7, false) {
             let n_step_discounted_reward = *experience.n_step_discounted_reward.lock().unwrap();
             let n_step_after_experience = experience.n_step_after_experience.lock().unwrap();
             let expected_q_value;
@@ -236,11 +239,7 @@ mod tests {
             } else if state_val == 1.0 {
                 expected_q_value = 3.0;
                 assert!((n_step_discounted_reward.unwrap() - expected_q_value).abs() < 1e-6);
-                assert!(n_step_after_experience.is_none());
-            } else if state_val == 2.0 {
-                expected_q_value = 0.0;
-                assert!((n_step_discounted_reward.unwrap() - expected_q_value).abs() < 1e-6);
-                assert!(n_step_after_experience.is_none());
+                assert!(n_step_after_experience.is_some());
             } else if state_val == 3.0 {
                 expected_q_value = 0.0;
                 assert!((n_step_discounted_reward.unwrap() - expected_q_value).abs() < 1e-6);
@@ -260,11 +259,7 @@ mod tests {
             } else if state_val == 7.0 {
                 expected_q_value = 5.0;
                 assert!((n_step_discounted_reward.unwrap() - expected_q_value).abs() < 1e-6);
-                assert!(n_step_after_experience.is_none());
-            } else if state_val == 8.0 {
-                expected_q_value = 0.0;
-                assert!((n_step_discounted_reward.unwrap() - expected_q_value).abs() < 1e-6);
-                assert!(n_step_after_experience.is_none());
+                assert!(n_step_after_experience.is_some());
             } else {
                 panic!("Unexpected state")
             }

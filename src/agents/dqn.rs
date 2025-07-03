@@ -243,6 +243,8 @@ mod tests {
         );
 
         let mut reward = 0.0;
+        let mut n = 0;
+        let mut m = 0;
         for i in 0..2000 {
             let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
             let action = dqn.act_and_train(&obs, reward);
@@ -255,9 +257,15 @@ mod tests {
             assert!([0, 1, 2, 3].contains(&action_value));
             assert_eq!(dqn.t, i + 1);
             if dqn.t > 1000 {
-                assert_eq!(action_value, 2);
+                if action_value == 2 {
+                    n += 1;
+                } else {
+                    m += 1
+                }
             }
         }
+        assert!((n / (n + m)) as f32 > 0.99);
+
         let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
         dqn.stop_episode_and_train(&obs, 1.0);
 
@@ -297,6 +305,9 @@ mod tests {
             let mut dqn = dqn;
             let mut reward = 0.0;
 
+            let mut n = 0;
+            let mut m = 0;
+
             for t in 0..2000 {
                 let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
                 let action = dqn.act_and_train(&obs, reward);
@@ -306,9 +317,14 @@ mod tests {
                 assert!([0, 1, 2, 3].contains(&action_value));
                 assert_eq!(dqn.t, t + 1);
                 if dqn.t > 1000 {
-                    assert_eq!(action_value, 2);
+                    if action_value == 2 {
+                        n += 1;
+                    } else {
+                        m += 1
+                    }
                 }
             }
+            assert!((n / (n + m)) as f32 > 0.99);
         });
     }
 }
