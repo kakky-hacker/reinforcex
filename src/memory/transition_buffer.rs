@@ -135,6 +135,10 @@ impl TransitionBuffer {
         memory.experiences.clear();
         memory.last_n_experiences_by_episode.clear();
     }
+
+    pub fn get_n_steps(&self) -> usize {
+        self.n_steps
+    }
 }
 
 #[cfg(test)]

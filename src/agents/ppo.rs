@@ -2,19 +2,19 @@ use super::base_agent::BaseAgent;
 use crate::memory::TransitionBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::BasePolicy;
+use std::sync::Arc;
 use tch::{nn, no_grad, Device, Kind, Tensor};
 use ulid::Ulid;
 
 pub struct PPO {
     model: Box<dyn BasePolicy>,
     optimizer: nn::Optimizer,
+    transition_buffer: Arc<TransitionBuffer>,
     gamma: f64,
     update_interval: usize,
-    transition_buffer: TransitionBuffer,
     epoch: usize,
     clip_epsilon: f64,
     entropy_coef: f64,
-    n_steps: usize,
     t: usize,
     current_episode_id: Ulid,
 }
@@ -23,9 +23,9 @@ impl PPO {
     pub fn new(
         model: Box<dyn BasePolicy>,
         optimizer: nn::Optimizer,
+        transition_buffer: Arc<TransitionBuffer>,
         gamma: f64,
         update_interval: usize,
-        n_steps: usize,
         epoch: usize,
         clip_epsilon: f64,
         entropy_coef: f64,
@@ -33,13 +33,12 @@ impl PPO {
         PPO {
             model,
             optimizer,
+            transition_buffer,
             gamma,
             update_interval,
-            transition_buffer: TransitionBuffer::new(100000000, n_steps),
             epoch,
             clip_epsilon,
             entropy_coef,
-            n_steps,
             t: 0,
             current_episode_id: Ulid::new(),
         }
@@ -113,7 +112,7 @@ impl PPO {
     ) -> Tensor {
         let (_, pred_values) = self.model.forward(&n_step_after_states);
         let n_step_discounted_rewards_tensor = Tensor::from_slice(&n_step_discounted_rewards);
-        let gamma_n = self.gamma.powi(self.n_steps as i32);
+        let gamma_n = self.gamma.powi(self.transition_buffer.get_n_steps() as i32);
         let td_error = n_step_discounted_rewards_tensor + pred_values.unwrap() * gamma_n - values;
         td_error
     }
@@ -186,13 +185,22 @@ mod tests {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCSoftmaxPolicyWithValue::new(&vs, 4, 2, 2, Some(64), 0.0);
+        let transition_buffer = Arc::new(TransitionBuffer::new(1000, 3));
 
-        let ppo = PPO::new(Box::new(model), optimizer, 0.99, 100, 3, 8, 0.1, 1.0);
+        let ppo = PPO::new(
+            Box::new(model),
+            optimizer,
+            transition_buffer,
+            0.99,
+            100,
+            8,
+            0.1,
+            1.0,
+        );
 
         assert_eq!(ppo.update_interval, 100);
         assert_eq!(ppo.epoch, 8);
         assert_eq!(ppo.gamma, 0.99);
-        assert_eq!(ppo.n_steps, 3);
         assert_eq!(ppo.t, 0);
     }
 
@@ -201,8 +209,18 @@ mod tests {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCSoftmaxPolicyWithValue::new(&vs, 4, 4, 2, Some(64), 0.0);
+        let transition_buffer = Arc::new(TransitionBuffer::new(1000, 1));
 
-        let mut ppo = PPO::new(Box::new(model), optimizer, 0.5, 50, 1, 8, 0.1, 1.0);
+        let mut ppo = PPO::new(
+            Box::new(model),
+            optimizer,
+            transition_buffer,
+            0.5,
+            50,
+            8,
+            0.1,
+            1.0,
+        );
 
         let mut reward = 0.0;
         for i in 0..2000 {

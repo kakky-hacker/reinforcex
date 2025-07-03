@@ -2,6 +2,7 @@ use super::base_agent::BaseAgent;
 use crate::memory::TransitionBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::{BasePolicy, BaseQFunction};
+use std::sync::Arc;
 use tch::{nn, no_grad, Device, Kind, Tensor};
 use ulid::Ulid;
 
@@ -13,7 +14,7 @@ pub struct SAC {
     target_critic2: Box<dyn BaseQFunction>,
     actor_optimizer: nn::Optimizer,
     critic_optimizer: nn::Optimizer,
-    transition_buffer: TransitionBuffer,
+    transition_buffer: Arc<TransitionBuffer>,
     gamma: f64,
     tau: f64,
     alpha: f64,
@@ -31,7 +32,7 @@ impl SAC {
         critic2: Box<dyn BaseQFunction>,
         actor_optimizer: nn::Optimizer,
         critic_optimizer: nn::Optimizer,
-        buffer_capacity: usize,
+        transition_buffer: Arc<TransitionBuffer>,
         gamma: f64,
         tau: f64,
         alpha: f64,
@@ -49,7 +50,7 @@ impl SAC {
             target_critic2,
             actor_optimizer,
             critic_optimizer,
-            transition_buffer: TransitionBuffer::new(buffer_capacity, 1),
+            transition_buffer,
             gamma,
             tau,
             alpha,
