@@ -23,6 +23,7 @@ pub struct Experience {
     pub reward_for_this_state: f64,
     pub n_step_discounted_reward: Mutex<Option<f64>>,
     pub n_step_after_experience: Mutex<Option<Arc<Experience>>>,
+    pub is_episode_terminal: bool,
 }
 
 // Tensor does not implement Sync due to raw pointer, so we promise safety manually
@@ -56,6 +57,7 @@ impl TransitionBuffer {
             reward_for_this_state: reward,
             n_step_discounted_reward: Mutex::new(None),
             n_step_after_experience: Mutex::new(None),
+            is_episode_terminal,
         });
 
         let mut memory = self.memory.lock().unwrap();
