@@ -201,6 +201,7 @@ impl BaseAgent for SAC {
             true,
             self.gamma,
         );
+        self.current_episode_id = Ulid::new();
     }
 
     fn get_statistics(&self) -> Vec<(String, f64)> {
