@@ -4,6 +4,7 @@ use crate::memory::TransitionBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::BaseQFunction;
 use tch::{nn, no_grad, Device, Tensor};
+use ulid::Ulid;
 
 pub struct DQN {
     model: Box<dyn BaseQFunction>,
@@ -18,6 +19,7 @@ pub struct DQN {
     gamma: f64,
     n_steps: usize,
     t: usize,
+    current_episode_id: Ulid,
 }
 
 impl DQN {
@@ -47,6 +49,7 @@ impl DQN {
             gamma,
             n_steps,
             t: 0,
+            current_episode_id: Ulid::new(),
         }
     }
 
@@ -63,7 +66,8 @@ impl DQN {
             let state = experience.state.shallow_clone();
             let n_step_after_state = experience
                 .n_step_after_experience
-                .borrow()
+                .lock()
+                .unwrap()
                 .as_ref()
                 .unwrap()
                 .state
@@ -71,7 +75,8 @@ impl DQN {
             let action = experience.action.as_ref().unwrap().shallow_clone();
             let n_step_discounted_reward = experience
                 .n_step_discounted_reward
-                .borrow()
+                .lock()
+                .unwrap()
                 .unwrap_or(experience.reward_for_this_state);
             states.push(state);
             n_step_after_states.push(n_step_after_state);
@@ -145,6 +150,7 @@ impl BaseAgent for DQN {
             .to_device(Device::Cpu);
 
         self.transition_buffer.append(
+            self.current_episode_id,
             state,
             Some(action.shallow_clone()),
             reward,
@@ -162,8 +168,15 @@ impl BaseAgent for DQN {
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
-        self.transition_buffer
-            .append(state, None, reward, true, self.gamma);
+        self.transition_buffer.append(
+            self.current_episode_id,
+            state,
+            None,
+            reward,
+            true,
+            self.gamma,
+        );
+        self.current_episode_id = Ulid::new();
     }
 }
 

@@ -4,6 +4,7 @@ use crate::misc::random_access_queue::RandomAccessQueue;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tch::Tensor;
+use ulid::Ulid;
 
 #[derive(Clone)]
 pub struct TransitionBuffer {
@@ -13,7 +14,7 @@ pub struct TransitionBuffer {
 
 pub struct Memory {
     experiences: RandomAccessQueue<Arc<Experience>>,
-    last_n_experiences_by_episode: HashMap<usize, BoundedVecDeque<Arc<Experience>>>,
+    last_n_experiences_by_episode: HashMap<Ulid, BoundedVecDeque<Arc<Experience>>>,
 }
 
 pub struct Experience {
@@ -42,7 +43,7 @@ impl TransitionBuffer {
 
     pub fn append(
         &self,
-        episode_id: usize,
+        episode_id: Ulid,
         state: Tensor,
         action: Option<Tensor>,
         reward: f64,
@@ -151,20 +152,22 @@ mod tests {
     fn test_replay_buffer_append_and_len() {
         let buffer = TransitionBuffer::new(100, 1);
         let state = Tensor::from_slice(&[1.0]);
-        buffer.append(0, state.shallow_clone(), None, 1.0, false, 1.0);
+        let episode_id = Ulid::new();
+        buffer.append(episode_id, state.shallow_clone(), None, 1.0, false, 1.0);
         assert_eq!(buffer.len(), 0);
-        buffer.append(0, state.shallow_clone(), None, 1.0, false, 1.0);
+        buffer.append(episode_id, state.shallow_clone(), None, 1.0, false, 1.0);
         assert_eq!(buffer.len(), 1);
-        buffer.append(0, state.shallow_clone(), None, 1.0, false, 1.0);
+        buffer.append(episode_id, state.shallow_clone(), None, 1.0, false, 1.0);
         assert_eq!(buffer.len(), 2);
     }
 
     #[test]
     fn test_replay_buffer_sample() {
         let buffer = TransitionBuffer::new(100, 5);
+        let episode_id = Ulid::new();
         for i in 0..10 {
             let state = Tensor::from_slice(&[i as f64]);
-            buffer.append(0, state, None, i as f64, false, 1.0);
+            buffer.append(episode_id, state, None, i as f64, false, 1.0);
         }
         let samples = buffer.sample(3, false);
         assert_eq!(samples.len(), 3);
@@ -173,15 +176,16 @@ mod tests {
     #[test]
     fn test_replay_buffer_terminal_state() {
         let buffer = TransitionBuffer::new(100, 5);
+        let episode_id = Ulid::new();
         for i in 0..5 {
             let state = Tensor::from_slice(&[i as f64]);
-            buffer.append(0, state, None, i as f64, i == 4, 1.0);
+            buffer.append(episode_id, state, None, i as f64, i == 4, 1.0);
         }
         let memory = buffer.memory.lock().unwrap();
         assert_eq!(
             memory
                 .last_n_experiences_by_episode
-                .get(&0)
+                .get(&episode_id)
                 .map(|v| v.len())
                 .unwrap_or(0),
             0
@@ -201,15 +205,18 @@ mod tests {
         let state8 = Tensor::from_slice(&[7.0]);
         let state9 = Tensor::from_slice(&[8.0]);
 
-        buffer.append(0, state1, None, 0.0, false, 0.9);
-        buffer.append(0, state2, None, 2.0, false, 0.9);
-        buffer.append(0, state3, None, 3.0, true, 0.9);
-        buffer.append(1, state4, None, 0.0, false, 0.9);
-        buffer.append(1, state5, None, 0.0, false, 0.9);
-        buffer.append(1, state6, None, 0.0, false, 0.9);
-        buffer.append(1, state7, None, 0.0, false, 0.9);
-        buffer.append(1, state8, None, 0.0, false, 0.9);
-        buffer.append(1, state9, None, 5.0, true, 0.9);
+        let episode1_id = Ulid::new();
+        let episode2_id = Ulid::new();
+
+        buffer.append(episode1_id, state1, None, 0.0, false, 0.9);
+        buffer.append(episode1_id, state2, None, 2.0, false, 0.9);
+        buffer.append(episode1_id, state3, None, 3.0, true, 0.9);
+        buffer.append(episode2_id, state4, None, 0.0, false, 0.9);
+        buffer.append(episode2_id, state5, None, 0.0, false, 0.9);
+        buffer.append(episode2_id, state6, None, 0.0, false, 0.9);
+        buffer.append(episode2_id, state7, None, 0.0, false, 0.9);
+        buffer.append(episode2_id, state8, None, 0.0, false, 0.9);
+        buffer.append(episode2_id, state9, None, 5.0, true, 0.9);
 
         for experience in buffer.sample(9, false) {
             let n_step_discounted_reward = *experience.n_step_discounted_reward.lock().unwrap();
@@ -262,11 +269,12 @@ mod tests {
     fn test_concurrent_append_and_sample_with_threads() {
         let buffer = Arc::new(TransitionBuffer::new(200, 3));
         let n_threads = 10;
+        let episode_id = Ulid::new();
 
         (0..n_threads).into_par_iter().for_each(|i| {
             for j in 1..100 {
                 let state = Tensor::from_slice(&[i as f64, j as f64]);
-                buffer.append(i, state, None, 1.0, false, 0.99);
+                buffer.append(episode_id, state, None, 1.0, false, 0.99);
                 sleep(Duration::from_millis(1));
 
                 if j % 10 == 0 {
