@@ -14,18 +14,20 @@ cargo add reinforcex
 ```
 
 # Algorithms
-| Name | Status |
-| --- | --- |
-| DQN | Done |
-| PPO | Done |
-| SAC | WIP |
+| Name | Status | Parallel |
+| --- | --- | --- |
+| DQN | Done | Done |
+| PPO | Done | WIP |
+| SAC | WIP | WIP |
 
 # API
 Instantiate the agent.
-```
+```Rust
 use reinforcex::agents::{BaseAgent, DQN};
 use reinforcex::explorers::EpsilonGreedy;
 use reinforcex::models::FCQNetwork;
+use reinforcex::memory::TransitionBuffer;
+use std::sync::Arc;
 
 let device = Device::cuda_if_available();
 let vs = nn::VarStore::new(device);
@@ -42,37 +44,39 @@ let model = Box::new(FCQNetwork::new(
     n_hidden_channels,
 ));
 
-let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
-let explorer = EpsilonGreedy::new(0.5, 0.1, 50000);
 let gamma = 0.97;
 let n_steps = 3;
 let batchsize = 16;
 let update_interval = 8;
 let target_update_interval = 100;
+let replay_buffer_capacity = 2000
+
+let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
+let explorer = EpsilonGreedy::new(0.5, 0.1, 50000);
+let transition_buffer = Arc::new(TransitionBuffer::new(replay_buffer_capacity, n_steps));
 
 let mut agent = DQN::new(
     model,
     optimizer,
+    transition_buffer,
     action_size as usize,
     batchsize,
-    2000,
     update_interval,
     target_update_interval,
     Box::new(explorer),
     gamma,
-    n_steps,
 );
 ```
 
 Methods of agent.
-```
+```Rust
 fn act(&self, obs: &Tensor) -> Tensor;
 fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor;
 fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64);
 ```
 
 Pseudo code for training.
-```
+```Rust
 for episode in 0..max_episode {
   for step in 0..max_step {
     action = agent.act_and_train(&mut self, obs: &Tensor, reward: f64)
@@ -80,6 +84,29 @@ for episode in 0..max_episode {
   }
   agent.stop_episode_and_train(&mut self, obs: &Tensor, reward: f64)
 }
+```
+
+This is a pseudo code for parallel learning.
+TransitionBuffer is shared by all agents.
+```Rust
+use rayon::prelude::*;
+
+let buffer = Arc::new(TransitionBuffer::new(1000, 1));
+
+(0..n_threads).into_par_iter().for_each(|_| {
+    let mut dqn = DQN::new(
+        transition_buffer: Arc::clone(&buffer),
+        ...(other params)...
+    );
+
+    for episode in 0..max_episode {
+        for step in 0..max_step {
+            action = agent.act_and_train(&mut self, obs: &Tensor, reward: f64)
+            obs, reward = env.step(action)
+        }
+        agent.stop_episode_and_train(&mut self, obs: &Tensor, reward: f64)
+    }
+});
 ```
 
 
