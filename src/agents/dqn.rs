@@ -290,7 +290,7 @@ mod tests {
             let model = FCQNetwork::new(&vs, 4, 4, 2, Some(128));
             let opt = nn::Adam::default().build(&vs, 1e-2).unwrap();
             let explorer = EpsilonGreedy::new(1.0, 0.0, 1000);
-            let dqn = DQN::new(
+            let mut dqn = DQN::new(
                 Box::new(model),
                 Arc::clone(&buffer),
                 opt,
@@ -302,7 +302,6 @@ mod tests {
                 0.5,
             );
 
-            let mut dqn = dqn;
             let mut reward = 0.0;
 
             let mut n = 0;
