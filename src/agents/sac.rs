@@ -3,6 +3,7 @@ use crate::memory::TransitionBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::{BasePolicy, BaseQFunction};
 use tch::{nn, no_grad, Device, Kind, Tensor};
+use ulid::Ulid;
 
 pub struct SAC {
     actor: Box<dyn BasePolicy>,
@@ -20,6 +21,7 @@ pub struct SAC {
     update_interval: usize,
     target_update_interval: usize,
     t: usize,
+    current_episode_id: Ulid,
 }
 
 impl SAC {
@@ -55,6 +57,7 @@ impl SAC {
             update_interval,
             target_update_interval,
             t: 0,
+            current_episode_id: Ulid::new(),
         }
     }
 
@@ -73,7 +76,8 @@ impl SAC {
             states.push(exp.state.shallow_clone());
             next_states.push(
                 exp.n_step_after_experience
-                    .borrow()
+                    .lock()
+                    .unwrap()
                     .as_ref()
                     .unwrap()
                     .state
@@ -169,6 +173,7 @@ impl BaseAgent for SAC {
         let (action_dist, _) = self.actor.forward(&state);
         let action = action_dist.sample().to_device(Device::Cpu);
         self.transition_buffer.append(
+            self.current_episode_id,
             state,
             Some(action.shallow_clone()),
             reward,
@@ -188,8 +193,14 @@ impl BaseAgent for SAC {
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(&vec![obs.shallow_clone()], self.actor.is_cuda());
-        self.transition_buffer
-            .append(state, None, reward, true, self.gamma);
+        self.transition_buffer.append(
+            self.current_episode_id,
+            state,
+            None,
+            reward,
+            true,
+            self.gamma,
+        );
     }
 
     fn get_statistics(&self) -> Vec<(String, f64)> {
