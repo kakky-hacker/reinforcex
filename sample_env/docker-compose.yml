@@ -1,0 +1,42 @@
+version: '1'
+services:
+  rl_env_1:
+    build: .
+    ports:
+    - 8001:8000
+  rl_env_2:
+    build: .
+    ports:
+    - 8002:8000
+  rl_env_3:
+    build: .
+    ports:
+    - 8003:8000
+  rl_env_4:
+    build: .
+    ports:
+    - 8004:8000
+  rl_env_5:
+    build: .
+    ports:
+    - 8005:8000
+  rl_env_6:
+    build: .
+    ports:
+    - 8006:8000
+  rl_env_7:
+    build: .
+    ports:
+    - 8007:8000
+  rl_env_8:
+    build: .
+    ports:
+    - 8008:8000
+  rl_env_9:
+    build: .
+    ports:
+    - 8009:8000
+  rl_env_10:
+    build: .
+    ports:
+    - 8010:8000
