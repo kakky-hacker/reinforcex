@@ -1,6 +1,7 @@
 use std::env;
 
 use examples::train_cartpole_with_dqn;
+use examples::train_web_cartpole_with_dqn;
 
 use crate::examples::train_cartpole_with_ppo;
 mod examples;
@@ -31,7 +32,7 @@ fn main() {
     println!("Environment: {}, Algorithm: {}", env_value, algo_value);
 
     if env_value == "cartpole" && algo_value == "dqn" {
-        train_cartpole_with_dqn();
+        train_web_cartpole_with_dqn();
     } else if env_value == "cartpole" && algo_value == "ppo" {
         train_cartpole_with_ppo();
     } else {

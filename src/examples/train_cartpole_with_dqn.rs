@@ -16,7 +16,7 @@ pub fn train_cartpole_with_dqn() {
     let n_input_channels = 4;
     let action_size = 2;
     let n_hidden_layers = 2;
-    let n_hidden_channels = Some(128);
+    let n_hidden_channels = Some(200);
 
     let model = Box::new(FCQNetwork::new(
         &vs,
@@ -27,13 +27,13 @@ pub fn train_cartpole_with_dqn() {
     ));
 
     let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
-    let explorer = EpsilonGreedy::new(0.5, 0.1, 50000);
+    let explorer = EpsilonGreedy::new(0.5, 0.01, 20000);
     let gamma = 0.97;
-    let n_steps = 3;
-    let batchsize = 16;
-    let update_interval = 8;
+    let n_steps = 5;
+    let batchsize = 128;
+    let update_interval = 16;
     let target_update_interval = 100;
-    let replay_buffer_capacity = 2000;
+    let replay_buffer_capacity = 20000;
 
     let transition_buffer = Arc::new(TransitionBuffer::new(replay_buffer_capacity, n_steps));
 
