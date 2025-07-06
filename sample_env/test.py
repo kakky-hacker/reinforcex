@@ -7,7 +7,10 @@ import requests
 def run_episode():
     server_idx = random.randint(1, 4)
     # Reset
-    res = requests.post(f"http://localhost:800{server_idx}/reset")
+    res = requests.post(
+        f"http://localhost:800{server_idx}/reset",
+        json={"env": "CartPole-v1"},
+    )
     data = res.json()
     session_id = data["session_id"]
     obs = data["observation"]

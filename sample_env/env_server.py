@@ -14,6 +14,10 @@ class StepRequest(BaseModel):
     action: int
 
 
+class ResetRequest(BaseModel):
+    env: str
+
+
 class ResetResponse(BaseModel):
     session_id: str
     observation: list
@@ -27,8 +31,8 @@ class StepResponse(BaseModel):
 
 
 @app.post("/reset", response_model=ResetResponse)
-def reset():
-    env = gym.make("CartPole-v1")
+def reset(data: ResetRequest):
+    env = gym.make(data.env)
     obs, _ = env.reset()
     session_id = str(uuid.uuid4())
     environments[session_id] = env
