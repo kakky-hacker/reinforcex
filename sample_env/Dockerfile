@@ -4,7 +4,17 @@ WORKDIR /app
 
 COPY env_server.py .
 
-RUN pip install --no-cache-dir fastapi uvicorn gymnasium
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    swig \
+    cmake \
+    git \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --upgrade pip
+
+RUN pip install --no-cache-dir fastapi uvicorn gymnasium[all]
 
 EXPOSE 8000
 
