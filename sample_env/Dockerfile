@@ -2,9 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY . /app
+COPY env_server.py .
 
-RUN pip install --no-cache-dir fastapi uvicorn gymnasium numpy
+RUN pip install --no-cache-dir fastapi uvicorn gymnasium
 
 EXPOSE 8000
 
