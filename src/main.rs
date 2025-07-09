@@ -1,6 +1,7 @@
 use std::env;
 
 use examples::train_cartpole_with_dqn;
+use examples::train_web_LunarLander_with_dqn;
 use examples::train_web_cartpole_with_dqn;
 
 use crate::examples::train_cartpole_with_ppo;
@@ -35,6 +36,8 @@ fn main() {
         train_web_cartpole_with_dqn();
     } else if env_value == "cartpole" && algo_value == "ppo" {
         train_cartpole_with_ppo();
+    } else if env_value == "Lunar" && algo_value == "dqn" {
+        train_web_LunarLander_with_dqn();
     } else {
         panic!("Invalid env or algo");
     }

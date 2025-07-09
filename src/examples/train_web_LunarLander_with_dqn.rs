@@ -2,12 +2,13 @@ use reinforcex::agents::{BaseAgent, DQN};
 use reinforcex::explorers::EpsilonGreedy;
 use reinforcex::memory::TransitionBuffer;
 use reinforcex::models::FCQNetwork;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rayon::prelude::*;
 use reqwest::blocking::Client;
-use serde::Deserialize;
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
@@ -24,7 +25,12 @@ struct StepResponse {
     done: bool,
 }
 
-fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<TransitionBuffer>) {
+fn run_agent_on_env(
+    env_port: u16,
+    agent_id: usize,
+    shared_buffer: Arc<TransitionBuffer>,
+    reward_log_map: Arc<Mutex<HashMap<usize, Vec<f64>>>>,
+) {
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -35,44 +41,49 @@ fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<Transitio
     // --- Agent Setup ---
     let device = Device::Cpu;
     let vs = nn::VarStore::new(device);
-    let model = Box::new(FCQNetwork::new(&vs, 4, 2, 2, Some(200)));
+    let model = Box::new(FCQNetwork::new(&vs, 8, 4, 2, Some(300)));
     let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
-    let explorer = EpsilonGreedy::new(0.5, 0.0, 20000);
+
+    let explorer = match agent_id {
+        0 => EpsilonGreedy::new(1.0, 0.05, 10000),
+        1 => EpsilonGreedy::new(0.0, 0.0, 10000),
+        2 => EpsilonGreedy::new(0.2, 0.2, 10000),
+        3 => EpsilonGreedy::new(0.3, 0.3, 10000),
+        _ => EpsilonGreedy::new(1.0, 1.0, 10000),
+    };
 
     let mut agent = DQN::new(
         model,
         Arc::clone(&shared_buffer),
         optimizer,
-        2,
+        4,
         128,
-        16,
-        100,
+        4,
+        50,
         Box::new(explorer),
-        0.97,
+        0.99,
     );
 
     // --- Training Loop ---
-    let episodes = 10000;
-    let max_steps = 500;
+    let episodes = 1000;
+    let max_steps = 100000;
     let mut total_reward = 0.0;
-    let mut total_steps = 0;
 
-    let start = Instant::now();
-
-    for episode in 1..episodes {
+    for episode in 1..=episodes {
         // /reset
         let resp = client
             .post(format!("{}/reset", base_url))
-            .json(&serde_json::json!({ "env": "CartPole-v1" }))
+            .json(&serde_json::json!({ "env": "LunarLander-v3" }))
             .send()
             .expect("reset failed")
             .json::<ResetResponse>()
             .expect("reset JSON parse failed");
+
         let mut obs = resp.observation;
         let session_id = resp.session_id;
         let mut reward = 0.0;
 
-        for step in 0..max_steps {
+        for _ in 0..max_steps {
             let obs_tensor = Tensor::from_slice(&obs).to_kind(Kind::Float);
             let action_tensor = agent.act_and_train(&obs_tensor, reward);
             let action = action_tensor.int64_value(&[]) as usize;
@@ -87,16 +98,8 @@ fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<Transitio
                 .expect("step JSON parse failed");
 
             obs = resp.observation;
-            if (step + 1) % 20 == 0 {
-                reward = 5.0;
-            } else {
-                reward = 0.0;
-            }
-            if resp.done && (max_steps - step) > 10 {
-                reward = -30.0;
-            }
+            reward = resp.reward;
             total_reward += reward;
-            total_steps += 1;
 
             if resp.done {
                 let obs_tensor = Tensor::from_slice(&obs).to_kind(Kind::Float);
@@ -105,26 +108,48 @@ fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<Transitio
             }
         }
 
-        if episode % 100 == 0 {
+        if episode % 10 == 0 {
+            let avg_reward = total_reward / 10.0;
             println!(
-                "[Agent {}] Episode {}, Avg Reward: {:.1}, Avg Steps: {}",
-                agent_id,
-                episode,
-                total_reward / 100.0,
-                total_steps / 100,
+                "[Agent {}] Episode {}, Avg Reward: {:.1}",
+                agent_id, episode, avg_reward
             );
+
+            // ログ追加
+            {
+                let mut map = reward_log_map.lock().unwrap();
+                map.entry(agent_id)
+                    .or_insert_with(Vec::new)
+                    .push(avg_reward);
+            }
+
             total_reward = 0.0;
-            total_steps = 0;
         }
     }
 }
 
-pub fn train_web_cartpole_with_dqn() {
-    let shared_buffer = Arc::new(TransitionBuffer::new(300000, 5));
-    let ports: Vec<u16> = (8001..=8004).collect();
+pub fn train_web_LunarLander_with_dqn() {
+    let shared_buffer1 = Arc::new(TransitionBuffer::new(4000, 1));
+    let shared_buffer2 = Arc::new(TransitionBuffer::new(4000, 1));
+    let ports: Vec<u16> = (8001..=8010).collect();
 
-    ports
-        .into_par_iter()
-        .enumerate()
-        .for_each(|(i, port)| run_agent_on_env(port, i, Arc::clone(&shared_buffer)));
+    let reward_log_map: Arc<Mutex<HashMap<usize, Vec<f64>>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    ports.into_par_iter().enumerate().for_each(|(i, port)| {
+        let buffer = if i == 0 {
+            Arc::clone(&shared_buffer1)
+        } else {
+            Arc::clone(&shared_buffer2)
+        };
+
+        let reward_log_map = Arc::clone(&reward_log_map);
+        run_agent_on_env(port, i, buffer, reward_log_map);
+    });
+
+    let map = reward_log_map.lock().unwrap();
+    let json = serde_json::to_string_pretty(&*map).unwrap();
+    println!(
+        "\n==== Final Average Reward Log (per 10 episodes) ====\n{}",
+        json
+    );
 }
