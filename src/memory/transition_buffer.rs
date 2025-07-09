@@ -18,6 +18,7 @@ pub struct Memory {
 }
 
 pub struct Experience {
+    pub episode_id: Ulid,
     pub state: Tensor,
     pub action: Option<Tensor>,
     pub reward_for_this_state: f64,
@@ -52,6 +53,7 @@ impl TransitionBuffer {
         gamma: f64,
     ) {
         let experience = Arc::new(Experience {
+            episode_id,
             state,
             action,
             reward_for_this_state: reward,
