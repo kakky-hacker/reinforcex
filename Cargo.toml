@@ -9,8 +9,12 @@ readme = "README.md"
 keywords = ["rust", "drl"]
 categories = ["algorithms"]
 exclude = ["src/examples", "src/main.rs"]
+build = "src/build.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tonic-build = "0.11"
 
 [dependencies]
 rand = "0.8"
@@ -23,6 +27,10 @@ gym = { git = "https://github.com/kakky-hacker/gym-rs.git", branch = "master", v
 reqwest = { version = "0.11", features = ["blocking", "json"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true}
+tonic = "0.11"
+prost = "0.12"
+tokio = { version = "1.28", features = ["rt-multi-thread", "macros"] }
+futures = "0.3"
 
 [features]
 default = []
