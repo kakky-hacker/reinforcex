@@ -9,6 +9,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::time::Duration;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
@@ -46,10 +47,10 @@ fn run_agent_on_env(
 
     let explorer = match agent_id {
         0 => EpsilonGreedy::new(1.0, 0.05, 10000),
-        1 => EpsilonGreedy::new(0.0, 0.0, 10000),
-        2 => EpsilonGreedy::new(0.2, 0.2, 10000),
-        3 => EpsilonGreedy::new(0.3, 0.3, 10000),
-        _ => EpsilonGreedy::new(1.0, 1.0, 10000),
+        1 => EpsilonGreedy::new(1.0, 0.05, 10000),
+        2 => EpsilonGreedy::new(1.0, 0.05, 10000),
+        3 => EpsilonGreedy::new(1.0, 0.05, 10000),
+        _ => EpsilonGreedy::new(1.0, 0.05, 10000),
     };
 
     let mut agent = DQN::new(
@@ -57,8 +58,8 @@ fn run_agent_on_env(
         Arc::clone(&shared_buffer),
         optimizer,
         4,
-        128,
-        4,
+        64,
+        8,
         50,
         Box::new(explorer),
         0.99,
@@ -68,6 +69,8 @@ fn run_agent_on_env(
     let episodes = 1000;
     let max_steps = 100000;
     let mut total_reward = 0.0;
+
+    let start = Instant::now();
 
     for episode in 1..=episodes {
         // /reset
@@ -111,8 +114,11 @@ fn run_agent_on_env(
         if episode % 10 == 0 {
             let avg_reward = total_reward / 10.0;
             println!(
-                "[Agent {}] Episode {}, Avg Reward: {:.1}",
-                agent_id, episode, avg_reward
+                "[Agent {}] Episode {}, Avg Reward: {:.1}, Elapsed time: {:?}",
+                agent_id,
+                episode,
+                avg_reward,
+                start.elapsed()
             );
 
             // ログ追加
@@ -130,7 +136,7 @@ fn run_agent_on_env(
 
 pub fn train_web_LunarLander_with_dqn() {
     let shared_buffer1 = Arc::new(TransitionBuffer::new(4000, 1));
-    let shared_buffer2 = Arc::new(TransitionBuffer::new(4000, 1));
+    let shared_buffer2 = Arc::new(TransitionBuffer::new(36000, 1));
     let ports: Vec<u16> = (8001..=8010).collect();
 
     let reward_log_map: Arc<Mutex<HashMap<usize, Vec<f64>>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -148,8 +154,5 @@ pub fn train_web_LunarLander_with_dqn() {
 
     let map = reward_log_map.lock().unwrap();
     let json = serde_json::to_string_pretty(&*map).unwrap();
-    println!(
-        "\n==== Final Average Reward Log (per 10 episodes) ====\n{}",
-        json
-    );
+    fs::write("output.json", json).expect("Unable to write file");
 }
