@@ -13,6 +13,7 @@ pub struct PPO {
     gamma: f64,
     update_interval: usize,
     epoch: usize,
+    minibatch_size: usize,
     clip_epsilon: f64,
     entropy_coef: f64,
     t: usize,
@@ -27,9 +28,11 @@ impl PPO {
         gamma: f64,
         update_interval: usize,
         epoch: usize,
+        minibatch_size: usize,
         clip_epsilon: f64,
         entropy_coef: f64,
     ) -> Self {
+        assert!(minibatch_size <= update_interval);
         PPO {
             model,
             optimizer,
@@ -37,6 +40,7 @@ impl PPO {
             gamma,
             update_interval,
             epoch,
+            minibatch_size,
             clip_epsilon,
             entropy_coef,
             t: 0,
@@ -45,62 +49,75 @@ impl PPO {
     }
 
     fn _update(&mut self) {
-        let experiences = self
-            .transition_buffer
-            .sample(self.transition_buffer.len(), false);
-        let mut states: Vec<Tensor> = vec![];
-        let mut n_step_after_states: Vec<Tensor> = vec![];
-        let mut actions: Vec<Tensor> = vec![];
-        let mut n_step_discounted_rewards: Vec<f64> = vec![];
-        for experience in experiences {
-            let state = experience.state.shallow_clone();
-            let n_step_after_state = experience
-                .n_step_after_experience
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .state
-                .shallow_clone();
-            let action = experience.action.as_ref().unwrap().shallow_clone();
-            let n_step_discounted_reward = experience
-                .n_step_discounted_reward
-                .lock()
-                .unwrap()
-                .unwrap_or(experience.reward_for_this_state);
-            states.push(state);
-            n_step_after_states.push(n_step_after_state);
-            actions.push(action);
-            n_step_discounted_rewards.push(n_step_discounted_reward);
-        }
-        let _batch_states = batch_states(&states, self.model.is_cuda());
-        let _batch_n_step_after_states = batch_states(&n_step_after_states, self.model.is_cuda());
-        let _batch_actions = batch_states(&actions, self.model.is_cuda());
-        let _batch_probs = self
-            .model
-            .forward(&_batch_states)
-            .0
-            .prob(&_batch_actions)
-            .detach();
-        for _ in 0..self.epoch {
-            let (action_distribs, values) = self.model.forward(&_batch_states);
-            let td_errors = self._compute_td_error(
-                values.unwrap(),
-                &n_step_discounted_rewards,
-                &_batch_n_step_after_states,
-            );
-            let probs = action_distribs.prob(&_batch_actions);
-            let ratio = probs / &_batch_probs;
-            let clipped_ratio = ratio.clip(1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon);
-            // TODO: shouldn't detach td_errors?
-            let policy_loss: Tensor =
-                -1.0 * (clipped_ratio * td_errors.detach()).minimum(&(ratio * td_errors.detach()));
-            let entropy = action_distribs.entropy();
-            let loss = policy_loss.sum(Kind::Double) + td_errors.square().mean(tch::Kind::Float)
-                - self.entropy_coef * entropy.mean(tch::Kind::Float);
-            self.optimizer.zero_grad();
-            loss.backward();
-            self.optimizer.step();
+        let n_iter = self.transition_buffer.len().div_ceil(self.minibatch_size);
+        let n_data_per_epoch = n_iter * self.minibatch_size;
+        let n_data = n_data_per_epoch * self.epoch;
+        let experiences = (0..n_data.div_ceil(self.transition_buffer.len()))
+            .map(|_| {
+                self.transition_buffer
+                    .sample(self.transition_buffer.len(), false)
+            })
+            .collect::<Vec<_>>()
+            .concat();
+        for i in 0..self.epoch {
+            for j in 0..n_iter {
+                let mut states: Vec<Tensor> = vec![];
+                let mut n_step_after_states: Vec<Tensor> = vec![];
+                let mut actions: Vec<Tensor> = vec![];
+                let mut n_step_discounted_rewards: Vec<f64> = vec![];
+                for experience in &experiences[i * n_iter + j * self.minibatch_size
+                    ..(i + 1) * n_iter + (j + 1) * self.minibatch_size]
+                {
+                    let state = experience.state.shallow_clone();
+                    let n_step_after_state = experience
+                        .n_step_after_experience
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .state
+                        .shallow_clone();
+                    let action = experience.action.as_ref().unwrap().shallow_clone();
+                    let n_step_discounted_reward = experience
+                        .n_step_discounted_reward
+                        .lock()
+                        .unwrap()
+                        .unwrap_or(experience.reward_for_this_state);
+                    states.push(state);
+                    n_step_after_states.push(n_step_after_state);
+                    actions.push(action);
+                    n_step_discounted_rewards.push(n_step_discounted_reward);
+                }
+                let _batch_states = batch_states(&states, self.model.is_cuda());
+                let _batch_n_step_after_states =
+                    batch_states(&n_step_after_states, self.model.is_cuda());
+                let _batch_actions = batch_states(&actions, self.model.is_cuda());
+                let _batch_probs = self
+                    .model
+                    .forward(&_batch_states)
+                    .0
+                    .prob(&_batch_actions)
+                    .detach();
+                let (action_distribs, values) = self.model.forward(&_batch_states);
+                let td_errors = self._compute_td_error(
+                    values.unwrap(),
+                    &n_step_discounted_rewards,
+                    &_batch_n_step_after_states,
+                );
+                let probs = action_distribs.prob(&_batch_actions);
+                let ratio = probs / &_batch_probs;
+                let clipped_ratio = ratio.clip(1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon);
+                // TODO: shouldn't detach td_errors?
+                let policy_loss: Tensor = -1.0
+                    * (clipped_ratio * td_errors.detach()).minimum(&(ratio * td_errors.detach()));
+                let entropy = action_distribs.entropy();
+                let loss = policy_loss.sum(Kind::Double)
+                    + td_errors.square().mean(tch::Kind::Float)
+                    - self.entropy_coef * entropy.mean(tch::Kind::Float);
+                self.optimizer.zero_grad();
+                loss.backward();
+                self.optimizer.step();
+            }
         }
     }
 
@@ -194,6 +211,7 @@ mod tests {
             0.99,
             100,
             8,
+            16,
             0.1,
             1.0,
         );
@@ -216,8 +234,9 @@ mod tests {
             optimizer,
             transition_buffer,
             0.5,
-            50,
-            8,
+            100,
+            3,
+            32,
             0.1,
             1.0,
         );

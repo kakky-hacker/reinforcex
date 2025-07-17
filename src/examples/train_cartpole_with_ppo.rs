@@ -31,7 +31,8 @@ pub fn train_cartpole_with_ppo() {
     let gamma = 0.99;
     let n_steps = 3;
     let epoch = 4;
-    let update_interval = 32;
+    let minibatch_size = 16;
+    let update_interval = 100;
     let clip_epsilon = 0.2;
     let entropy_coef = 0.01;
 
@@ -44,6 +45,7 @@ pub fn train_cartpole_with_ppo() {
         gamma,
         update_interval,
         epoch,
+        minibatch_size,
         clip_epsilon,
         entropy_coef,
     );
