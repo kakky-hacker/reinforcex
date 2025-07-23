@@ -21,6 +21,7 @@ pub struct DQN {
     t: usize,
     current_episode_id: Ulid,
 }
+unsafe impl Send for DQN {}
 
 impl DQN {
     pub fn new(
