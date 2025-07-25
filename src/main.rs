@@ -6,8 +6,22 @@ use examples::train_web_cartpole_with_dqn;
 
 use crate::examples::train_cartpole_with_ppo;
 mod examples;
+use std::ffi::CString;
+use std::ptr::null_mut;
+use tch::Cuda;
+use winapi::um::libloaderapi::LoadLibraryA;
 
-fn main() {
+#[cfg(target_os = "windows")]
+fn load_cuda_dlls() {
+    let path_str = env::var("TORCH_CUDA_DLL").expect("TORCH_CUDA_DLL not set");
+    let c_path = CString::new(path_str).expect("Path contains null byte");
+    unsafe {
+        let handle = LoadLibraryA(c_path.as_ptr());
+    }
+}
+
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = env::args().collect();
 
     let mut env_value = String::new();
@@ -32,12 +46,17 @@ fn main() {
 
     println!("Environment: {}, Algorithm: {}", env_value, algo_value);
 
+    #[cfg(target_os = "windows")]
+    load_cuda_dlls();
+
+    println!("is_cuda: {}", Cuda::is_available());
+
     if env_value == "cartpole" && algo_value == "dqn" {
         train_web_cartpole_with_dqn();
     } else if env_value == "cartpole" && algo_value == "ppo" {
         train_cartpole_with_ppo();
     } else if env_value == "Lunar" && algo_value == "dqn" {
-        train_web_LunarLander_with_dqn();
+        train_web_LunarLander_with_dqn().await;
     } else {
         panic!("Invalid env or algo");
     }

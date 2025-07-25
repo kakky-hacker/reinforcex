@@ -34,7 +34,7 @@ let vs = nn::VarStore::new(device);
 let n_input_channels = 4;
 let action_size = 2;
 let n_hidden_layers = 2;
-let n_hidden_channels = Some(128);
+let n_hidden_channels = 128;
 
 let model = Box::new(FCQNetwork::new(
     &vs,

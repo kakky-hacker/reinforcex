@@ -15,19 +15,18 @@ pub fn train_cartpole_with_ppo() {
     let n_input_channels = 4;
     let action_size = 2;
     let n_hidden_layers = 2;
-    let n_hidden_channels = Some(128);
+    let n_hidden_channels = 128;
     let min_prob = 0.0;
 
+    let optimizer = nn::Adam::default().build(&vs, 2.5e-4).unwrap();
     let model = Box::new(FCSoftmaxPolicyWithValue::new(
-        &vs,
+        vs,
         n_input_channels,
         action_size,
         n_hidden_layers,
         n_hidden_channels,
         min_prob,
     ));
-
-    let optimizer = nn::Adam::default().build(&vs, 2.5e-4).unwrap();
     let gamma = 0.99;
     let n_steps = 3;
     let epoch = 4;
