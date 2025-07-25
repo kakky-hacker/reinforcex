@@ -36,8 +36,9 @@ let action_size = 2;
 let n_hidden_layers = 2;
 let n_hidden_channels = 128;
 
+let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
 let model = Box::new(FCQNetwork::new(
-    &vs,
+    vs,
     n_input_channels,
     action_size,
     n_hidden_layers,
@@ -51,7 +52,6 @@ let update_interval = 8;
 let target_update_interval = 100;
 let replay_buffer_capacity = 2000
 
-let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
 let explorer = EpsilonGreedy::new(0.5, 0.1, 50000);
 let transition_buffer = Arc::new(TransitionBuffer::new(replay_buffer_capacity, n_steps));
 
