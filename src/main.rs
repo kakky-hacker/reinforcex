@@ -6,19 +6,7 @@ use examples::train_web_cartpole_with_dqn;
 
 use crate::examples::train_cartpole_with_ppo;
 mod examples;
-use std::ffi::CString;
-use std::ptr::null_mut;
 use tch::Cuda;
-use winapi::um::libloaderapi::LoadLibraryA;
-
-#[cfg(target_os = "windows")]
-fn load_cuda_dlls() {
-    let path_str = env::var("TORCH_CUDA_DLL").expect("TORCH_CUDA_DLL not set");
-    let c_path = CString::new(path_str).expect("Path contains null byte");
-    unsafe {
-        let handle = LoadLibraryA(c_path.as_ptr());
-    }
-}
 
 #[tokio::main]
 async fn main() {
@@ -46,8 +34,7 @@ async fn main() {
 
     println!("Environment: {}, Algorithm: {}", env_value, algo_value);
 
-    #[cfg(target_os = "windows")]
-    load_cuda_dlls();
+    reinforcex::load_cuda_dlls();
 
     println!("is_cuda: {}", Cuda::is_available());
 
