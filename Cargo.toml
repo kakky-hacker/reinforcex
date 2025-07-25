@@ -14,16 +14,20 @@ exclude = ["src/examples", "src/main.rs"]
 
 [dependencies]
 rand = "0.8"
-tch = {version="0.18.0"}
-torch-sys = {version="0.18.0", features=["download-libtorch"]}
+tch = { version="0.20.0" }
+torch-sys = { version="0.20.0", optional=true, features=["download-libtorch"] }
 ndarray = "0.15"
 rayon = "1.8"
 ulid = "1"
-gym = { git = "https://github.com/kakky-hacker/gym-rs.git", branch = "master", version="2.2.1", optional = true }
-reqwest = { version = "0.11", features = ["blocking", "json"], optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true}
+gym = { git = "https://github.com/kakky-hacker/gym-rs.git", branch = "master", version="2.2.1" }
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+tokio = { version = "1.28", features = ["rt-multi-thread", "macros"] }
+futures = "0.3"
+winapi = { version = "0.3", features = ["libloaderapi"] }
 
 [features]
-default = []
-dev = ["gym", "reqwest", "serde", "serde_json"]
+default = ["cpu"]
+cpu = ["torch-sys"]
+cuda = []

@@ -3,10 +3,11 @@ use super::base_policy_network::BasePolicy;
 use crate::misc::weight_initializer::{he_init, xavier_init};
 use crate::prob_distributions::BaseDistribution;
 use crate::prob_distributions::GaussianDistribution;
-use tch::nn::{Init, Linear, LinearConfig, Module};
-use tch::{nn, Tensor};
+use tch::nn::{linear, Init, Linear, LinearConfig, Module, VarStore};
+use tch::{nn, Device, Tensor};
 
 pub struct FCGaussianPolicy {
+    vs: VarStore,
     layers: Vec<Linear>,
     mean_layer: Linear,
     var_layer: Linear,
@@ -24,22 +25,21 @@ pub struct FCGaussianPolicyWithValue {
 
 impl FCGaussianPolicy {
     pub fn new(
-        vs: &nn::VarStore,
+        vs: VarStore,
         n_input_channels: i64,
         action_size: i64,
         n_hidden_layers: usize,
-        n_hidden_channels: Option<i64>,
+        n_hidden_channels: i64,
         min_action: Option<Tensor>,
         max_action: Option<Tensor>,
         bound_mean: bool,
         var_type: &str,
         min_var: f64,
     ) -> Self {
-        let root = vs.root();
+        let root = (&vs).root();
         let mut layers: Vec<Linear> = Vec::new();
-        let n_hidden_channels = n_hidden_channels.unwrap_or(256);
 
-        layers.push(nn::linear(
+        layers.push(linear(
             &root,
             n_input_channels,
             n_hidden_channels,
@@ -50,7 +50,7 @@ impl FCGaussianPolicy {
             },
         ));
         for _ in 0..n_hidden_layers {
-            layers.push(nn::linear(
+            layers.push(linear(
                 &root,
                 n_hidden_channels,
                 n_hidden_channels,
@@ -62,7 +62,7 @@ impl FCGaussianPolicy {
             ));
         }
 
-        let mean_layer = nn::linear(
+        let mean_layer = linear(
             &root,
             n_hidden_channels,
             action_size,
@@ -77,7 +77,7 @@ impl FCGaussianPolicy {
         } else {
             action_size
         };
-        let var_layer = nn::linear(
+        let var_layer = linear(
             &root,
             n_hidden_channels,
             var_size,
@@ -89,6 +89,7 @@ impl FCGaussianPolicy {
         );
 
         FCGaussianPolicy {
+            vs,
             layers,
             mean_layer,
             var_layer,
@@ -142,24 +143,36 @@ impl BasePolicy for FCGaussianPolicy {
         (Box::new(GaussianDistribution::new(mean, var)), None)
     }
 
-    fn is_cuda(&self) -> bool {
-        false
+    fn device(&self) -> Device {
+        self.vs.device()
     }
 }
 
 impl FCGaussianPolicyWithValue {
     pub fn new(
-        vs: &nn::VarStore,
+        vs: VarStore,
         n_input_channels: i64,
         action_size: i64,
         n_hidden_layers: usize,
-        n_hidden_channels: Option<i64>,
+        n_hidden_channels: i64,
         min_action: Option<Tensor>,
         max_action: Option<Tensor>,
         bound_mean: bool,
         var_type: &str,
         min_var: f64,
     ) -> Self {
+        let root = (&vs).root();
+        let value_layer = linear(
+            &root,
+            n_hidden_channels,
+            1,
+            LinearConfig {
+                ws_init: he_init(n_hidden_channels),
+                bs_init: Some(Init::Const(0.0)),
+                bias: true,
+            },
+        );
+
         let base_policy = FCGaussianPolicy::new(
             vs,
             n_input_channels,
@@ -171,19 +184,6 @@ impl FCGaussianPolicyWithValue {
             bound_mean,
             var_type,
             min_var,
-        );
-
-        let root = vs.root();
-        let n_hidden_channels = n_hidden_channels.unwrap_or(256);
-        let value_layer = nn::linear(
-            &root,
-            n_hidden_channels,
-            1,
-            LinearConfig {
-                ws_init: he_init(n_hidden_channels),
-                bs_init: Some(Init::Const(0.0)),
-                bias: true,
-            },
         );
 
         FCGaussianPolicyWithValue {
@@ -205,8 +205,8 @@ impl BasePolicy for FCGaussianPolicyWithValue {
         (Box::new(GaussianDistribution::new(mean, var)), Some(value))
     }
 
-    fn is_cuda(&self) -> bool {
-        self.base_policy.is_cuda()
+    fn device(&self) -> Device {
+        self.base_policy.vs.device()
     }
 }
 
@@ -221,7 +221,7 @@ mod tests {
         let n_input_channels = 4;
         let action_size = 2;
         let n_hidden_layers = 2;
-        let n_hidden_channels = Some(64);
+        let n_hidden_channels = 64;
         let min_action = Tensor::from(-1.0).copy();
         let max_action = Tensor::from(1.0).copy();
         let bound_mean = true;
@@ -229,7 +229,7 @@ mod tests {
         let min_var = 1e-3;
 
         let policy = FCGaussianPolicy::new(
-            &vs,
+            vs,
             n_input_channels,
             action_size,
             n_hidden_layers,
@@ -255,11 +255,11 @@ mod tests {
         let n_input_channels = 4;
         let action_size = 6;
         let policy = FCGaussianPolicy::new(
-            &vs,
+            vs,
             n_input_channels,
             action_size,
             2,
-            Some(64),
+            64,
             None,
             None,
             false,
@@ -287,11 +287,11 @@ mod tests {
         let max_action = Tensor::from(1.0);
 
         let policy = FCGaussianPolicy::new(
-            &vs,
+            vs,
             n_input_channels,
             action_size,
             2,
-            Some(64),
+            64,
             Some(min_action.copy()),
             Some(max_action.copy()),
             true,
@@ -312,11 +312,11 @@ mod tests {
         let n_input_channels = 4;
         let action_size = 6;
         let policy = FCGaussianPolicy::new(
-            &vs,
+            vs,
             n_input_channels,
             action_size,
             2,
-            Some(64),
+            64,
             None,
             None,
             false,

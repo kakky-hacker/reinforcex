@@ -22,6 +22,8 @@ pub struct DQN {
     current_episode_id: Ulid,
 }
 
+unsafe impl Send for DQN {}
+
 impl DQN {
     pub fn new(
         model: Box<dyn BaseQFunction>,
@@ -99,20 +101,23 @@ impl DQN {
         n_step_discounted_rewards: Vec<f64>,
     ) -> Tensor {
         assert_eq!(n_step_after_states.len(), n_step_discounted_rewards.len());
-        let _states = batch_states(n_step_after_states, self.model.is_cuda());
+        let _states = batch_states(n_step_after_states, self.model.device());
         let pred_q_values = self.target_model.forward(&_states);
         let max_q_values = pred_q_values.max_dim(1, false).0;
         let gamma_n = self.gamma.powi(self.transition_buffer.get_n_steps() as i32);
-        let n_step_discounted_rewards_tensor = Tensor::from_slice(&n_step_discounted_rewards);
+        let n_step_discounted_rewards_tensor =
+            Tensor::from_slice(&n_step_discounted_rewards).to_device(self.model.device());
         let updated_q_values = max_q_values * gamma_n + n_step_discounted_rewards_tensor;
         updated_q_values
     }
 
     fn _compute_pred_q_values(&self, states: &Vec<Tensor>, actions: Vec<Tensor>) -> Tensor {
         assert_eq!(states.len(), actions.len());
-        let _states = batch_states(states, self.model.is_cuda());
+        let _states = batch_states(states, self.model.device());
         let pred_q_values = self.model.forward(&_states);
-        let actions = Tensor::stack(&actions, 0).to_kind(tch::Kind::Int64);
+        let actions = Tensor::stack(&actions, 0)
+            .to_kind(tch::Kind::Int64)
+            .to_device(self.model.device());
         let pred_q_values_selected = pred_q_values.gather(1, &actions, false).squeeze();
         pred_q_values_selected
     }
@@ -126,15 +131,15 @@ impl DQN {
 impl BaseAgent for DQN {
     fn act(&self, obs: &Tensor) -> Tensor {
         no_grad(|| {
-            let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
+            let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
             let q_values = self.model.forward(&state);
-            q_values.argmax(1, false).to_device(Device::Cpu)
+            q_values.argmax(1, false)
         })
     }
 
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor {
         self.t += 1;
-        let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
+        let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
         let q_values = self.model.forward(&state);
 
         let greedy_action_func = || q_values.argmax(1, false).int64_value(&[0]) as usize;
@@ -143,9 +148,7 @@ impl BaseAgent for DQN {
         let action_idx =
             self.explorer
                 .select_action(self.t, &random_action_func, &greedy_action_func);
-        let action = Tensor::from_slice(&[action_idx as i64])
-            .detach()
-            .to_device(Device::Cpu);
+        let action = Tensor::from_slice(&[action_idx as i64]).detach();
 
         self.transition_buffer.append(
             self.current_episode_id,
@@ -165,7 +168,7 @@ impl BaseAgent for DQN {
     }
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
-        let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
+        let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
         self.transition_buffer.append(
             self.current_episode_id,
             state,
@@ -199,7 +202,7 @@ mod tests {
     fn test_dqn_new() {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
-        let model = FCQNetwork::new(&vs, 4, 2, 2, Some(64));
+        let model = FCQNetwork::new(vs, 4, 2, 2, 64);
         let explorer = EpsilonGreedy::new(1.0, 0.1, 1000);
         let transition_buffer = Arc::new(TransitionBuffer::new(1000, 3));
 
@@ -227,7 +230,7 @@ mod tests {
     fn test_dqn_act_and_train() {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-2).unwrap();
-        let model = FCQNetwork::new(&vs, 4, 4, 2, Some(128));
+        let model = FCQNetwork::new(vs, 4, 4, 2, 128);
         let explorer = EpsilonGreedy::new(1.0, 0.0, 1000);
         let transition_buffer = Arc::new(TransitionBuffer::new(1000, 1));
         let mut dqn = DQN::new(
@@ -282,21 +285,21 @@ mod tests {
         use std::sync::Arc;
         use tch::{Device, Kind, Tensor};
 
-        let buffer = Arc::new(TransitionBuffer::new(1000, 1));
-        let n_threads = 10;
+        let buffer = Arc::new(TransitionBuffer::new(10000, 1));
+        let n_threads = 3;
 
         (0..n_threads).into_par_iter().for_each(|_| {
             let vs = nn::VarStore::new(Device::Cpu);
-            let model = FCQNetwork::new(&vs, 4, 4, 2, Some(128));
             let opt = nn::Adam::default().build(&vs, 1e-2).unwrap();
+            let model = FCQNetwork::new(vs, 4, 4, 2, 128);
             let explorer = EpsilonGreedy::new(1.0, 0.0, 1000);
             let mut dqn = DQN::new(
                 Box::new(model),
                 Arc::clone(&buffer),
                 opt,
                 4,
+                8,
                 16,
-                50,
                 100,
                 Box::new(explorer),
                 0.5,

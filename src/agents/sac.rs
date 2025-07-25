@@ -25,6 +25,8 @@ pub struct SAC {
     current_episode_id: Ulid,
 }
 
+unsafe impl Send for SAC {}
+
 impl SAC {
     pub fn new(
         actor: Box<dyn BasePolicy>,
@@ -88,8 +90,8 @@ impl SAC {
             rewards.push(exp.reward_for_this_state);
         }
 
-        let states_batch = batch_states(&states, self.actor.is_cuda());
-        let next_states_batch = batch_states(&next_states, self.actor.is_cuda());
+        let states_batch = batch_states(&states, self.actor.device());
+        let next_states_batch = batch_states(&next_states, self.actor.device());
         let actions_batch = Tensor::stack(&actions, 0);
 
         let rewards_tensor = Tensor::from_slice(&rewards).to_device(states_batch.device());
@@ -162,17 +164,17 @@ impl SAC {
 impl BaseAgent for SAC {
     fn act(&self, obs: &Tensor) -> Tensor {
         no_grad(|| {
-            let state = batch_states(&vec![obs.shallow_clone()], self.actor.is_cuda());
+            let state = batch_states(&vec![obs.shallow_clone()], self.actor.device());
             let (action_dist, _) = self.actor.forward(&state);
-            action_dist.most_probable().to_device(Device::Cpu)
+            action_dist.most_probable().to_device(Device::Cuda(0))
         })
     }
 
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor {
         self.t += 1;
-        let state = batch_states(&vec![obs.shallow_clone()], self.actor.is_cuda());
+        let state = batch_states(&vec![obs.shallow_clone()], self.actor.device());
         let (action_dist, _) = self.actor.forward(&state);
-        let action = action_dist.sample().to_device(Device::Cpu);
+        let action = action_dist.sample().to_device(Device::Cuda(0));
         self.transition_buffer.append(
             self.current_episode_id,
             state,
@@ -193,7 +195,7 @@ impl BaseAgent for SAC {
     }
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
-        let state = batch_states(&vec![obs.shallow_clone()], self.actor.is_cuda());
+        let state = batch_states(&vec![obs.shallow_clone()], self.actor.device());
         self.transition_buffer.append(
             self.current_episode_id,
             state,

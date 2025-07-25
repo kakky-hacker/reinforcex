@@ -16,17 +16,16 @@ pub fn train_cartpole_with_dqn() {
     let n_input_channels = 4;
     let action_size = 2;
     let n_hidden_layers = 2;
-    let n_hidden_channels = Some(200);
+    let n_hidden_channels = 200;
 
+    let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
     let model = Box::new(FCQNetwork::new(
-        &vs,
+        vs,
         n_input_channels,
         action_size,
         n_hidden_layers,
         n_hidden_channels,
     ));
-
-    let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
     let explorer = EpsilonGreedy::new(0.5, 0.01, 20000);
     let gamma = 0.97;
     let n_steps = 5;

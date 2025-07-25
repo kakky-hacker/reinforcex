@@ -6,8 +6,10 @@ use examples::train_web_cartpole_with_dqn;
 
 use crate::examples::train_cartpole_with_ppo;
 mod examples;
+use tch::Cuda;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = env::args().collect();
 
     let mut env_value = String::new();
@@ -32,12 +34,16 @@ fn main() {
 
     println!("Environment: {}, Algorithm: {}", env_value, algo_value);
 
+    reinforcex::load_cuda_dlls();
+
+    println!("is_cuda: {}", Cuda::is_available());
+
     if env_value == "cartpole" && algo_value == "dqn" {
         train_web_cartpole_with_dqn();
     } else if env_value == "cartpole" && algo_value == "ppo" {
         train_cartpole_with_ppo();
     } else if env_value == "Lunar" && algo_value == "dqn" {
-        train_web_LunarLander_with_dqn();
+        train_web_LunarLander_with_dqn().await;
     } else {
         panic!("Invalid env or algo");
     }

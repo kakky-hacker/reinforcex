@@ -33,10 +33,10 @@ fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<Transitio
     let base_url = format!("http://localhost:{}", env_port);
 
     // --- Agent Setup ---
-    let device = Device::Cpu;
+    let device = Device::Cuda(0);
     let vs = nn::VarStore::new(device);
-    let model = Box::new(FCQNetwork::new(&vs, 4, 2, 2, Some(200)));
     let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
+    let model = Box::new(FCQNetwork::new(vs, 4, 2, 2, 200));
     let explorer = EpsilonGreedy::new(0.5, 0.0, 20000);
 
     let mut agent = DQN::new(

@@ -6,12 +6,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use rayon::prelude::*;
-use reqwest::blocking::Client;
+use futures::future::join_all;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::time::Duration;
-use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
+use tch::{nn, nn::OptimizerConfig, Cuda, Device, Kind, Tensor};
 
 #[derive(Deserialize)]
 struct ResetResponse {
@@ -26,11 +26,12 @@ struct StepResponse {
     done: bool,
 }
 
-fn run_agent_on_env(
+async fn run_agent_on_env(
     env_port: u16,
     agent_id: usize,
     shared_buffer: Arc<TransitionBuffer>,
     reward_log_map: Arc<Mutex<HashMap<usize, Vec<f64>>>>,
+    is_cuda: bool,
 ) {
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
@@ -40,19 +41,17 @@ fn run_agent_on_env(
     let base_url = format!("http://localhost:{}", env_port);
 
     // --- Agent Setup ---
-    let device = Device::Cpu;
+    let device;
+    if is_cuda {
+        device = Device::Cuda(0);
+    } else {
+        device = Device::Cpu;
+    }
     let vs = nn::VarStore::new(device);
-    let model = Box::new(FCQNetwork::new(&vs, 8, 4, 2, Some(300)));
     let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
+    let model = Box::new(FCQNetwork::new(vs, 8, 4, 2, 300));
 
-    let explorer = match agent_id {
-        0 => EpsilonGreedy::new(1.0, 0.05, 10000),
-        1 => EpsilonGreedy::new(1.0, 0.05, 10000),
-        2 => EpsilonGreedy::new(1.0, 0.05, 10000),
-        3 => EpsilonGreedy::new(1.0, 0.05, 10000),
-        _ => EpsilonGreedy::new(1.0, 0.05, 10000),
-    };
-
+    let explorer = EpsilonGreedy::new(1.0, 0.05, 10000);
     let mut agent = DQN::new(
         model,
         Arc::clone(&shared_buffer),
@@ -69,7 +68,6 @@ fn run_agent_on_env(
     let episodes = 1000;
     let max_steps = 100000;
     let mut total_reward = 0.0;
-
     let start = Instant::now();
 
     for episode in 1..=episodes {
@@ -78,8 +76,10 @@ fn run_agent_on_env(
             .post(format!("{}/reset", base_url))
             .json(&serde_json::json!({ "env": "LunarLander-v3" }))
             .send()
+            .await
             .expect("reset failed")
             .json::<ResetResponse>()
+            .await
             .expect("reset JSON parse failed");
 
         let mut obs = resp.observation;
@@ -96,8 +96,10 @@ fn run_agent_on_env(
                 .post(format!("{}/step", base_url))
                 .json(&serde_json::json!({ "session_id": session_id, "action": action }))
                 .send()
+                .await
                 .expect("step failed")
                 .json::<StepResponse>()
+                .await
                 .expect("step JSON parse failed");
 
             obs = resp.observation;
@@ -134,14 +136,16 @@ fn run_agent_on_env(
     }
 }
 
-pub fn train_web_LunarLander_with_dqn() {
+pub async fn train_web_LunarLander_with_dqn() {
     let shared_buffer1 = Arc::new(TransitionBuffer::new(4000, 1));
     let shared_buffer2 = Arc::new(TransitionBuffer::new(36000, 1));
     let ports: Vec<u16> = (8001..=8010).collect();
 
     let reward_log_map: Arc<Mutex<HashMap<usize, Vec<f64>>>> = Arc::new(Mutex::new(HashMap::new()));
 
-    ports.into_par_iter().enumerate().for_each(|(i, port)| {
+    let mut handles = Vec::new();
+
+    for (i, port) in ports.into_iter().enumerate() {
         let buffer = if i == 0 {
             Arc::clone(&shared_buffer1)
         } else {
@@ -149,8 +153,15 @@ pub fn train_web_LunarLander_with_dqn() {
         };
 
         let reward_log_map = Arc::clone(&reward_log_map);
-        run_agent_on_env(port, i, buffer, reward_log_map);
-    });
+
+        let handle = tokio::spawn(async move {
+            run_agent_on_env(port, i, buffer, reward_log_map, Cuda::is_available()).await;
+        });
+
+        handles.push(handle);
+    }
+
+    join_all(handles).await;
 
     let map = reward_log_map.lock().unwrap();
     let json = serde_json::to_string_pretty(&*map).unwrap();

@@ -20,6 +20,8 @@ pub struct PPO {
     current_episode_id: Ulid,
 }
 
+unsafe impl Send for PPO {}
+
 impl PPO {
     pub fn new(
         model: Box<dyn BasePolicy>,
@@ -88,10 +90,10 @@ impl PPO {
                     actions.push(action);
                     n_step_discounted_rewards.push(n_step_discounted_reward);
                 }
-                let _batch_states = batch_states(&states, self.model.is_cuda());
+                let _batch_states = batch_states(&states, self.model.device());
                 let _batch_n_step_after_states =
-                    batch_states(&n_step_after_states, self.model.is_cuda());
-                let _batch_actions = batch_states(&actions, self.model.is_cuda());
+                    batch_states(&n_step_after_states, self.model.device());
+                let _batch_actions = batch_states(&actions, self.model.device());
                 let _batch_probs = self
                     .model
                     .forward(&_batch_states)
@@ -138,7 +140,7 @@ impl PPO {
 impl BaseAgent for PPO {
     fn act(&self, obs: &Tensor) -> Tensor {
         no_grad(|| {
-            let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
+            let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
             let (action_distrib, _) = self.model.forward(&state);
             let action = action_distrib.most_probable().to_device(Device::Cpu);
             action
@@ -148,7 +150,7 @@ impl BaseAgent for PPO {
     fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor {
         self.t += 1;
 
-        let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
+        let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
         let (action_distrib, _) = self.model.forward(&state);
         let action = action_distrib.sample().to_device(Device::Cpu);
 
@@ -170,7 +172,7 @@ impl BaseAgent for PPO {
     }
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
-        let state = batch_states(&vec![obs.shallow_clone()], self.model.is_cuda());
+        let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
         self.transition_buffer.append(
             self.current_episode_id,
             state,
@@ -201,7 +203,7 @@ mod tests {
     fn test_ppo_new() {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
-        let model = FCSoftmaxPolicyWithValue::new(&vs, 4, 2, 2, Some(64), 0.0);
+        let model = FCSoftmaxPolicyWithValue::new(vs, 4, 2, 2, 64, 0.0);
         let transition_buffer = Arc::new(TransitionBuffer::new(1000, 3));
 
         let ppo = PPO::new(
@@ -226,7 +228,7 @@ mod tests {
     fn test_ppo_act_and_train() {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
-        let model = FCSoftmaxPolicyWithValue::new(&vs, 4, 4, 2, Some(64), 0.0);
+        let model = FCSoftmaxPolicyWithValue::new(vs, 4, 4, 2, 64, 0.0);
         let transition_buffer = Arc::new(TransitionBuffer::new(1000, 1));
 
         let mut ppo = PPO::new(
