@@ -1,5 +1,6 @@
 use std::f64;
 
+// The null hypothesis: a >= b
 pub fn mann_whitney_u(a: &[f64], b: &[f64], p: f64) -> bool {
     if a.is_empty() || b.is_empty() {
         return false;
