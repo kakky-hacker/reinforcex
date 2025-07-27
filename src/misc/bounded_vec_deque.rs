@@ -44,6 +44,10 @@ where
     pub fn len(&self) -> usize {
         self.deque.len()
     }
+
+    pub fn to_vec(&self) -> Vec<T> {
+        self.deque.clone().into_iter().collect()
+    }
 }
 
 #[cfg(test)]

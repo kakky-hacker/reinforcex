@@ -7,6 +7,7 @@ use tch::{nn, no_grad, Device, Kind, Tensor};
 use ulid::Ulid;
 
 pub struct SAC {
+    agent_id: Ulid,
     actor: Box<dyn BasePolicy>,
     critic1: Box<dyn BaseQFunction>,
     critic2: Box<dyn BaseQFunction>,
@@ -45,6 +46,7 @@ impl SAC {
         let target_critic1 = critic1.clone();
         let target_critic2 = critic2.clone();
         SAC {
+            agent_id: Ulid::new(),
             actor,
             critic1,
             critic2,
@@ -176,6 +178,7 @@ impl BaseAgent for SAC {
         let (action_dist, _) = self.actor.forward(&state);
         let action = action_dist.sample().to_device(Device::Cuda(0));
         self.transition_buffer.append(
+            self.agent_id,
             self.current_episode_id,
             state,
             Some(action.shallow_clone()),
@@ -197,6 +200,7 @@ impl BaseAgent for SAC {
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(&vec![obs.shallow_clone()], self.actor.device());
         self.transition_buffer.append(
+            self.agent_id,
             self.current_episode_id,
             state,
             None,

@@ -8,6 +8,7 @@ use tch::{nn, no_grad, Device, Tensor};
 use ulid::Ulid;
 
 pub struct DQN {
+    agent_id: Ulid,
     model: Box<dyn BaseQFunction>,
     optimizer: nn::Optimizer,
     transition_buffer: Arc<TransitionBuffer>,
@@ -38,6 +39,7 @@ impl DQN {
     ) -> Self {
         let target_model = model.clone();
         DQN {
+            agent_id: Ulid::new(),
             model,
             optimizer,
             transition_buffer,
@@ -155,6 +157,7 @@ impl BaseAgent for DQN {
         let action = Tensor::from_slice(&[action_idx as i64]).detach();
 
         self.transition_buffer.append(
+            self.agent_id,
             self.current_episode_id,
             state,
             Some(action.shallow_clone()),
@@ -174,6 +177,7 @@ impl BaseAgent for DQN {
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
         self.transition_buffer.append(
+            self.agent_id,
             self.current_episode_id,
             state,
             None,
