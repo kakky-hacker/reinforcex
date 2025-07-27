@@ -83,8 +83,8 @@ impl DQN {
             actions.push(action);
             n_step_discounted_rewards.push(n_step_discounted_reward);
         }
-        let q_values = self._compute_q_values(&n_step_after_states, n_step_discounted_rewards);
-        let pred_q_values = self._compute_pred_q_values(&states, actions);
+        let q_values = self._compute_q_values(&n_step_after_states, &n_step_discounted_rewards);
+        let pred_q_values = self._compute_pred_q_values(&states, &actions);
         let loss = self._compute_loss(q_values, pred_q_values);
         self.optimizer.zero_grad();
         loss.backward();
@@ -98,24 +98,28 @@ impl DQN {
     fn _compute_q_values(
         &self,
         n_step_after_states: &Vec<Tensor>,
-        n_step_discounted_rewards: Vec<f64>,
+        n_step_discounted_rewards: &Vec<f64>,
     ) -> Tensor {
         assert_eq!(n_step_after_states.len(), n_step_discounted_rewards.len());
         let _states = batch_states(n_step_after_states, self.model.device());
-        let pred_q_values = self.target_model.forward(&_states);
-        let max_q_values = pred_q_values.max_dim(1, false).0;
+        // Double-DQN
+        let max_q_values = self
+            .target_model
+            .forward(&_states)
+            .gather(1, &self.model.forward(&_states).argmax(1, true), false)
+            .squeeze_dim(1);
         let gamma_n = self.gamma.powi(self.transition_buffer.get_n_steps() as i32);
         let n_step_discounted_rewards_tensor =
-            Tensor::from_slice(&n_step_discounted_rewards).to_device(self.model.device());
+            Tensor::from_slice(n_step_discounted_rewards).to_device(self.model.device());
         let updated_q_values = max_q_values * gamma_n + n_step_discounted_rewards_tensor;
         updated_q_values
     }
 
-    fn _compute_pred_q_values(&self, states: &Vec<Tensor>, actions: Vec<Tensor>) -> Tensor {
+    fn _compute_pred_q_values(&self, states: &Vec<Tensor>, actions: &Vec<Tensor>) -> Tensor {
         assert_eq!(states.len(), actions.len());
         let _states = batch_states(states, self.model.device());
         let pred_q_values = self.model.forward(&_states);
-        let actions = Tensor::stack(&actions, 0)
+        let actions = Tensor::stack(actions, 0)
             .to_kind(tch::Kind::Int64)
             .to_device(self.model.device());
         let pred_q_values_selected = pred_q_values.gather(1, &actions, false).squeeze();
