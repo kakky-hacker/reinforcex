@@ -1,4 +1,4 @@
-use super::base_pruner::BasePruner;
+use super::base_selector::BaseSelector;
 use crate::misc::bounded_vec_deque::BoundedVecDeque;
 use crate::misc::mann_whitney_u::mann_whitney_u;
 
@@ -6,15 +6,15 @@ use crate::memory::Experience;
 use std::collections::HashMap;
 use ulid::Ulid;
 
-pub struct RewardBasedPruner {
+pub struct RewardBasedSelector {
     p: f64,
     horizon: usize,
     rewards_by_agent: HashMap<Ulid, BoundedVecDeque<f64>>,
 }
 
-impl RewardBasedPruner {
+impl RewardBasedSelector {
     pub fn new(p: f64, horizon: usize) -> Self {
-        RewardBasedPruner {
+        RewardBasedSelector {
             p,
             horizon,
             rewards_by_agent: HashMap::new(),
@@ -22,7 +22,7 @@ impl RewardBasedPruner {
     }
 }
 
-impl BasePruner for RewardBasedPruner {
+impl BaseSelector for RewardBasedSelector {
     fn step(&mut self, experience: &Experience) {
         self.rewards_by_agent
             .entry(experience.agent_id)
