@@ -1,15 +1,15 @@
 use super::base_selector::BaseSelector;
+use crate::memory::Experience;
 use crate::misc::bounded_vec_deque::BoundedVecDeque;
 use crate::misc::mann_whitney_u::mann_whitney_u;
-
-use crate::memory::Experience;
 use std::collections::HashMap;
+use std::sync::Mutex;
 use ulid::Ulid;
 
 pub struct RewardBasedSelector {
     p: f64,
     horizon: usize,
-    rewards_by_agent: HashMap<Ulid, BoundedVecDeque<f64>>,
+    rewards_by_agent: HashMap<Ulid, Mutex<BoundedVecDeque<f64>>>,
 }
 
 impl RewardBasedSelector {
@@ -23,18 +23,24 @@ impl RewardBasedSelector {
 }
 
 impl BaseSelector for RewardBasedSelector {
-    fn step(&mut self, experience: &Experience) {
+    fn observe(&mut self, experience: &Experience) {
         self.rewards_by_agent
             .entry(experience.agent_id)
-            .or_insert_with(|| BoundedVecDeque::new(self.horizon))
+            .or_insert_with(|| Mutex::new(BoundedVecDeque::new(self.horizon)))
+            .lock()
+            .unwrap()
             .push_back(experience.reward_for_this_state);
     }
 
     fn prune(&self, agent_id: &Ulid) -> bool {
         if let Some(target_agent_rewards) = self.rewards_by_agent.get(agent_id) {
             //TODO
-            return mann_whitney_u(&target_agent_rewards.to_vec(), &[], self.p);
+            return mann_whitney_u(&target_agent_rewards.lock().unwrap().to_vec(), &[], self.p);
         }
         false
+    }
+
+    fn select_next_parents(&self, agent_id: &Ulid) -> Vec<&Ulid> {
+        vec![]
     }
 }
