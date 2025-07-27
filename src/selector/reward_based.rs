@@ -2,6 +2,7 @@ use super::base_selector::BaseSelector;
 use crate::memory::Experience;
 use crate::misc::bounded_vec_deque::BoundedVecDeque;
 use crate::misc::mann_whitney_u::mann_whitney_u;
+use rayon::range;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use ulid::Ulid;
@@ -36,12 +37,15 @@ impl BaseSelector for RewardBasedSelector {
 
     fn prune(&self, agent_id: &Ulid) -> bool {
         if let Some(target_agent_rewards) = self.rewards_by_agent.get(agent_id) {
-            //TODO
-            return mann_whitney_u(
-                &target_agent_rewards.lock().unwrap().to_vec(),
-                &[],
-                self.z_threshold,
-            );
+            for other_agent_rewards in self.rewards_by_agent.values() {
+                if mann_whitney_u(
+                    &target_agent_rewards.lock().unwrap().to_vec(),
+                    &other_agent_rewards.lock().unwrap().to_vec(),
+                    self.z_threshold,
+                ) {
+                    return true;
+                }
+            }
         }
         false
     }
