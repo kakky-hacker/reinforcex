@@ -7,15 +7,17 @@ use std::sync::Mutex;
 use ulid::Ulid;
 
 pub struct RewardBasedSelector {
-    p: f64,
+    z_threshold: f64,
     horizon: usize,
     rewards_by_agent: HashMap<Ulid, Mutex<BoundedVecDeque<f64>>>,
 }
 
+// z_threshold is the threshold for a one-sided test (5% p-value corresponds to -1.96 in z_threshold).
 impl RewardBasedSelector {
-    pub fn new(p: f64, horizon: usize) -> Self {
+    pub fn new(horizon: usize, z_threshold: f64) -> Self {
+        assert!(z_threshold < 0.0);
         RewardBasedSelector {
-            p,
+            z_threshold,
             horizon,
             rewards_by_agent: HashMap::new(),
         }
@@ -35,7 +37,11 @@ impl BaseSelector for RewardBasedSelector {
     fn prune(&self, agent_id: &Ulid) -> bool {
         if let Some(target_agent_rewards) = self.rewards_by_agent.get(agent_id) {
             //TODO
-            return mann_whitney_u(&target_agent_rewards.lock().unwrap().to_vec(), &[], self.p);
+            return mann_whitney_u(
+                &target_agent_rewards.lock().unwrap().to_vec(),
+                &[],
+                self.z_threshold,
+            );
         }
         false
     }
