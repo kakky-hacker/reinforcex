@@ -215,6 +215,10 @@ impl BaseAgent for SAC {
         vec![]
     }
 
+    fn get_agent_id(&self) -> &Ulid {
+        &self.agent_id
+    }
+
     fn save(&self, dirname: &str, ancestors: std::collections::HashSet<String>) {}
 
     fn load(&self, dirname: &str, ancestors: std::collections::HashSet<String>) {}

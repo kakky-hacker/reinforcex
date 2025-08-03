@@ -96,19 +96,19 @@ async fn run_agent_on_env(
 
             if flag && j % 1000 == 0 {
                 let dominants =
-                    selector.find_pareto_dominant(&agents[agent_id].lock().unwrap().agent_id);
+                    selector.find_pareto_dominant(agents[agent_id].lock().unwrap().get_agent_id());
                 if dominants.len() > 0 {
                     println!("[Agent {}] pruned, dominants:{:?}", agent_id, dominants);
-                    selector.delete(&agents[agent_id].lock().unwrap().agent_id);
+                    selector.delete(agents[agent_id].lock().unwrap().get_agent_id());
                     let mut rng = thread_rng();
                     let d_id = dominants.choose(&mut rng).unwrap();
                     for (k, agent) in agents.iter().enumerate() {
-                        if &agent.lock().unwrap().agent_id == d_id {
+                        if agent.lock().unwrap().get_agent_id() == d_id {
                             println!("[Agent {}] copy {}", agent_id, k);
                             agents[agent_id]
                                 .lock()
                                 .unwrap()
-                                .copy_q_from(agent.lock().unwrap().model.clone());
+                                .copy_model_from(&*agent.lock().unwrap());
                             break;
                         }
                     }

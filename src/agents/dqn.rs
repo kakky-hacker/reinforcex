@@ -4,13 +4,13 @@ use crate::memory::TransitionBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::BaseQFunction;
 use crate::selector::BaseSelector;
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 use tch::{nn, no_grad, Tensor};
 use ulid::Ulid;
 
 pub struct DQN {
-    pub agent_id: Ulid,
-    pub model: Box<dyn BaseQFunction>,
+    agent_id: Ulid,
+    model: Box<dyn BaseQFunction>,
     optimizer: nn::Optimizer,
     transition_buffer: Arc<TransitionBuffer>,
     explorer: Box<dyn BaseExplorer>,
@@ -57,11 +57,6 @@ impl DQN {
             t: 0,
             current_episode_id: Ulid::new(),
         }
-    }
-
-    pub fn copy_q_from(&mut self, q_net: Box<dyn BaseQFunction>) {
-        self.model = q_net;
-        self._sync_target_model();
     }
 
     fn _update(&mut self) {
@@ -141,6 +136,15 @@ impl DQN {
         let loss = (q_values - pred_q_values).square().mean(tch::Kind::Float);
         loss
     }
+
+    pub fn get_model(&self) -> &Box<dyn BaseQFunction> {
+        &self.model
+    }
+
+    pub fn copy_model_from(&mut self, agent: &DQN) {
+        self.model = agent.get_model().deref().clone();
+        self._sync_target_model();
+    }
 }
 
 impl BaseAgent for DQN {
@@ -204,6 +208,10 @@ impl BaseAgent for DQN {
 
     fn get_statistics(&self) -> Vec<(String, f64)> {
         vec![]
+    }
+
+    fn get_agent_id(&self) -> &Ulid {
+        &self.agent_id
     }
 
     fn save(&self, dirname: &str, ancestors: std::collections::HashSet<String>) {}
