@@ -76,7 +76,7 @@ impl TransitionBuffer {
             *exp.n_step_discounted_reward.lock().unwrap() = Some(
                 cumsum::cumsum_rev(
                     last_n_experiences
-                        .clone()
+                        .clone_deque()
                         .into_iter()
                         .map(|e| e.reward_for_this_state)
                         .collect::<Vec<f64>>()
@@ -93,14 +93,14 @@ impl TransitionBuffer {
                 memory.last_n_experiences_by_episode.remove(&episode_id)
             {
                 let mut rewards = last_n_experiences
-                    .clone()
+                    .clone_deque()
                     .into_iter()
                     .skip(1)
                     .map(|e| e.reward_for_this_state)
                     .collect::<Vec<f64>>();
                 rewards.push(0.0);
                 for (exp, &q) in last_n_experiences
-                    .clone()
+                    .clone_deque()
                     .into_iter()
                     .zip(cumsum::cumsum_rev(&rewards, gamma).iter())
                 {
@@ -199,6 +199,22 @@ mod tests {
             1.0,
         );
         assert_eq!(buffer.len(), 2);
+    }
+
+    #[test]
+    fn test_is_episode_terminal() {
+        let buffer = TransitionBuffer::new(100, 1);
+        let state = Tensor::from_slice(&[1.0]);
+        let episode_id = Ulid::new();
+        buffer.append(
+            episode_id,
+            episode_id,
+            state.shallow_clone(),
+            None,
+            1.0,
+            true,
+            1.0,
+        );
     }
 
     #[test]

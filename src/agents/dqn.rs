@@ -3,16 +3,18 @@ use crate::explorers::BaseExplorer;
 use crate::memory::TransitionBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::BaseQFunction;
+use crate::selector::BaseSelector;
 use std::sync::Arc;
-use tch::{nn, no_grad, Device, Tensor};
+use tch::{nn, no_grad, Tensor};
 use ulid::Ulid;
 
 pub struct DQN {
-    agent_id: Ulid,
-    model: Box<dyn BaseQFunction>,
+    pub agent_id: Ulid,
+    pub model: Box<dyn BaseQFunction>,
     optimizer: nn::Optimizer,
     transition_buffer: Arc<TransitionBuffer>,
     explorer: Box<dyn BaseExplorer>,
+    selector: Option<Arc<Box<dyn BaseSelector>>>,
     action_size: usize,
     batch_size: usize,
     update_interval: usize,
@@ -35,6 +37,7 @@ impl DQN {
         update_interval: usize,
         target_update_interval: usize,
         explorer: Box<dyn BaseExplorer>,
+        selector: Option<Arc<Box<dyn BaseSelector>>>,
         gamma: f64,
     ) -> Self {
         let target_model = model.clone();
@@ -44,6 +47,7 @@ impl DQN {
             optimizer,
             transition_buffer,
             explorer,
+            selector,
             action_size,
             batch_size,
             update_interval,
@@ -53,6 +57,11 @@ impl DQN {
             t: 0,
             current_episode_id: Ulid::new(),
         }
+    }
+
+    pub fn copy_q_from(&mut self, q_net: Box<dyn BaseQFunction>) {
+        self.model = q_net;
+        self._sync_target_model();
     }
 
     fn _update(&mut self) {
@@ -156,7 +165,7 @@ impl BaseAgent for DQN {
                 .select_action(self.t, &random_action_func, &greedy_action_func);
         let action = Tensor::from_slice(&[action_idx as i64]).detach();
 
-        self.transition_buffer.append(
+        let experience = self.transition_buffer.append(
             self.agent_id,
             self.current_episode_id,
             state,
@@ -165,6 +174,11 @@ impl BaseAgent for DQN {
             false,
             self.gamma,
         );
+
+        if self.selector.is_some() {
+            self.selector.as_ref().unwrap().observe(experience.as_ref());
+        }
+
         if self.t % self.update_interval == 0 {
             self._update();
         }
@@ -202,7 +216,6 @@ mod tests {
     use super::*;
     use crate::explorers::EpsilonGreedy;
     use crate::models::FCQNetwork;
-    use rayon::prelude::*;
     use std::sync::Arc;
     use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
@@ -223,6 +236,7 @@ mod tests {
             8,
             100,
             Box::new(explorer),
+            None,
             0.99,
         );
 
@@ -250,6 +264,7 @@ mod tests {
             50,
             100,
             Box::new(explorer),
+            None,
             0.5,
         );
 
@@ -310,6 +325,7 @@ mod tests {
                 16,
                 100,
                 Box::new(explorer),
+                None,
                 0.5,
             );
 

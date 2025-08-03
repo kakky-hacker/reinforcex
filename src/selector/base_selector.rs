@@ -1,8 +1,8 @@
 use crate::memory::Experience;
 use ulid::Ulid;
 
-pub trait BaseSelector {
-    fn observe(&mut self, experience: &Experience);
-    fn prune(&self, agent_id: &Ulid) -> bool;
-    fn select_next_parents(&self, agent_id: &Ulid) -> Vec<&Ulid>;
+pub trait BaseSelector: Send + Sync {
+    fn observe(&self, experience: &Experience);
+    fn delete(&self, agent_id: &Ulid);
+    fn find_pareto_dominant(&self, agent_id: &Ulid) -> Vec<Ulid>;
 }

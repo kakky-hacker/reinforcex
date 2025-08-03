@@ -1,7 +1,10 @@
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 use reinforcex::agents::{BaseAgent, DQN};
 use reinforcex::explorers::EpsilonGreedy;
 use reinforcex::memory::TransitionBuffer;
 use reinforcex::models::FCQNetwork;
+use reinforcex::selector::{BaseSelector, RewardBasedSelector};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -29,7 +32,8 @@ struct StepResponse {
 async fn run_agent_on_env(
     env_port: u16,
     agent_id: usize,
-    shared_buffer: Arc<TransitionBuffer>,
+    agents: Arc<Vec<Mutex<DQN>>>,
+    selector: Arc<Box<dyn BaseSelector>>,
     reward_log_map: Arc<Mutex<HashMap<usize, Vec<f64>>>>,
     is_cuda: bool,
 ) {
@@ -40,35 +44,14 @@ async fn run_agent_on_env(
 
     let base_url = format!("http://localhost:{}", env_port);
 
-    // --- Agent Setup ---
-    let device;
-    if is_cuda {
-        device = Device::Cuda(0);
-    } else {
-        device = Device::Cpu;
-    }
-    let vs = nn::VarStore::new(device);
-    let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
-    let model = Box::new(FCQNetwork::new(vs, 8, 4, 2, 300));
-
-    let explorer = EpsilonGreedy::new(1.0, 0.05, 10000);
-    let mut agent = DQN::new(
-        model,
-        Arc::clone(&shared_buffer),
-        optimizer,
-        4,
-        64,
-        8,
-        50,
-        Box::new(explorer),
-        0.99,
-    );
-
     // --- Training Loop ---
-    let episodes = 1000;
+    let episodes = 3000;
     let max_steps = 100000;
     let mut total_reward = 0.0;
     let start = Instant::now();
+    let mut j = 0;
+
+    let mut flag = false;
 
     for episode in 1..=episodes {
         // /reset
@@ -86,9 +69,12 @@ async fn run_agent_on_env(
         let session_id = resp.session_id;
         let mut reward = 0.0;
 
-        for _ in 0..max_steps {
+        for t in 0..max_steps {
             let obs_tensor = Tensor::from_slice(&obs).to_kind(Kind::Float);
-            let action_tensor = agent.act_and_train(&obs_tensor, reward);
+            let action_tensor = agents[agent_id]
+                .lock()
+                .unwrap()
+                .act_and_train(&obs_tensor, reward);
             let action = action_tensor.int64_value(&[]) as usize;
 
             // /step
@@ -106,15 +92,47 @@ async fn run_agent_on_env(
             reward = resp.reward;
             total_reward += reward;
 
-            if resp.done {
+            let mut prune = false;
+
+            if flag && j % 1000 == 0 {
+                let dominants =
+                    selector.find_pareto_dominant(&agents[agent_id].lock().unwrap().agent_id);
+                if dominants.len() > 0 {
+                    println!("[Agent {}] pruned, dominants:{:?}", agent_id, dominants);
+                    selector.delete(&agents[agent_id].lock().unwrap().agent_id);
+                    let mut rng = thread_rng();
+                    let d_id = dominants.choose(&mut rng).unwrap();
+                    for (k, agent) in agents.iter().enumerate() {
+                        if &agent.lock().unwrap().agent_id == d_id {
+                            println!("[Agent {}] copy {}", agent_id, k);
+                            agents[agent_id]
+                                .lock()
+                                .unwrap()
+                                .copy_q_from(agent.lock().unwrap().model.clone());
+                            break;
+                        }
+                    }
+                    prune = true;
+                }
+            }
+
+            if resp.done || prune {
                 let obs_tensor = Tensor::from_slice(&obs).to_kind(Kind::Float);
-                agent.stop_episode_and_train(&obs_tensor, reward);
+                agents[agent_id]
+                    .lock()
+                    .unwrap()
+                    .stop_episode_and_train(&obs_tensor, reward);
                 break;
             }
+
+            j += 1;
         }
 
         if episode % 10 == 0 {
             let avg_reward = total_reward / 10.0;
+            if avg_reward > 100.0 {
+                flag = true;
+            }
             println!(
                 "[Agent {}] Episode {}, Avg Reward: {:.1}, Elapsed time: {:?}",
                 agent_id,
@@ -137,25 +155,81 @@ async fn run_agent_on_env(
 }
 
 pub async fn train_web_LunarLander_with_dqn() {
-    let shared_buffer1 = Arc::new(TransitionBuffer::new(4000, 1));
+    let shared_buffer1 = Arc::new(TransitionBuffer::new(36000, 1));
     let shared_buffer2 = Arc::new(TransitionBuffer::new(36000, 1));
+    let selector1: Arc<Box<dyn BaseSelector>> =
+        Arc::new(Box::new(RewardBasedSelector::new(-1.96, 5000, 5000)));
+    let selector2: Arc<Box<dyn BaseSelector>> =
+        Arc::new(Box::new(RewardBasedSelector::new(-1.96, 5000, 5000)));
+
     let ports: Vec<u16> = (8001..=8010).collect();
 
     let reward_log_map: Arc<Mutex<HashMap<usize, Vec<f64>>>> = Arc::new(Mutex::new(HashMap::new()));
 
     let mut handles = Vec::new();
 
-    for (i, port) in ports.into_iter().enumerate() {
+    let mut agents: Vec<Mutex<DQN>> = vec![];
+    // --- Agent Setup ---
+    for i in 0..ports.len() {
         let buffer = if i == 0 {
             Arc::clone(&shared_buffer1)
         } else {
             Arc::clone(&shared_buffer2)
         };
 
+        let selector: Arc<Box<dyn BaseSelector>> = if i == 0 {
+            Arc::clone(&selector1)
+        } else {
+            Arc::clone(&selector2)
+        };
+        let device;
+        if Cuda::is_available() {
+            device = Device::Cuda(0);
+        } else {
+            device = Device::Cpu;
+        }
+        let vs = nn::VarStore::new(device);
+        let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
+        let model = Box::new(FCQNetwork::new(vs, 8, 4, 2, 300));
+
+        let explorer = EpsilonGreedy::new(1.0, 0.05, 10000);
+        let agent = Mutex::new(DQN::new(
+            model,
+            buffer,
+            optimizer,
+            4,
+            64,
+            8,
+            50,
+            Box::new(explorer),
+            Some(selector.clone()),
+            0.99,
+        ));
+        agents.push(agent);
+    }
+
+    let arc_agents = Arc::new(agents);
+
+    for (i, port) in ports.into_iter().enumerate() {
+        let selector: Arc<Box<dyn BaseSelector>> = if i == 0 {
+            Arc::clone(&selector1)
+        } else {
+            Arc::clone(&selector2)
+        };
         let reward_log_map = Arc::clone(&reward_log_map);
 
+        let agents = Arc::clone(&arc_agents);
+
         let handle = tokio::spawn(async move {
-            run_agent_on_env(port, i, buffer, reward_log_map, Cuda::is_available()).await;
+            run_agent_on_env(
+                port,
+                i,
+                agents,
+                selector,
+                reward_log_map,
+                Cuda::is_available(),
+            )
+            .await;
         });
 
         handles.push(handle);

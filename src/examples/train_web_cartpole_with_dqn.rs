@@ -48,6 +48,7 @@ fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<Transitio
         16,
         100,
         Box::new(explorer),
+        None,
         0.97,
     );
 
