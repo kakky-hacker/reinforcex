@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+#[derive(Clone)]
 pub struct BoundedVecDeque<T> {
     deque: VecDeque<T>,
     max_len: usize,
@@ -33,7 +34,7 @@ where
         self.deque.is_empty()
     }
 
-    pub fn clone(&self) -> VecDeque<T> {
+    pub fn clone_deque(&self) -> VecDeque<T> {
         self.deque.clone()
     }
 
@@ -43,6 +44,10 @@ where
 
     pub fn len(&self) -> usize {
         self.deque.len()
+    }
+
+    pub fn to_vec(&self) -> Vec<T> {
+        self.deque.clone().into_iter().collect()
     }
 }
 
@@ -64,8 +69,11 @@ mod tests {
         assert!(deque.push_back(2).is_none());
         assert!(deque.push_back(3).is_none());
         assert_eq!(deque.push_back(4).unwrap(), 1);
-        assert_eq!(deque.clone().len(), 3);
-        assert_eq!(deque.clone().into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
+        assert_eq!(deque.clone_deque().len(), 3);
+        assert_eq!(
+            deque.clone_deque().into_iter().collect::<Vec<_>>(),
+            vec![2, 3, 4]
+        );
         assert!(!deque.is_empty());
     }
 
@@ -75,7 +83,7 @@ mod tests {
         deque.push_back(1);
         deque.push_back(2);
         deque.empty();
-        assert_eq!(deque.clone().len(), 0);
+        assert_eq!(deque.clone_deque().len(), 0);
         assert!(deque.is_empty());
     }
 }

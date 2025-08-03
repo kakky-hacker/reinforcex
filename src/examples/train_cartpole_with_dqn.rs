@@ -45,6 +45,7 @@ pub fn train_cartpole_with_dqn() {
         update_interval,
         target_update_interval,
         Box::new(explorer),
+        None,
         gamma,
     );
 

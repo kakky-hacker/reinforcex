@@ -3,15 +3,18 @@ use crate::explorers::BaseExplorer;
 use crate::memory::TransitionBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::BaseQFunction;
-use std::sync::Arc;
-use tch::{nn, no_grad, Device, Tensor};
+use crate::selector::BaseSelector;
+use std::{ops::Deref, sync::Arc};
+use tch::{nn, no_grad, Tensor};
 use ulid::Ulid;
 
 pub struct DQN {
+    agent_id: Ulid,
     model: Box<dyn BaseQFunction>,
     optimizer: nn::Optimizer,
     transition_buffer: Arc<TransitionBuffer>,
     explorer: Box<dyn BaseExplorer>,
+    selector: Option<Arc<Box<dyn BaseSelector>>>,
     action_size: usize,
     batch_size: usize,
     update_interval: usize,
@@ -34,14 +37,17 @@ impl DQN {
         update_interval: usize,
         target_update_interval: usize,
         explorer: Box<dyn BaseExplorer>,
+        selector: Option<Arc<Box<dyn BaseSelector>>>,
         gamma: f64,
     ) -> Self {
         let target_model = model.clone();
         DQN {
+            agent_id: Ulid::new(),
             model,
             optimizer,
             transition_buffer,
             explorer,
+            selector,
             action_size,
             batch_size,
             update_interval,
@@ -130,6 +136,15 @@ impl DQN {
         let loss = (q_values - pred_q_values).square().mean(tch::Kind::Float);
         loss
     }
+
+    pub fn get_model(&self) -> &Box<dyn BaseQFunction> {
+        &self.model
+    }
+
+    pub fn copy_model_from(&mut self, agent: &DQN) {
+        self.model = agent.get_model().deref().clone();
+        self._sync_target_model();
+    }
 }
 
 impl BaseAgent for DQN {
@@ -154,7 +169,8 @@ impl BaseAgent for DQN {
                 .select_action(self.t, &random_action_func, &greedy_action_func);
         let action = Tensor::from_slice(&[action_idx as i64]).detach();
 
-        self.transition_buffer.append(
+        let experience = self.transition_buffer.append(
+            self.agent_id,
             self.current_episode_id,
             state,
             Some(action.shallow_clone()),
@@ -162,6 +178,11 @@ impl BaseAgent for DQN {
             false,
             self.gamma,
         );
+
+        if self.selector.is_some() {
+            self.selector.as_ref().unwrap().observe(experience.as_ref());
+        }
+
         if self.t % self.update_interval == 0 {
             self._update();
         }
@@ -174,6 +195,7 @@ impl BaseAgent for DQN {
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
         self.transition_buffer.append(
+            self.agent_id,
             self.current_episode_id,
             state,
             None,
@@ -188,6 +210,10 @@ impl BaseAgent for DQN {
         vec![]
     }
 
+    fn get_agent_id(&self) -> &Ulid {
+        &self.agent_id
+    }
+
     fn save(&self, dirname: &str, ancestors: std::collections::HashSet<String>) {}
 
     fn load(&self, dirname: &str, ancestors: std::collections::HashSet<String>) {}
@@ -198,7 +224,6 @@ mod tests {
     use super::*;
     use crate::explorers::EpsilonGreedy;
     use crate::models::FCQNetwork;
-    use rayon::prelude::*;
     use std::sync::Arc;
     use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
@@ -219,6 +244,7 @@ mod tests {
             8,
             100,
             Box::new(explorer),
+            None,
             0.99,
         );
 
@@ -246,6 +272,7 @@ mod tests {
             50,
             100,
             Box::new(explorer),
+            None,
             0.5,
         );
 
@@ -306,6 +333,7 @@ mod tests {
                 16,
                 100,
                 Box::new(explorer),
+                None,
                 0.5,
             );
 

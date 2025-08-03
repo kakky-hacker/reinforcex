@@ -7,6 +7,7 @@ use tch::{nn, no_grad, Device, Kind, Tensor};
 use ulid::Ulid;
 
 pub struct PPO {
+    agent_id: Ulid,
     model: Box<dyn BasePolicy>,
     optimizer: nn::Optimizer,
     transition_buffer: Arc<TransitionBuffer>,
@@ -36,6 +37,7 @@ impl PPO {
     ) -> Self {
         assert!(minibatch_size <= update_interval);
         PPO {
+            agent_id: Ulid::new(),
             model,
             optimizer,
             transition_buffer,
@@ -155,6 +157,7 @@ impl BaseAgent for PPO {
         let action = action_distrib.sample().to_device(Device::Cpu);
 
         self.transition_buffer.append(
+            self.agent_id,
             self.current_episode_id,
             state,
             Some(action.shallow_clone()),
@@ -174,6 +177,7 @@ impl BaseAgent for PPO {
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
         self.transition_buffer.append(
+            self.agent_id,
             self.current_episode_id,
             state,
             None,
@@ -186,6 +190,10 @@ impl BaseAgent for PPO {
 
     fn get_statistics(&self) -> Vec<(String, f64)> {
         vec![]
+    }
+
+    fn get_agent_id(&self) -> &Ulid {
+        &self.agent_id
     }
 
     fn save(&self, dirname: &str, ancestors: std::collections::HashSet<String>) {}

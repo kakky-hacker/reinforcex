@@ -5,6 +5,7 @@ pub mod explorers;
 pub mod memory;
 pub mod models;
 pub mod prob_distributions;
+pub mod selector;
 
 pub fn load_cuda_dlls() {
     #[cfg(all(feature = "cuda", target_os = "windows"))]
