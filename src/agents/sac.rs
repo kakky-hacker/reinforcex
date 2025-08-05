@@ -1,5 +1,5 @@
 use super::base_agent::BaseAgent;
-use crate::memory::TransitionBufferForOffpolicy;
+use crate::memory::ReplayBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::{BasePolicy, BaseQFunction};
 use std::sync::Arc;
@@ -15,7 +15,7 @@ pub struct SAC {
     target_critic2: Box<dyn BaseQFunction>,
     actor_optimizer: nn::Optimizer,
     critic_optimizer: nn::Optimizer,
-    transition_buffer: Arc<TransitionBufferForOffpolicy>,
+    transition_buffer: Arc<ReplayBuffer>,
     gamma: f64,
     tau: f64,
     alpha: f64,
@@ -35,7 +35,7 @@ impl SAC {
         critic2: Box<dyn BaseQFunction>,
         actor_optimizer: nn::Optimizer,
         critic_optimizer: nn::Optimizer,
-        transition_buffer: Arc<TransitionBufferForOffpolicy>,
+        transition_buffer: Arc<ReplayBuffer>,
         gamma: f64,
         tau: f64,
         alpha: f64,

@@ -1,5 +1,5 @@
 use super::base_agent::BaseAgent;
-use crate::memory::TransitionBufferForOffpolicy;
+use crate::memory::ReplayBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::BasePolicy;
 use std::sync::Arc;
@@ -10,7 +10,7 @@ pub struct PPO {
     agent_id: Ulid,
     model: Box<dyn BasePolicy>,
     optimizer: nn::Optimizer,
-    transition_buffer: Arc<TransitionBufferForOffpolicy>,
+    transition_buffer: Arc<ReplayBuffer>,
     gamma: f64,
     update_interval: usize,
     epoch: usize,
@@ -27,7 +27,7 @@ impl PPO {
     pub fn new(
         model: Box<dyn BasePolicy>,
         optimizer: nn::Optimizer,
-        transition_buffer: Arc<TransitionBufferForOffpolicy>,
+        transition_buffer: Arc<ReplayBuffer>,
         gamma: f64,
         update_interval: usize,
         epoch: usize,
@@ -212,7 +212,7 @@ mod tests {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCSoftmaxPolicyWithValue::new(vs, 4, 2, 2, 64, 0.0);
-        let transition_buffer = Arc::new(TransitionBufferForOffpolicy::new(1000, 3));
+        let transition_buffer = Arc::new(ReplayBuffer::new(1000, 3));
 
         let ppo = PPO::new(
             Box::new(model),
@@ -237,7 +237,7 @@ mod tests {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCSoftmaxPolicyWithValue::new(vs, 4, 4, 2, 64, 0.0);
-        let transition_buffer = Arc::new(TransitionBufferForOffpolicy::new(1000, 1));
+        let transition_buffer = Arc::new(ReplayBuffer::new(1000, 1));
 
         let mut ppo = PPO::new(
             Box::new(model),

@@ -1,5 +1,5 @@
-mod experience;
-mod transition_buffer_for_offpolicy;
+mod onpolicy_buffer;
+mod replay_buffer;
 
-pub use experience::Experience;
-pub use transition_buffer_for_offpolicy::TransitionBufferForOffpolicy;
+pub use onpolicy_buffer::OnPolicyBuffer;
+pub use replay_buffer::{Experience, ReplayBuffer};

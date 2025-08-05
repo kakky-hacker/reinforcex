@@ -1,6 +1,6 @@
 use super::base_agent::BaseAgent;
 use crate::explorers::BaseExplorer;
-use crate::memory::TransitionBufferForOffpolicy;
+use crate::memory::ReplayBuffer;
 use crate::misc::batch_states::batch_states;
 use crate::models::BaseQFunction;
 use crate::selector::BaseSelector;
@@ -12,7 +12,7 @@ pub struct DQN {
     agent_id: Ulid,
     model: Box<dyn BaseQFunction>,
     optimizer: nn::Optimizer,
-    transition_buffer: Arc<TransitionBufferForOffpolicy>,
+    transition_buffer: Arc<ReplayBuffer>,
     explorer: Box<dyn BaseExplorer>,
     selector: Option<Arc<Box<dyn BaseSelector>>>,
     action_size: usize,
@@ -30,7 +30,7 @@ unsafe impl Send for DQN {}
 impl DQN {
     pub fn new(
         model: Box<dyn BaseQFunction>,
-        transition_buffer: Arc<TransitionBufferForOffpolicy>,
+        transition_buffer: Arc<ReplayBuffer>,
         optimizer: nn::Optimizer,
         action_size: usize,
         batch_size: usize,
@@ -233,7 +233,7 @@ mod tests {
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCQNetwork::new(vs, 4, 2, 2, 64);
         let explorer = EpsilonGreedy::new(1.0, 0.1, 1000);
-        let transition_buffer = Arc::new(TransitionBufferForOffpolicy::new(1000, 3));
+        let transition_buffer = Arc::new(ReplayBuffer::new(1000, 3));
 
         let dqn = DQN::new(
             Box::new(model),
@@ -262,7 +262,7 @@ mod tests {
         let optimizer = nn::Adam::default().build(&vs, 1e-2).unwrap();
         let model = FCQNetwork::new(vs, 4, 4, 2, 128);
         let explorer = EpsilonGreedy::new(1.0, 0.0, 1000);
-        let transition_buffer = Arc::new(TransitionBufferForOffpolicy::new(1000, 1));
+        let transition_buffer = Arc::new(ReplayBuffer::new(1000, 1));
         let mut dqn = DQN::new(
             Box::new(model),
             transition_buffer,
@@ -316,7 +316,7 @@ mod tests {
         use std::sync::Arc;
         use tch::{Device, Kind, Tensor};
 
-        let buffer = Arc::new(TransitionBufferForOffpolicy::new(10000, 1));
+        let buffer = Arc::new(ReplayBuffer::new(10000, 1));
         let n_threads = 3;
 
         (0..n_threads).into_par_iter().for_each(|_| {

@@ -1,4 +1,3 @@
-use super::experience::Experience;
 use crate::misc::bounded_vec_deque::BoundedVecDeque;
 use crate::misc::cumsum;
 use crate::misc::random_access_queue::RandomAccessQueue;
@@ -7,14 +6,28 @@ use std::sync::{Arc, Mutex};
 use tch::Tensor;
 use ulid::Ulid;
 
+pub struct Experience {
+    pub agent_id: Ulid,
+    pub episode_id: Ulid,
+    pub state: Tensor,
+    pub action: Option<Tensor>,
+    pub reward_for_this_state: f64,
+    pub is_episode_terminal: bool,
+    pub n_step_discounted_reward: Mutex<Option<f64>>,
+    pub n_step_after_experience: Mutex<Option<Arc<Experience>>>,
+}
+
+// Tensor does not implement Sync due to raw pointer, so we promise safety manually
+unsafe impl Sync for Experience {}
+
 #[derive(Clone)]
-pub struct TransitionBufferForOffpolicy {
+pub struct ReplayBuffer {
     experiences: Arc<Mutex<RandomAccessQueue<Arc<Experience>>>>,
     last_n_experiences_by_episode: Arc<Mutex<HashMap<Ulid, BoundedVecDeque<Arc<Experience>>>>>,
     n_steps: usize,
 }
 
-impl TransitionBufferForOffpolicy {
+impl ReplayBuffer {
     pub fn new(capacity: usize, n_steps: usize) -> Self {
         assert!(capacity > 0);
         assert!(n_steps > 0);
@@ -138,13 +151,13 @@ mod tests {
 
     #[test]
     fn test_replay_buffer_new() {
-        let buffer = TransitionBufferForOffpolicy::new(100, 5);
+        let buffer = ReplayBuffer::new(100, 5);
         assert_eq!(buffer.len(), 0);
     }
 
     #[test]
     fn test_replay_buffer_append_and_len() {
-        let buffer = TransitionBufferForOffpolicy::new(100, 1);
+        let buffer = ReplayBuffer::new(100, 1);
         let state = Tensor::from_slice(&[1.0]);
         let episode_id = Ulid::new();
         buffer.append(
@@ -181,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_is_episode_terminal() {
-        let buffer = TransitionBufferForOffpolicy::new(100, 1);
+        let buffer = ReplayBuffer::new(100, 1);
         let state = Tensor::from_slice(&[1.0]);
         let episode_id = Ulid::new();
         buffer.append(
@@ -197,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_replay_buffer_sample() {
-        let buffer = TransitionBufferForOffpolicy::new(100, 5);
+        let buffer = ReplayBuffer::new(100, 5);
         let episode_id = Ulid::new();
         for i in 0..10 {
             let state = Tensor::from_slice(&[i as f64]);
@@ -209,7 +222,7 @@ mod tests {
 
     #[test]
     fn test_replay_buffer_terminal_state() {
-        let buffer = TransitionBufferForOffpolicy::new(100, 5);
+        let buffer = ReplayBuffer::new(100, 5);
         let episode_id = Ulid::new();
         for i in 0..5 {
             let state = Tensor::from_slice(&[i as f64]);
@@ -227,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_q_value_and_next_experience_update() {
-        let buffer = TransitionBufferForOffpolicy::new(100, 2);
+        let buffer = ReplayBuffer::new(100, 2);
         let state1 = Tensor::from_slice(&[0.0]);
         let state2 = Tensor::from_slice(&[1.0]);
         let state3 = Tensor::from_slice(&[2.0]);
@@ -292,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_concurrent_append_and_sample_with_threads() {
-        let buffer = Arc::new(TransitionBufferForOffpolicy::new(200, 3));
+        let buffer = Arc::new(ReplayBuffer::new(200, 3));
         let n_threads = 10;
 
         (0..n_threads).into_par_iter().for_each(|i| {
