@@ -33,7 +33,7 @@ fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<ReplayBuf
     let base_url = format!("http://localhost:{}", env_port);
 
     // --- Agent Setup ---
-    let device = Device::Cuda(0);
+    let device = Device::Cpu;
     let vs = nn::VarStore::new(device);
     let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
     let model = Box::new(FCQNetwork::new(vs, 4, 2, 2, 200));
