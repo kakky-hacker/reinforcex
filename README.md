@@ -26,7 +26,7 @@ Instantiate the agent.
 use reinforcex::agents::{BaseAgent, DQN};
 use reinforcex::explorers::EpsilonGreedy;
 use reinforcex::models::FCQNetwork;
-use reinforcex::memory::TransitionBuffer;
+use reinforcex::memory::ReplayBuffer;
 use std::sync::Arc;
 
 let device = Device::cuda_if_available();
@@ -53,7 +53,7 @@ let target_update_interval = 100;
 let replay_buffer_capacity = 2000
 
 let explorer = EpsilonGreedy::new(0.5, 0.1, 50000);
-let transition_buffer = Arc::new(TransitionBuffer::new(replay_buffer_capacity, n_steps));
+let transition_buffer = Arc::new(ReplayBuffer::new(replay_buffer_capacity, n_steps));
 
 let mut agent = DQN::new(
     model,
@@ -87,11 +87,11 @@ for episode in 0..max_episode {
 ```
 
 This is a pseudo code for parallel learning.
-TransitionBuffer is shared by all agents.
+ReplayBuffer is shared by all agents.
 ```Rust
 use rayon::prelude::*;
 
-let buffer = Arc::new(TransitionBuffer::new(1000, 1));
+let buffer = Arc::new(ReplayBuffer::new(1000, 1));
 
 (0..n_threads).into_par_iter().for_each(|_| {
     let mut dqn = DQN::new(

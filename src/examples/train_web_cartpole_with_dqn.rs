@@ -1,6 +1,6 @@
 use reinforcex::agents::{BaseAgent, DQN};
 use reinforcex::explorers::EpsilonGreedy;
-use reinforcex::memory::TransitionBuffer;
+use reinforcex::memory::ReplayBuffer;
 use reinforcex::models::FCQNetwork;
 use std::time::Instant;
 
@@ -24,7 +24,7 @@ struct StepResponse {
     done: bool,
 }
 
-fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<TransitionBuffer>) {
+fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<ReplayBuffer>) {
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -121,7 +121,7 @@ fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<Transitio
 }
 
 pub fn train_web_cartpole_with_dqn() {
-    let shared_buffer = Arc::new(TransitionBuffer::new(300000, 5));
+    let shared_buffer = Arc::new(ReplayBuffer::new(300000, 5));
     let ports: Vec<u16> = (8001..=8004).collect();
 
     ports

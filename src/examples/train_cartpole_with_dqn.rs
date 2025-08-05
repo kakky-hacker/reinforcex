@@ -3,7 +3,7 @@ extern crate gym;
 use gym::Action;
 use reinforcex::agents::{BaseAgent, DQN};
 use reinforcex::explorers::EpsilonGreedy;
-use reinforcex::memory::TransitionBuffer;
+use reinforcex::memory::ReplayBuffer;
 use reinforcex::models::FCQNetwork;
 use std::sync::Arc;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
@@ -34,7 +34,7 @@ pub fn train_cartpole_with_dqn() {
     let target_update_interval = 100;
     let replay_buffer_capacity = 20000;
 
-    let transition_buffer = Arc::new(TransitionBuffer::new(replay_buffer_capacity, n_steps));
+    let transition_buffer = Arc::new(ReplayBuffer::new(replay_buffer_capacity, n_steps));
 
     let mut agent = DQN::new(
         model,

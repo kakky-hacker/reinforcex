@@ -1,4 +1,5 @@
-mod transition_buffer;
+mod onpolicy_buffer;
+mod replay_buffer;
 
-pub use transition_buffer::Experience;
-pub use transition_buffer::TransitionBuffer;
+pub use onpolicy_buffer::OnPolicyBuffer;
+pub use replay_buffer::{Experience, ReplayBuffer};

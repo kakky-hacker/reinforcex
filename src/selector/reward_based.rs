@@ -33,7 +33,7 @@ impl BaseSelector for RewardBasedSelector {
             .unwrap()
             .entry(experience.agent_id)
             .or_insert_with(|| BoundedVecDeque::new(self.horizon))
-            .push_back(experience.reward_for_this_state);
+            .push_back(experience.reward);
     }
 
     fn delete(&self, agent_id: &Ulid) {

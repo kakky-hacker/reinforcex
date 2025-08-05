@@ -2,7 +2,7 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 use reinforcex::agents::{BaseAgent, DQN};
 use reinforcex::explorers::EpsilonGreedy;
-use reinforcex::memory::TransitionBuffer;
+use reinforcex::memory::ReplayBuffer;
 use reinforcex::models::FCQNetwork;
 use reinforcex::selector::{BaseSelector, RewardBasedSelector};
 use std::collections::HashMap;
@@ -155,8 +155,8 @@ async fn run_agent_on_env(
 }
 
 pub async fn train_web_LunarLander_with_dqn() {
-    let shared_buffer1 = Arc::new(TransitionBuffer::new(36000, 1));
-    let shared_buffer2 = Arc::new(TransitionBuffer::new(36000, 1));
+    let shared_buffer1 = Arc::new(ReplayBuffer::new(36000, 1));
+    let shared_buffer2 = Arc::new(ReplayBuffer::new(36000, 1));
     let selector1: Arc<Box<dyn BaseSelector>> =
         Arc::new(Box::new(RewardBasedSelector::new(-1.96, 5000, 5000)));
     let selector2: Arc<Box<dyn BaseSelector>> =
