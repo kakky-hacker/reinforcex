@@ -61,7 +61,10 @@ impl OnPolicyBuffer {
         experience
     }
 
-    pub fn clear(&mut self) {
-        self.experiences_by_episode = HashMap::new();
+    pub fn flush(&mut self) -> Vec<Vec<Arc<Experience>>> {
+        self.experiences_by_episode
+            .drain()
+            .map(|(_k, v)| v.to_vec())
+            .collect()
     }
 }
