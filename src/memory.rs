@@ -1,4 +1,5 @@
-mod transition_buffer;
+mod experience;
+mod transition_buffer_for_offpolicy;
 
-pub use transition_buffer::Experience;
-pub use transition_buffer::TransitionBuffer;
+pub use experience::Experience;
+pub use transition_buffer_for_offpolicy::TransitionBufferForOffpolicy;

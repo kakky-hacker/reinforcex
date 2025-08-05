@@ -1,3 +1,4 @@
+use super::experience::Experience;
 use crate::misc::bounded_vec_deque::BoundedVecDeque;
 use crate::misc::cumsum;
 use crate::misc::random_access_queue::RandomAccessQueue;
@@ -7,39 +8,19 @@ use tch::Tensor;
 use ulid::Ulid;
 
 #[derive(Clone)]
-pub struct TransitionBuffer {
-    memory: Arc<Mutex<Memory>>,
+pub struct TransitionBufferForOffpolicy {
+    experiences: Arc<Mutex<RandomAccessQueue<Arc<Experience>>>>,
+    last_n_experiences_by_episode: Arc<Mutex<HashMap<Ulid, BoundedVecDeque<Arc<Experience>>>>>,
     n_steps: usize,
 }
 
-pub struct Memory {
-    experiences: RandomAccessQueue<Arc<Experience>>,
-    last_n_experiences_by_episode: HashMap<Ulid, BoundedVecDeque<Arc<Experience>>>,
-}
-
-pub struct Experience {
-    pub agent_id: Ulid,
-    pub episode_id: Ulid,
-    pub state: Tensor,
-    pub action: Option<Tensor>,
-    pub reward_for_this_state: f64,
-    pub n_step_discounted_reward: Mutex<Option<f64>>,
-    pub n_step_after_experience: Mutex<Option<Arc<Experience>>>,
-    pub is_episode_terminal: bool,
-}
-
-// Tensor does not implement Sync due to raw pointer, so we promise safety manually
-unsafe impl Sync for Experience {}
-
-impl TransitionBuffer {
+impl TransitionBufferForOffpolicy {
     pub fn new(capacity: usize, n_steps: usize) -> Self {
         assert!(capacity > 0);
         assert!(n_steps > 0);
         Self {
-            memory: Arc::new(Mutex::new(Memory {
-                experiences: RandomAccessQueue::new(capacity),
-                last_n_experiences_by_episode: HashMap::new(),
-            })),
+            experiences: Arc::new(Mutex::new(RandomAccessQueue::new(capacity))),
+            last_n_experiences_by_episode: Arc::new(Mutex::new(HashMap::new())),
             n_steps,
         }
     }
@@ -65,10 +46,9 @@ impl TransitionBuffer {
             is_episode_terminal,
         });
 
-        let mut memory = self.memory.lock().unwrap();
+        let mut last_n_experiences_by_episode = self.last_n_experiences_by_episode.lock().unwrap();
 
-        let last_n_experiences = memory
-            .last_n_experiences_by_episode
+        let last_n_experiences = last_n_experiences_by_episode
             .entry(episode_id)
             .or_insert_with(|| BoundedVecDeque::new(self.n_steps));
 
@@ -85,13 +65,11 @@ impl TransitionBuffer {
                 )[0],
             );
             *exp.n_step_after_experience.lock().unwrap() = Some(experience.clone());
-            memory.experiences.append(exp);
+            self.experiences.lock().unwrap().append(exp);
         }
 
         if is_episode_terminal {
-            if let Some(last_n_experiences) =
-                memory.last_n_experiences_by_episode.remove(&episode_id)
-            {
+            if let Some(last_n_experiences) = last_n_experiences_by_episode.remove(&episode_id) {
                 let mut rewards = last_n_experiences
                     .clone_deque()
                     .into_iter()
@@ -109,7 +87,7 @@ impl TransitionBuffer {
                     }
                     *exp.n_step_discounted_reward.lock().unwrap() = Some(q);
                     *exp.n_step_after_experience.lock().unwrap() = Some(experience.clone());
-                    memory.experiences.append(exp);
+                    self.experiences.lock().unwrap().append(exp);
                 }
             }
         }
@@ -118,17 +96,18 @@ impl TransitionBuffer {
     }
 
     pub fn sample(&self, num_experiences: usize, replacement: bool) -> Vec<Arc<Experience>> {
-        let memory = self.memory.lock().unwrap();
         if replacement {
-            memory
-                .experiences
+            self.experiences
+                .lock()
+                .unwrap()
                 .sample_with_replacement(num_experiences)
                 .into_iter()
                 .cloned()
                 .collect()
         } else {
-            memory
-                .experiences
+            self.experiences
+                .lock()
+                .unwrap()
                 .sample_without_replacement(num_experiences)
                 .into_iter()
                 .cloned()
@@ -137,13 +116,12 @@ impl TransitionBuffer {
     }
 
     pub fn len(&self) -> usize {
-        self.memory.lock().unwrap().experiences.len()
+        self.experiences.lock().unwrap().len()
     }
 
     pub fn clear(&self) {
-        let mut memory = self.memory.lock().unwrap();
-        memory.experiences.clear();
-        memory.last_n_experiences_by_episode.clear();
+        self.experiences.lock().unwrap().clear();
+        self.last_n_experiences_by_episode.lock().unwrap().clear();
     }
 
     pub fn get_n_steps(&self) -> usize {
@@ -160,13 +138,13 @@ mod tests {
 
     #[test]
     fn test_replay_buffer_new() {
-        let buffer = TransitionBuffer::new(100, 5);
+        let buffer = TransitionBufferForOffpolicy::new(100, 5);
         assert_eq!(buffer.len(), 0);
     }
 
     #[test]
     fn test_replay_buffer_append_and_len() {
-        let buffer = TransitionBuffer::new(100, 1);
+        let buffer = TransitionBufferForOffpolicy::new(100, 1);
         let state = Tensor::from_slice(&[1.0]);
         let episode_id = Ulid::new();
         buffer.append(
@@ -203,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_is_episode_terminal() {
-        let buffer = TransitionBuffer::new(100, 1);
+        let buffer = TransitionBufferForOffpolicy::new(100, 1);
         let state = Tensor::from_slice(&[1.0]);
         let episode_id = Ulid::new();
         buffer.append(
@@ -219,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_replay_buffer_sample() {
-        let buffer = TransitionBuffer::new(100, 5);
+        let buffer = TransitionBufferForOffpolicy::new(100, 5);
         let episode_id = Ulid::new();
         for i in 0..10 {
             let state = Tensor::from_slice(&[i as f64]);
@@ -231,16 +209,15 @@ mod tests {
 
     #[test]
     fn test_replay_buffer_terminal_state() {
-        let buffer = TransitionBuffer::new(100, 5);
+        let buffer = TransitionBufferForOffpolicy::new(100, 5);
         let episode_id = Ulid::new();
         for i in 0..5 {
             let state = Tensor::from_slice(&[i as f64]);
             buffer.append(episode_id, episode_id, state, None, i as f64, i == 4, 1.0);
         }
-        let memory = buffer.memory.lock().unwrap();
+        let last_n_experiences_by_episode = buffer.last_n_experiences_by_episode.lock().unwrap();
         assert_eq!(
-            memory
-                .last_n_experiences_by_episode
+            last_n_experiences_by_episode
                 .get(&episode_id)
                 .map(|v| v.len())
                 .unwrap_or(0),
@@ -250,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_q_value_and_next_experience_update() {
-        let buffer = TransitionBuffer::new(100, 2);
+        let buffer = TransitionBufferForOffpolicy::new(100, 2);
         let state1 = Tensor::from_slice(&[0.0]);
         let state2 = Tensor::from_slice(&[1.0]);
         let state3 = Tensor::from_slice(&[2.0]);
@@ -315,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_concurrent_append_and_sample_with_threads() {
-        let buffer = Arc::new(TransitionBuffer::new(200, 3));
+        let buffer = Arc::new(TransitionBufferForOffpolicy::new(200, 3));
         let n_threads = 10;
 
         (0..n_threads).into_par_iter().for_each(|i| {
