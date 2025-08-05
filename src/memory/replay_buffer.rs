@@ -11,7 +11,7 @@ pub struct Experience {
     pub episode_id: Ulid,
     pub state: Tensor,
     pub action: Option<Tensor>,
-    pub reward_for_this_state: f64,
+    pub reward: f64,
     pub is_episode_terminal: bool,
     pub n_step_discounted_reward: Mutex<Option<f64>>,
     pub n_step_after_experience: Mutex<Option<Arc<Experience>>>,
@@ -53,7 +53,7 @@ impl ReplayBuffer {
             episode_id,
             state,
             action,
-            reward_for_this_state: reward,
+            reward,
             n_step_discounted_reward: Mutex::new(None),
             n_step_after_experience: Mutex::new(None),
             is_episode_terminal,
@@ -71,7 +71,7 @@ impl ReplayBuffer {
                     last_n_experiences
                         .clone_deque()
                         .into_iter()
-                        .map(|e| e.reward_for_this_state)
+                        .map(|e| e.reward)
                         .collect::<Vec<f64>>()
                         .as_ref(),
                     gamma,
@@ -87,7 +87,7 @@ impl ReplayBuffer {
                     .clone_deque()
                     .into_iter()
                     .skip(1)
-                    .map(|e| e.reward_for_this_state)
+                    .map(|e| e.reward)
                     .collect::<Vec<f64>>();
                 rewards.push(0.0);
                 for (exp, &q) in last_n_experiences

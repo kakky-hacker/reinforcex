@@ -46,7 +46,7 @@ impl OnPolicyBuffer {
                 episode_id,
                 state,
                 action,
-                reward_for_this_state: reward,
+                reward,
                 n_step_discounted_reward: Mutex::new(None),
                 n_step_after_experience: Mutex::new(None),
                 is_episode_terminal,

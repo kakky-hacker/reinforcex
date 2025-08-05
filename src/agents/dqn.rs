@@ -83,7 +83,7 @@ impl DQN {
                 .n_step_discounted_reward
                 .lock()
                 .unwrap()
-                .unwrap_or(experience.reward_for_this_state);
+                .unwrap_or(experience.reward);
             states.push(state);
             n_step_after_states.push(n_step_after_state);
             actions.push(action);

@@ -89,7 +89,7 @@ impl SAC {
                     .shallow_clone(),
             );
             actions.push(exp.action.as_ref().unwrap().shallow_clone());
-            rewards.push(exp.reward_for_this_state);
+            rewards.push(exp.reward);
         }
 
         let states_batch = batch_states(&states, self.actor.device());
