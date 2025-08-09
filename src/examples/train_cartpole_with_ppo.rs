@@ -1,21 +1,44 @@
-use gym::client::MakeOptions;
-extern crate gym;
-use gym::Action;
 use reinforcex::agents::{BaseAgent, PPO};
-use reinforcex::memory::ReplayBuffer;
+use reinforcex::memory::OnPolicyBuffer;
 use reinforcex::models::FCSoftmaxPolicyWithValue;
-use std::sync::Arc;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
-pub fn train_cartpole_with_ppo() {
-    println!("train_cartpole_with_ppo");
+use std::time::Instant;
+
+use rayon::prelude::*;
+use reqwest::blocking::Client;
+use serde::Deserialize;
+use std::time::Duration;
+
+#[derive(Deserialize)]
+struct ResetResponse {
+    session_id: String,
+    observation: Vec<f32>,
+}
+
+#[derive(Deserialize)]
+struct StepResponse {
+    observation: Vec<f32>,
+    reward: f64,
+    done: bool,
+}
+
+fn run_agent_on_env(env_port: u16, agent_id: usize) {
+    println!("train_cartpole_with_ppo_api");
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("HTTP client build failed");
+
+    let base_url = format!("http://localhost:{}", env_port);
 
     let device = Device::cuda_if_available();
     let vs = nn::VarStore::new(device);
     let n_input_channels = 4;
     let action_size = 2;
     let n_hidden_layers = 2;
-    let n_hidden_channels = 128;
+    let n_hidden_channels = 64;
     let min_prob = 0.0;
 
     let optimizer = nn::Adam::default().build(&vs, 2.5e-4).unwrap();
@@ -27,83 +50,104 @@ pub fn train_cartpole_with_ppo() {
         n_hidden_channels,
         min_prob,
     ));
+
     let gamma = 0.99;
-    let n_steps = 3;
+    let lambda = 0.95;
     let epoch = 4;
-    let minibatch_size = 16;
-    let update_interval = 100;
-    let clip_epsilon = 0.2;
+    let minibatch_size = 32;
+    let update_interval = 500;
+    let clip_epsilon = 0.1;
+    let value_coef = 0.5;
     let entropy_coef = 0.01;
 
-    let transition_buffer = Arc::new(ReplayBuffer::new(100000, n_steps));
+    let buffer = OnPolicyBuffer::new(None);
 
     let mut agent = PPO::new(
         model,
         optimizer,
-        transition_buffer,
+        buffer,
         gamma,
+        lambda,
         update_interval,
         epoch,
         minibatch_size,
         clip_epsilon,
+        value_coef,
         entropy_coef,
     );
-
-    let gym = gym::client::GymClient::default();
-    let env = gym
-        .make(
-            "CartPole-v1",
-            Some(MakeOptions {
-                render_mode: Some(gym::client::RenderMode::Human),
-                ..Default::default()
-            }),
-        )
-        .expect("Unable to create environment");
-
     let mut total_reward = 0.0;
     let mut total_steps = 0;
     let log_interval = 100;
-    let max_step = 500;
     let max_episode = 10000;
+
+    let start = Instant::now();
+
+    let max_steps = 500;
     for episode in 1..max_episode {
-        env.reset(None).unwrap();
+        // /reset
+        let resp = client
+            .post(format!("{}/reset", base_url))
+            .json(&serde_json::json!({ "env": "CartPole-v1" }))
+            .send()
+            .expect("reset failed")
+            .json::<ResetResponse>()
+            .expect("reset JSON parse failed");
+        let mut obs = resp.observation;
+        let session_id = resp.session_id;
         let mut reward = 0.0;
-        let mut obs = vec![0.0; 4];
-        for step in 1..max_step {
-            let obs_ = Tensor::from_slice(&obs).to_kind(Kind::Float);
-            let action_;
-            action_ = agent.act_and_train(&obs_, reward);
-            let state = env
-                .step(&Action::Discrete(action_.int64_value(&[]) as usize))
-                .unwrap();
-            obs = state.observation.get_box().unwrap().to_vec();
-            if step % 20 == 0 {
+
+        for step in 0..max_steps {
+            let obs_tensor = Tensor::from_slice(&obs).to_kind(Kind::Float);
+            let action_tensor = agent.act_and_train(&obs_tensor, reward);
+            let action = action_tensor.int64_value(&[]) as usize;
+
+            // /step
+            let resp = client
+                .post(format!("{}/step", base_url))
+                .json(&serde_json::json!({ "session_id": session_id, "action": action }))
+                .send()
+                .expect("step failed")
+                .json::<StepResponse>()
+                .expect("step JSON parse failed");
+
+            obs = resp.observation;
+            if (step + 1) % 20 == 0 {
                 reward = 5.0;
             } else {
                 reward = 0.0;
             }
-            if state.is_done || step == max_step {
-                let obs_ = Tensor::from_slice(&obs).to_kind(Kind::Float);
-                if step != max_step {
-                    reward = -30.0;
-                }
-                agent.stop_episode_and_train(&obs_, reward);
-                break;
+            if resp.done && (max_steps - step) > 10 {
+                reward = -30.0;
             }
-            env.render();
             total_reward += reward;
             total_steps += 1;
+
+            if resp.done {
+                let obs_tensor = Tensor::from_slice(&obs).to_kind(Kind::Float);
+                agent.stop_episode_and_train(&obs_tensor, reward);
+                break;
+            }
         }
-        if episode % log_interval == 0 {
+
+        if episode % 100 == 0 {
             println!(
-                "{} episode, average reward:{}, average steps:{}",
+                "[Agent {}] Episode {}, Avg Reward: {:.1}, Avg Steps: {}",
+                agent_id,
                 episode,
-                total_reward / log_interval as f64,
-                total_steps / log_interval,
+                total_reward / 100.0,
+                total_steps / 100,
             );
             total_reward = 0.0;
             total_steps = 0;
         }
     }
-    env.close();
+}
+
+pub fn train_cartpole_with_ppo() {
+    let ports: Vec<u16> = (8001..=8001).collect();
+
+    ports
+        .into_par_iter()
+        .enumerate()
+        .for_each(|(i, port)| run_agent_on_env(port, i));
 }

@@ -8,8 +8,7 @@ use crate::examples::train_cartpole_with_ppo;
 mod examples;
 use tch::Cuda;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let args: Vec<String> = env::args().collect();
 
     let mut env_value = String::new();
@@ -43,7 +42,7 @@ async fn main() {
     } else if env_value == "cartpole" && algo_value == "ppo" {
         train_cartpole_with_ppo();
     } else if env_value == "Lunar" && algo_value == "dqn" {
-        train_web_LunarLander_with_dqn().await;
+        //train_web_LunarLander_with_dqn().await;
     } else {
         panic!("Invalid env or algo");
     }
