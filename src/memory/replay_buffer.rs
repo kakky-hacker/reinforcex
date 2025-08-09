@@ -74,7 +74,7 @@ impl ReplayBuffer {
                         .map(|e| e.reward)
                         .collect::<Vec<f64>>()
                         .as_ref(),
-                    gamma,
+                    &vec![gamma; last_n_experiences.len()],
                 )[0],
             );
             *exp.n_step_after_experience.lock().unwrap() = Some(experience.clone());
@@ -93,7 +93,7 @@ impl ReplayBuffer {
                 for (exp, &q) in last_n_experiences
                     .clone_deque()
                     .into_iter()
-                    .zip(cumsum::cumsum_rev(&rewards, gamma).iter())
+                    .zip(cumsum::cumsum_rev(&rewards, &vec![gamma; rewards.len()]).iter())
                 {
                     if exp.is_episode_terminal {
                         continue;
