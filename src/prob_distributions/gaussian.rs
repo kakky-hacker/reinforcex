@@ -41,7 +41,7 @@ impl BaseDistribution for GaussianDistribution {
     fn sample(&self) -> Tensor {
         let std = self.var.sqrt();
         let noise = Tensor::randn_like(&self.mean);
-        &self.mean + &std * noise
+        (&self.mean + &std * noise).detach()
     }
 
     fn prob(&self, x: &Tensor) -> Tensor {
@@ -50,9 +50,9 @@ impl BaseDistribution for GaussianDistribution {
 
     fn log_prob(&self, x: &Tensor) -> Tensor {
         let diff = (x - &self.mean).pow_tensor_scalar(2.0);
-        let eltwise_log_prob: Tensor =
-            -0.5 * ((2.0 * std::f64::consts::PI).ln() + &self.ln_var + diff / &self.var);
-        eltwise_log_prob.sum_dim_intlist([-1].as_ref(), false, Kind::Float)
+        let log_prob_each_dim: Tensor =
+            -0.5 * ((2.0 * std::f64::consts::PI).ln() + &self.ln_var + &diff / &self.var);
+        log_prob_each_dim.sum_dim_intlist([-1].as_ref(), false, Kind::Float)
     }
 
     fn copy(&self) -> Box<dyn BaseDistribution> {

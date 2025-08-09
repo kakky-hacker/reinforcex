@@ -30,19 +30,11 @@ impl SoftmaxDistribution {
     fn all_prob(&self) -> Tensor {
         let scaled_logits = &self.logits * self.beta;
         let softmax = scaled_logits.softmax(-1, Kind::Float);
-        if self.min_prob > 0.0 {
-            softmax * (1.0 - self.min_prob * (self.n_classes as f64)) + self.min_prob
-        } else {
-            softmax
-        }
+        softmax * (1.0 - self.min_prob * (self.n_classes as f64)) + self.min_prob
     }
 
     fn all_log_prob(&self) -> Tensor {
-        if self.min_prob > 0.0 {
-            self.all_prob().log()
-        } else {
-            (&self.logits * self.beta).log_softmax(-1, Kind::Float)
-        }
+        self.all_prob().log()
     }
 }
 

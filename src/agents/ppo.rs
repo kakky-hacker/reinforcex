@@ -139,7 +139,7 @@ impl PPO {
             all_indice.extend(batch_indice.iter().cloned());
         }
         let all_indice: Vec<i64> = all_indice.into_iter().map(|x| x as i64).collect();
-        let mut batch_prob = None;
+        let mut batch_log_prob = None;
         for i in 0..self.epoch {
             for j in 0..n_iter {
                 let minibatch_indice = Tensor::from_slice(
@@ -149,15 +149,16 @@ impl PPO {
                 let (action_distrib, value) = self.model.forward(&state);
                 let value = value.unwrap().flatten(0, 1);
                 let next_value = self.model.forward(&next_state).1.unwrap().flatten(0, 1);
-                let prob = action_distrib.prob(&action.detach());
-                if batch_prob.is_none() {
-                    batch_prob = Some(prob.detach());
+                let log_prob = action_distrib.log_prob(&action.detach());
+                if batch_log_prob.is_none() {
+                    batch_log_prob = Some(log_prob.detach());
                 }
-                let ratio =
-                    (prob / batch_prob.as_ref().unwrap()).index_select(0, &minibatch_indice);
+                let ratio = (log_prob - batch_log_prob.as_ref().unwrap())
+                    .index_select(0, &minibatch_indice)
+                    .exp();
                 let clipped_ratio = ratio.clip(1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon);
                 let td_error = &reward + next_value - &value;
-                let gae = Tensor::from_slice(&cumsum_rev(
+                let mut gae = Tensor::from_slice(&cumsum_rev(
                     &(0..td_error.size()[0])
                         .map(|i| td_error.double_value(&[i]))
                         .collect::<Vec<f64>>(),
@@ -166,6 +167,9 @@ impl PPO {
                 .index_select(0, &minibatch_indice)
                 .to_device(self.model.device())
                 .detach();
+                if ratio.size().len() == 2 {
+                    gae = gae.view([ratio.size()[0], 1]);
+                }
                 let policy_loss: Tensor = -1.0 * (clipped_ratio * &gae).minimum(&(ratio * &gae));
                 let value_loss = (&discounted_reward - value).index_select(0, &minibatch_indice);
                 let entropy = action_distrib.entropy().index_select(0, &minibatch_indice);
