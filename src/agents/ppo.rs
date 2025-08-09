@@ -5,6 +5,7 @@ use crate::misc::cumsum::cumsum_rev;
 use crate::models::BasePolicy;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use serde::de::value;
 use std::sync::Arc;
 use tch::{nn, no_grad, Device, Kind, Tensor};
 use ulid::Ulid;
@@ -104,6 +105,20 @@ impl PPO {
         );
         let reward = Tensor::from_slice(&skip_first.iter().map(|e| e.reward).collect::<Vec<f64>>())
             .to_device(self.model.device());
+        let discounted_reward = Tensor::from_slice(&cumsum_rev(
+            &skip_first.iter().map(|e| e.reward).collect::<Vec<f64>>(),
+            &skip_first
+                .iter()
+                .map(|e| {
+                    if e.is_episode_terminal {
+                        0.0 // For preventing td_error from passing through between different episodes.
+                    } else {
+                        self.gamma
+                    }
+                })
+                .collect::<Vec<f64>>(),
+        ))
+        .to_device(self.model.device());
         let td_error_decay = &skip_first
             .iter()
             .map(|e| {
@@ -140,7 +155,7 @@ impl PPO {
                 let ratio =
                     (prob / batch_prob.as_ref().unwrap()).index_select(0, &minibatch_indice);
                 let clipped_ratio = ratio.clip(1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon);
-                let td_error = &reward + next_value - value;
+                let td_error = &reward + next_value - &value;
                 let gae = Tensor::from_slice(&cumsum_rev(
                     &(0..td_error.size()[0])
                         .map(|i| td_error.double_value(&[i]))
@@ -151,13 +166,10 @@ impl PPO {
                 .to_device(self.model.device());
                 let policy_loss: Tensor =
                     -1.0 * (clipped_ratio * gae.detach()).minimum(&(ratio * gae.detach()));
+                let value_loss = (&discounted_reward - value).index_select(0, &minibatch_indice);
                 let entropy = action_distrib.entropy().index_select(0, &minibatch_indice);
-                let loss = policy_loss.sum(Kind::Double)
-                    + self.value_coef
-                        * td_error
-                            .index_select(0, &minibatch_indice)
-                            .square()
-                            .mean(tch::Kind::Float)
+                let loss = policy_loss.sum(Kind::Float)
+                    + self.value_coef * value_loss.square().mean(tch::Kind::Float)
                     - self.entropy_coef * entropy.mean(tch::Kind::Float);
                 self.optimizer.zero_grad();
                 loss.backward();
