@@ -163,9 +163,9 @@ impl PPO {
                     td_error_decay,
                 ))
                 .index_select(0, &minibatch_indice)
-                .to_device(self.model.device());
-                let policy_loss: Tensor =
-                    -1.0 * (clipped_ratio * gae.detach()).minimum(&(ratio * gae.detach()));
+                .to_device(self.model.device())
+                .detach();
+                let policy_loss: Tensor = -1.0 * (clipped_ratio * &gae).minimum(&(ratio * &gae));
                 let value_loss = (&discounted_reward - value).index_select(0, &minibatch_indice);
                 let entropy = action_distrib.entropy().index_select(0, &minibatch_indice);
                 let loss = policy_loss.sum(Kind::Float)
