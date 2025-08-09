@@ -3,6 +3,7 @@ use crate::memory::{Experience, OnPolicyBuffer};
 use crate::misc::batch_states::batch_states;
 use crate::misc::cumsum::cumsum_rev;
 use crate::models::BasePolicy;
+use futures::lock;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use serde::de::value;
@@ -148,7 +149,7 @@ impl PPO {
                 let (action_distrib, value) = self.model.forward(&state);
                 let value = value.unwrap().flatten(0, 1);
                 let next_value = self.model.forward(&next_state).1.unwrap().flatten(0, 1);
-                let prob = action_distrib.prob(&action);
+                let prob = action_distrib.prob(&action.detach());
                 if batch_prob.is_none() {
                     batch_prob = Some(prob.detach());
                 }
