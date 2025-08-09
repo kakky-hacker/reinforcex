@@ -119,7 +119,7 @@ impl PPO {
             batch_indice.shuffle(&mut rng);
             all_indice.extend(batch_indice.iter().cloned());
         }
-        let all_indice: Vec<i64> = all_indice.iter().map(|&x| x as i64).collect();
+        let all_indice: Vec<i64> = all_indice.into_iter().map(|x| x as i64).collect();
         let mut batch_prob = None;
         for i in 0..self.epoch {
             for j in 0..n_iter {
