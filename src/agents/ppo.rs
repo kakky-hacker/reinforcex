@@ -3,6 +3,8 @@ use crate::memory::{Experience, OnPolicyBuffer};
 use crate::misc::batch_states::batch_states;
 use crate::misc::cumsum::cumsum_rev;
 use crate::models::BasePolicy;
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 use std::sync::Arc;
 use tch::{nn, no_grad, Device, Kind, Tensor};
 use ulid::Ulid;
@@ -58,77 +60,105 @@ impl PPO {
 
     fn _update(&mut self) {
         let experiences_per_episode: Vec<Vec<Arc<Experience>>> = self.buffer.flush();
-        let mut batch_prob = None;
-        for _ in 0..self.epoch {
-            let skip_first: Vec<_> = experiences_per_episode
+        let total_transitions = experiences_per_episode
+            .iter()
+            .map(|v| v.len())
+            .sum::<usize>()
+            - experiences_per_episode.len();
+        let n_iter = total_transitions.div_ceil(self.minibatch_size);
+        let n_data_per_epoch = n_iter * self.minibatch_size;
+        let n_data = n_data_per_epoch * self.epoch;
+        let skip_first: Vec<_> = experiences_per_episode
+            .iter()
+            .flat_map(|v| v.iter().skip(1))
+            .cloned()
+            .collect();
+        let skip_last: Vec<_> = experiences_per_episode
+            .iter()
+            .flat_map(|v| v.iter().take(v.len().saturating_sub(1)))
+            .cloned()
+            .collect();
+        let state = batch_states(
+            &skip_last
                 .iter()
-                .flat_map(|v| v.iter().skip(1))
-                .cloned()
-                .collect();
-            let skip_last: Vec<_> = experiences_per_episode
+                .map(|e| e.state.shallow_clone())
+                .collect::<Vec<Tensor>>(),
+            self.model.device(),
+        );
+        let next_state = batch_states(
+            &skip_first
                 .iter()
-                .flat_map(|v| v.iter().take(v.len().saturating_sub(1)))
-                .cloned()
-                .collect();
-            let state = batch_states(
-                &skip_last
-                    .iter()
-                    .map(|e| e.state.shallow_clone())
-                    .collect::<Vec<Tensor>>(),
-                self.model.device(),
-            );
-            let next_state = batch_states(
-                &skip_first
-                    .iter()
-                    .map(|e| e.state.shallow_clone())
-                    .collect::<Vec<Tensor>>(),
-                self.model.device(),
-            );
-            let action = batch_states(
-                &skip_last
-                    .iter()
-                    .map(|e| e.action.as_ref().unwrap().shallow_clone())
-                    .collect::<Vec<Tensor>>(),
-                self.model.device(),
-            );
-            let reward =
-                Tensor::from_slice(&skip_first.iter().map(|e| e.reward).collect::<Vec<f64>>())
-                    .to_device(self.model.device());
-            let decay = &skip_first
+                .map(|e| e.state.shallow_clone())
+                .collect::<Vec<Tensor>>(),
+            self.model.device(),
+        );
+        let action = batch_states(
+            &skip_last
                 .iter()
-                .map(|e| {
-                    if e.is_episode_terminal {
-                        0.0
-                    } else {
-                        self.gamma * self.lambda
-                    }
-                })
-                .collect::<Vec<f64>>();
-            let (action_distrib, value) = self.model.forward(&state);
-            let value = value.unwrap().flatten(0, 1);
-            let next_value = self.model.forward(&next_state).1.unwrap().flatten(0, 1);
-            let prob = action_distrib.prob(&action);
-            if batch_prob.is_none() {
-                batch_prob = Some(prob.detach());
-            }
-            let td_error = reward + next_value - value;
-            let advantage = Tensor::from_slice(&cumsum_rev(
-                &(0..td_error.size()[0])
-                    .map(|i| td_error.double_value(&[i]))
-                    .collect::<Vec<f64>>(),
-                decay,
-            ))
+                .map(|e| e.action.as_ref().unwrap().shallow_clone())
+                .collect::<Vec<Tensor>>(),
+            self.model.device(),
+        );
+        let reward = Tensor::from_slice(&skip_first.iter().map(|e| e.reward).collect::<Vec<f64>>())
             .to_device(self.model.device());
-            let ratio = prob / batch_prob.as_ref().unwrap();
-            let clipped_ratio = ratio.clip(1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon);
-            let policy_loss: Tensor =
-                -1.0 * (clipped_ratio * advantage.detach()).minimum(&(ratio * advantage.detach()));
-            let entropy = action_distrib.entropy();
-            let loss = policy_loss.sum(Kind::Double) + td_error.square().mean(tch::Kind::Float)
-                - self.entropy_coef * entropy.mean(tch::Kind::Float);
-            self.optimizer.zero_grad();
-            loss.backward();
-            self.optimizer.step();
+        let td_error_decay = &skip_first
+            .iter()
+            .map(|e| {
+                if e.is_episode_terminal {
+                    0.0 // For preventing td_error from passing through between different episodes.
+                } else {
+                    self.gamma * self.lambda
+                }
+            })
+            .collect::<Vec<f64>>();
+        let mut rng = thread_rng();
+        let mut batch_indice = (0..total_transitions).collect::<Vec<usize>>();
+        let mut all_indice =
+            Vec::with_capacity(total_transitions * n_data.div_ceil(total_transitions));
+        for _ in 0..n_data.div_ceil(total_transitions) {
+            batch_indice.shuffle(&mut rng);
+            all_indice.extend(batch_indice.iter().cloned());
+        }
+        let all_indice: Vec<i64> = all_indice.iter().map(|&x| x as i64).collect();
+        let mut batch_prob = None;
+        for i in 0..self.epoch {
+            for j in 0..n_iter {
+                let minibatch_indice = Tensor::from_slice(
+                    &all_indice[i * n_iter + j * self.minibatch_size
+                        ..(i + 1) * n_iter + (j + 1) * self.minibatch_size],
+                );
+                let (action_distrib, value) = self.model.forward(&state);
+                let value = value.unwrap().flatten(0, 1);
+                let next_value = self.model.forward(&next_state).1.unwrap().flatten(0, 1);
+                let prob = action_distrib.prob(&action);
+                if batch_prob.is_none() {
+                    batch_prob = Some(prob.detach());
+                }
+                let ratio =
+                    (prob / batch_prob.as_ref().unwrap()).index_select(0, &minibatch_indice);
+                let clipped_ratio = ratio.clip(1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon);
+                let td_error = &reward + next_value - value;
+                let gae = Tensor::from_slice(&cumsum_rev(
+                    &(0..td_error.size()[0])
+                        .map(|i| td_error.double_value(&[i]))
+                        .collect::<Vec<f64>>(),
+                    td_error_decay,
+                ))
+                .index_select(0, &minibatch_indice)
+                .to_device(self.model.device());
+                let policy_loss: Tensor =
+                    -1.0 * (clipped_ratio * gae.detach()).minimum(&(ratio * gae.detach()));
+                let entropy = action_distrib.entropy().index_select(0, &minibatch_indice);
+                let loss = policy_loss.sum(Kind::Double)
+                    + td_error
+                        .index_select(0, &minibatch_indice)
+                        .square()
+                        .mean(tch::Kind::Float)
+                    - self.entropy_coef * entropy.mean(tch::Kind::Float);
+                self.optimizer.zero_grad();
+                loss.backward();
+                self.optimizer.step();
+            }
         }
     }
 }
