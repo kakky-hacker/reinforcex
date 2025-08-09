@@ -20,6 +20,7 @@ pub struct PPO {
     epoch: usize,
     minibatch_size: usize,
     clip_epsilon: f64,
+    value_coef: f64,
     entropy_coef: f64,
     t: usize,
     current_episode_id: Ulid,
@@ -38,6 +39,7 @@ impl PPO {
         epoch: usize,
         minibatch_size: usize,
         clip_epsilon: f64,
+        value_coef: f64,
         entropy_coef: f64,
     ) -> Self {
         assert!(minibatch_size <= update_interval);
@@ -52,6 +54,7 @@ impl PPO {
             epoch,
             minibatch_size,
             clip_epsilon,
+            value_coef,
             entropy_coef,
             t: 0,
             current_episode_id: Ulid::new(),
@@ -150,10 +153,11 @@ impl PPO {
                     -1.0 * (clipped_ratio * gae.detach()).minimum(&(ratio * gae.detach()));
                 let entropy = action_distrib.entropy().index_select(0, &minibatch_indice);
                 let loss = policy_loss.sum(Kind::Double)
-                    + td_error
-                        .index_select(0, &minibatch_indice)
-                        .square()
-                        .mean(tch::Kind::Float)
+                    + self.value_coef
+                        * td_error
+                            .index_select(0, &minibatch_indice)
+                            .square()
+                            .mean(tch::Kind::Float)
                     - self.entropy_coef * entropy.mean(tch::Kind::Float);
                 self.optimizer.zero_grad();
                 loss.backward();
@@ -248,6 +252,7 @@ mod tests {
             16,
             0.1,
             1.0,
+            1.0,
         );
 
         assert_eq!(ppo.update_interval, 100);
@@ -273,6 +278,7 @@ mod tests {
             3,
             32,
             0.1,
+            1.0,
             1.0,
         );
 
