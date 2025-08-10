@@ -74,7 +74,7 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
         clip_epsilon,
         value_coef,
         entropy_coef,
-        true,
+        false,
     );
     let mut total_reward = 0.0;
     let mut total_steps = 0;
