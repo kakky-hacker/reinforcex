@@ -10,7 +10,7 @@ environments = {}
 
 class StepRequest(BaseModel):
     session_id: str
-    action: int
+    action: list | int | float
 
 
 class ResetRequest(BaseModel):

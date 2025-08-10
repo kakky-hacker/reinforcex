@@ -1,6 +1,6 @@
 use reinforcex::agents::{BaseAgent, PPO};
 use reinforcex::memory::OnPolicyBuffer;
-use reinforcex::models::FCSoftmaxPolicyWithValue;
+use reinforcex::models::FCGaussianPolicyWithValue;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
 use std::time::Instant;
@@ -24,7 +24,7 @@ struct StepResponse {
 }
 
 fn run_agent_on_env(env_port: u16, agent_id: usize) {
-    println!("train_cartpole_with_ppo_api");
+    println!("train_ant_with_ppo_api");
 
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
@@ -35,20 +35,23 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
 
     let device = Device::cuda_if_available();
     let vs = nn::VarStore::new(device);
-    let n_input_channels = 4;
-    let action_size = 2;
+    let n_input_channels = 105;
+    let action_size = 8;
     let n_hidden_layers = 2;
-    let n_hidden_channels = 64;
-    let min_prob = 0.0;
+    let n_hidden_channels = 256;
 
     let optimizer = nn::Adam::default().build(&vs, 2.5e-4).unwrap();
-    let model = Box::new(FCSoftmaxPolicyWithValue::new(
+    let model = Box::new(FCGaussianPolicyWithValue::new(
         vs,
         n_input_channels,
         action_size,
         n_hidden_layers,
         n_hidden_channels,
-        min_prob,
+        Some(-1.0),
+        Some(1.0),
+        true,
+        "",
+        1e-4,
     ));
 
     let gamma = 0.99;
@@ -74,7 +77,7 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
         clip_epsilon,
         value_coef,
         entropy_coef,
-        true,
+        false,
     );
     let mut total_reward = 0.0;
     let mut total_steps = 0;
@@ -83,25 +86,26 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
 
     let start = Instant::now();
 
-    let max_steps = 500;
+    let max_steps = 10000;
+    let mut reward = 0.0;
     for episode in 1..max_episode {
         // /reset
         let resp = client
             .post(format!("{}/reset", base_url))
-            .json(&serde_json::json!({ "env": "CartPole-v1" }))
+            .json(&serde_json::json!({ "env": "Ant-v5" }))
             .send()
             .expect("reset failed")
             .json::<ResetResponse>()
             .expect("reset JSON parse failed");
         let mut obs = resp.observation;
         let session_id = resp.session_id;
-        let mut reward = 0.0;
 
         for step in 0..max_steps {
             let obs_tensor = Tensor::from_slice(&obs).to_kind(Kind::Float);
-            let action_tensor = agent.act_and_train(&obs_tensor, reward);
-            let action = action_tensor.int64_value(&[]) as usize;
-
+            let action_tensor = agent.act_and_train(&obs_tensor, reward).flatten(0, 1);
+            let action = (0..action_tensor.size()[0])
+                .map(|i| action_tensor.double_value(&[i]) as f32)
+                .collect::<Vec<f32>>();
             // /step
             let resp = client
                 .post(format!("{}/step", base_url))
@@ -112,14 +116,7 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
                 .expect("step JSON parse failed");
 
             obs = resp.observation;
-            if (step + 1) % 20 == 0 {
-                reward = 5.0;
-            } else {
-                reward = 0.0;
-            }
-            if resp.done && (max_steps - step) > 10 {
-                reward = -30.0;
-            }
+            reward = resp.reward / 100.0;
             total_reward += reward;
             total_steps += 1;
 
@@ -130,13 +127,13 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
             }
         }
 
-        if episode % 100 == 0 {
+        if episode % 50 == 0 {
             println!(
                 "[Agent {}] Episode {}, Avg Reward: {:.1}, Avg Steps: {}",
                 agent_id,
                 episode,
-                total_reward / 100.0,
-                total_steps / 100,
+                total_reward / 50.0,
+                total_steps / 50,
             );
             total_reward = 0.0;
             total_steps = 0;
@@ -144,7 +141,7 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
     }
 }
 
-pub fn train_cartpole_with_ppo() {
+pub fn train_ant_with_ppo() {
     let ports: Vec<u16> = (8001..=8001).collect();
 
     ports

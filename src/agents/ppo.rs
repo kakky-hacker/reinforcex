@@ -24,6 +24,7 @@ pub struct PPO {
     clip_epsilon: f64,
     value_coef: f64,
     entropy_coef: f64,
+    gae_std: bool,
     t: usize,
     current_episode_id: Ulid,
 }
@@ -43,6 +44,7 @@ impl PPO {
         clip_epsilon: f64,
         value_coef: f64,
         entropy_coef: f64,
+        gae_std: bool,
     ) -> Self {
         assert!(minibatch_size <= update_interval);
         PPO {
@@ -58,6 +60,7 @@ impl PPO {
             clip_epsilon,
             value_coef,
             entropy_coef,
+            gae_std,
             t: 0,
             current_episode_id: Ulid::new(),
         }
@@ -83,6 +86,7 @@ impl PPO {
             .flat_map(|v| v.iter().take(v.len().saturating_sub(1)))
             .cloned()
             .collect();
+        let batch_size = skip_first.len() as i64;
         let state = batch_states(
             &skip_last
                 .iter()
@@ -97,13 +101,15 @@ impl PPO {
                 .collect::<Vec<Tensor>>(),
             self.model.device(),
         );
-        let action = batch_states(
+        let mut action = batch_states(
             &skip_last
                 .iter()
                 .map(|e| e.action.as_ref().unwrap().shallow_clone())
                 .collect::<Vec<Tensor>>(),
             self.model.device(),
         );
+        let action_size = *action.size().last().unwrap();
+        action = action.view([batch_size, action_size]);
         let reward = Tensor::from_slice(&skip_first.iter().map(|e| e.reward).collect::<Vec<f64>>())
             .to_device(self.model.device());
         let discounted_reward = Tensor::from_slice(&cumsum_rev(
@@ -164,12 +170,12 @@ impl PPO {
                         .collect::<Vec<f64>>(),
                     td_error_decay,
                 ))
-                .index_select(0, &minibatch_indice)
                 .to_device(self.model.device())
                 .detach();
-                if ratio.size().len() == 2 {
-                    gae = gae.view([ratio.size()[0], 1]);
+                if self.gae_std {
+                    gae = (&gae - (&gae).mean(Kind::Float)) / (&gae).std(true);
                 }
+                gae = gae.index_select(0, &minibatch_indice).detach();
                 let policy_loss: Tensor = -1.0 * (clipped_ratio * &gae).minimum(&(ratio * &gae));
                 let value_loss = (&discounted_reward - value).index_select(0, &minibatch_indice);
                 let entropy = action_distrib.entropy().index_select(0, &minibatch_indice);
@@ -270,6 +276,7 @@ mod tests {
             0.1,
             1.0,
             1.0,
+            false,
         );
 
         assert_eq!(ppo.update_interval, 100);
@@ -297,6 +304,7 @@ mod tests {
             0.1,
             1.0,
             1.0,
+            false,
         );
 
         let mut reward = 0.0;
