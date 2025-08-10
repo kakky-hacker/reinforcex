@@ -13,8 +13,8 @@ pub struct FCGaussianPolicy {
     var_layer: Linear,
     n_input_channels: i64,
     bound_mean: bool,
-    min_action: Option<Tensor>,
-    max_action: Option<Tensor>,
+    min_action: Option<f64>,
+    max_action: Option<f64>,
     min_var: f64,
 }
 
@@ -30,8 +30,8 @@ impl FCGaussianPolicy {
         action_size: i64,
         n_hidden_layers: usize,
         n_hidden_channels: i64,
-        min_action: Option<Tensor>,
-        max_action: Option<Tensor>,
+        min_action: Option<f64>,
+        max_action: Option<f64>,
         bound_mean: bool,
         var_type: &str,
         min_var: f64,
@@ -155,8 +155,8 @@ impl FCGaussianPolicyWithValue {
         action_size: i64,
         n_hidden_layers: usize,
         n_hidden_channels: i64,
-        min_action: Option<Tensor>,
-        max_action: Option<Tensor>,
+        min_action: Option<f64>,
+        max_action: Option<f64>,
         bound_mean: bool,
         var_type: &str,
         min_var: f64,
@@ -222,8 +222,8 @@ mod tests {
         let action_size = 2;
         let n_hidden_layers = 2;
         let n_hidden_channels = 64;
-        let min_action = Tensor::from(-1.0).copy();
-        let max_action = Tensor::from(1.0).copy();
+        let min_action = -1.0;
+        let max_action = 1.0;
         let bound_mean = true;
         let var_type = "spherical";
         let min_var = 1e-3;
@@ -234,8 +234,8 @@ mod tests {
             action_size,
             n_hidden_layers,
             n_hidden_channels,
-            Some(min_action.shallow_clone()),
-            Some(max_action.shallow_clone()),
+            Some(min_action),
+            Some(max_action),
             bound_mean,
             var_type,
             min_var,
@@ -283,8 +283,8 @@ mod tests {
         let vs = nn::VarStore::new(Device::Cpu);
         let n_input_channels = 4;
         let action_size = 2;
-        let min_action = Tensor::from(-1.0);
-        let max_action = Tensor::from(1.0);
+        let min_action = -1.0;
+        let max_action = 1.0;
 
         let policy = FCGaussianPolicy::new(
             vs,
@@ -292,8 +292,8 @@ mod tests {
             action_size,
             2,
             64,
-            Some(min_action.copy()),
-            Some(max_action.copy()),
+            Some(min_action),
+            Some(max_action),
             true,
             "spherical",
             1e-3,
@@ -302,8 +302,8 @@ mod tests {
         let unbounded_mean = Tensor::from_slice(&[-2.0, 0.0, 2.0]);
         let bounded_mean = policy.bound_by_tanh(unbounded_mean);
 
-        assert!(bounded_mean.min().double_value(&[]) >= min_action.double_value(&[]));
-        assert!(bounded_mean.max().double_value(&[]) <= max_action.double_value(&[]));
+        assert!(bounded_mean.min().double_value(&[]) >= min_action);
+        assert!(bounded_mean.max().double_value(&[]) <= max_action);
     }
 
     #[test]
