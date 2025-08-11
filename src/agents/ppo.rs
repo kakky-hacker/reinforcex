@@ -68,6 +68,7 @@ impl PPO {
 
     fn _update(&mut self) {
         let experiences_per_episode: Vec<Vec<Arc<Experience>>> = self.buffer.flush();
+
         let total_transitions = experiences_per_episode
             .iter()
             .map(|v| v.len())
@@ -76,17 +77,32 @@ impl PPO {
         let n_iter = total_transitions.div_ceil(self.minibatch_size);
         let n_data_per_epoch = n_iter * self.minibatch_size;
         let n_data = n_data_per_epoch * self.epoch;
-        let skip_first: Vec<_> = experiences_per_episode
+
+        // Create shuffled indice for minibatch.
+        let mut rng = thread_rng();
+        let mut batch_indice = (0..total_transitions).collect::<Vec<usize>>();
+        let mut all_indice =
+            Vec::with_capacity(total_transitions * n_data.div_ceil(total_transitions));
+        for _ in 0..n_data.div_ceil(total_transitions) {
+            batch_indice.shuffle(&mut rng);
+            all_indice.extend(batch_indice.iter().cloned());
+        }
+        let all_indice = all_indice
+            .into_iter()
+            .map(|x| x as i64)
+            .collect::<Vec<i64>>();
+
+        // Create data.
+        let skip_first = experiences_per_episode
             .iter()
             .flat_map(|v| v.iter().skip(1))
             .cloned()
-            .collect();
-        let skip_last: Vec<_> = experiences_per_episode
+            .collect::<Vec<Arc<Experience>>>();
+        let skip_last = experiences_per_episode
             .iter()
             .flat_map(|v| v.iter().take(v.len().saturating_sub(1)))
             .cloned()
-            .collect();
-        let batch_size = skip_first.len() as i64;
+            .collect::<Vec<Arc<Experience>>>();
         let state = batch_states(
             &skip_last
                 .iter()
@@ -101,15 +117,14 @@ impl PPO {
                 .collect::<Vec<Tensor>>(),
             self.model.device(),
         );
-        let mut action = batch_states(
+        let _action = batch_states(
             &skip_last
                 .iter()
                 .map(|e| e.action.as_ref().unwrap().shallow_clone())
                 .collect::<Vec<Tensor>>(),
             self.model.device(),
         );
-        let action_size = *action.size().last().unwrap();
-        action = action.view([batch_size, action_size]);
+        let action = _action.view([total_transitions as i64, *_action.size().last().unwrap()]);
         let reward = Tensor::from_slice(&skip_first.iter().map(|e| e.reward).collect::<Vec<f64>>())
             .to_device(self.model.device());
         let discounted_reward = Tensor::from_slice(&cumsum_rev(
@@ -136,33 +151,34 @@ impl PPO {
                 }
             })
             .collect::<Vec<f64>>();
-        let mut rng = thread_rng();
-        let mut batch_indice = (0..total_transitions).collect::<Vec<usize>>();
-        let mut all_indice =
-            Vec::with_capacity(total_transitions * n_data.div_ceil(total_transitions));
-        for _ in 0..n_data.div_ceil(total_transitions) {
-            batch_indice.shuffle(&mut rng);
-            all_indice.extend(batch_indice.iter().cloned());
-        }
-        let all_indice: Vec<i64> = all_indice.into_iter().map(|x| x as i64).collect();
-        let mut batch_log_prob = None;
+
+        let batch_log_prob = self
+            .model
+            .forward(&state)
+            .0
+            .log_prob(&action.detach())
+            .detach();
+
         for i in 0..self.epoch {
             for j in 0..n_iter {
                 let minibatch_indice = Tensor::from_slice(
                     &all_indice[i * n_iter + j * self.minibatch_size
                         ..(i + 1) * n_iter + (j + 1) * self.minibatch_size],
                 );
+
+                // Forward
                 let (action_distrib, value) = self.model.forward(&state);
                 let value = value.unwrap().flatten(0, 1);
                 let next_value = self.model.forward(&next_state).1.unwrap().flatten(0, 1);
+
+                // Compute ratio.
                 let log_prob = action_distrib.log_prob(&action.detach());
-                if batch_log_prob.is_none() {
-                    batch_log_prob = Some(log_prob.detach());
-                }
-                let ratio = (log_prob - batch_log_prob.as_ref().unwrap())
+                let ratio = (log_prob - &batch_log_prob)
                     .index_select(0, &minibatch_indice)
                     .exp();
                 let clipped_ratio = ratio.clip(1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon);
+
+                // Compute GAE
                 let td_error = &reward + next_value - &value;
                 let mut gae = Tensor::from_slice(&cumsum_rev(
                     &(0..td_error.size()[0])
@@ -176,12 +192,26 @@ impl PPO {
                     gae = (&gae - (&gae).mean(Kind::Float)) / (&gae).std(true);
                 }
                 gae = gae.index_select(0, &minibatch_indice).detach();
-                let policy_loss: Tensor = -1.0 * (clipped_ratio * &gae).minimum(&(ratio * &gae));
-                let value_loss = (&discounted_reward - value).index_select(0, &minibatch_indice);
-                let entropy = action_distrib.entropy().index_select(0, &minibatch_indice);
-                let loss = policy_loss.sum(Kind::Float)
-                    + self.value_coef * value_loss.square().mean(tch::Kind::Float)
-                    - self.entropy_coef * entropy.mean(tch::Kind::Float);
+
+                // Compute loss
+                let policy_loss = -1.0
+                    * (clipped_ratio * &gae)
+                        .minimum(&(ratio * &gae))
+                        .sum(Kind::Float);
+                let value_loss = (&discounted_reward - value)
+                    .index_select(0, &minibatch_indice)
+                    .square()
+                    .mean(tch::Kind::Float);
+                let entropy_regularized = -1.0
+                    * action_distrib
+                        .entropy() // check shape
+                        .index_select(0, &minibatch_indice)
+                        .mean(tch::Kind::Float);
+                let loss: Tensor = policy_loss
+                    + self.value_coef * value_loss
+                    + self.entropy_coef * entropy_regularized;
+
+                // Backward
                 self.optimizer.zero_grad();
                 loss.backward();
                 self.optimizer.step();
