@@ -189,24 +189,24 @@ impl PPO {
                 .to_device(self.model.device())
                 .detach();
                 if self.gae_std {
-                    gae = (&gae - (&gae).mean(Kind::Float)) / (&gae).std(true);
+                    gae = (&gae - (&gae).mean(Kind::Float)) / ((&gae).std(true) + 1e-8);
                 }
                 gae = gae.index_select(0, &minibatch_indice).detach();
 
                 // Compute loss
-                let policy_loss = -1.0
-                    * (clipped_ratio * &gae)
-                        .minimum(&(ratio * &gae))
+                let policy_loss: Tensor = -1.0
+                    * (ratio * &gae)
+                        .minimum(&(clipped_ratio * &gae))
                         .sum(Kind::Float);
                 let value_loss = (&discounted_reward - value)
                     .index_select(0, &minibatch_indice)
                     .square()
-                    .mean(tch::Kind::Float);
+                    .mean(Kind::Float);
                 let entropy_regularized = -1.0
                     * action_distrib
                         .entropy() // check shape
                         .index_select(0, &minibatch_indice)
-                        .mean(tch::Kind::Float);
+                        .mean(Kind::Float);
                 let loss: Tensor = policy_loss
                     + self.value_coef * value_loss
                     + self.entropy_coef * entropy_regularized;
