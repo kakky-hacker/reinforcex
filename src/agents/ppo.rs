@@ -162,9 +162,10 @@ impl PPO {
         for i in 0..self.epoch {
             for j in 0..n_iter {
                 let minibatch_indice = Tensor::from_slice(
-                    &all_indice[i * n_iter + j * self.minibatch_size
-                        ..(i + 1) * n_iter + (j + 1) * self.minibatch_size],
-                );
+                    &all_indice[i * n_data_per_epoch + j * self.minibatch_size
+                        ..i * n_data_per_epoch + (j + 1) * self.minibatch_size],
+                )
+                .to_device(self.model.device());
 
                 // Forward
                 let (action_distrib, value) = self.model.forward(&state);
