@@ -179,7 +179,7 @@ impl PPO {
                 let clipped_ratio = ratio.clip(1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon);
 
                 // Compute GAE
-                let td_error = &reward + next_value - &value;
+                let td_error = &reward + self.gamma * next_value - &value;
                 let mut gae = Tensor::from_slice(&cumsum_rev(
                     &(0..td_error.size()[0])
                         .map(|i| td_error.double_value(&[i]))
