@@ -148,7 +148,7 @@ impl PPO {
         let old_next_value = (old_next_value * non_terminal).detach();
 
         // Compute GAE
-        let td_error = reward + self.gamma * old_next_value - &old_value;
+        let td_error = (reward + self.gamma * old_next_value - &old_value).to_device(Device::Cpu);
         let _gae = Tensor::from_slice(&cumsum_rev(
             &(0..td_error.size()[0])
                 .map(|i| td_error.double_value(&[i]))
