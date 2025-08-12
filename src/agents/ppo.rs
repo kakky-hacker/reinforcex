@@ -136,8 +136,19 @@ impl PPO {
         let (_, old_next_value) = self.model.forward(&next_state);
         let old_next_value = old_next_value.unwrap().flatten(0, 1).detach();
 
+        let non_terminal: Tensor = 1.0
+            - Tensor::from_slice(
+                &_skip_first
+                    .iter()
+                    .map(|e| if e.is_episode_terminal { 1.0 } else { 0.0 })
+                    .collect::<Vec<f64>>(),
+            )
+            .to_device(self.model.device());
+
+        let old_next_value = (old_next_value * non_terminal).detach();
+
         // Compute GAE
-        let td_error = &reward + self.gamma * &old_next_value - &old_value;
+        let td_error = reward + self.gamma * old_next_value - &old_value;
         let _gae = Tensor::from_slice(&cumsum_rev(
             &(0..td_error.size()[0])
                 .map(|i| td_error.double_value(&[i]))
@@ -162,7 +173,7 @@ impl PPO {
         };
 
         // Compute value target
-        let value_target = &gae + &old_value;
+        let value_target = &gae + old_value;
 
         for i in 0..self.epoch {
             for j in 0..n_iter {
