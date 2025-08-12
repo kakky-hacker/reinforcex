@@ -93,71 +93,76 @@ impl PPO {
             .collect::<Vec<i64>>();
 
         // Create data.
-        let skip_first = experiences_per_episode
+        let _skip_first = experiences_per_episode
             .iter()
             .flat_map(|v| v.iter().skip(1))
             .cloned()
             .collect::<Vec<Arc<Experience>>>();
-        let skip_last = experiences_per_episode
+        let _skip_last = experiences_per_episode
             .iter()
             .flat_map(|v| v.iter().take(v.len().saturating_sub(1)))
             .cloned()
             .collect::<Vec<Arc<Experience>>>();
         let state = batch_states(
-            &skip_last
+            &_skip_last
                 .iter()
                 .map(|e| e.state.shallow_clone())
                 .collect::<Vec<Tensor>>(),
             self.model.device(),
         );
         let next_state = batch_states(
-            &skip_first
+            &_skip_first
                 .iter()
                 .map(|e| e.state.shallow_clone())
                 .collect::<Vec<Tensor>>(),
             self.model.device(),
         );
         let _action = batch_states(
-            &skip_last
+            &_skip_last
                 .iter()
                 .map(|e| e.action.as_ref().unwrap().shallow_clone())
                 .collect::<Vec<Tensor>>(),
             self.model.device(),
         );
         let action = _action.view([total_transitions as i64, *_action.size().last().unwrap()]);
-        let reward = Tensor::from_slice(&skip_first.iter().map(|e| e.reward).collect::<Vec<f64>>())
-            .to_device(self.model.device());
-        let discounted_reward = Tensor::from_slice(&cumsum_rev(
-            &skip_first.iter().map(|e| e.reward).collect::<Vec<f64>>(),
-            &skip_first
+        let reward =
+            Tensor::from_slice(&_skip_first.iter().map(|e| e.reward).collect::<Vec<f64>>())
+                .to_device(self.model.device());
+
+        let (old_action_distrib, old_value) = self.model.forward(&state);
+        let old_value = old_value.unwrap().flatten(0, 1).detach();
+        let old_log_prob = old_action_distrib.log_prob(&action.detach()).detach();
+
+        let (_, old_next_value) = self.model.forward(&next_state);
+        let old_next_value = old_next_value.unwrap().flatten(0, 1).detach();
+
+        // Compute GAE
+        let td_error = &reward + self.gamma * &old_next_value - &old_value;
+        let _gae = Tensor::from_slice(&cumsum_rev(
+            &(0..td_error.size()[0])
+                .map(|i| td_error.double_value(&[i]))
+                .collect::<Vec<f64>>(),
+            &_skip_first
                 .iter()
                 .map(|e| {
                     if e.is_episode_terminal {
                         0.0 // For preventing td_error from passing through between different episodes.
                     } else {
-                        self.gamma
+                        self.gamma * self.lambda
                     }
                 })
                 .collect::<Vec<f64>>(),
         ))
-        .to_device(self.model.device());
-        let td_error_decay = &skip_first
-            .iter()
-            .map(|e| {
-                if e.is_episode_terminal {
-                    0.0 // For preventing td_error from passing through between different episodes.
-                } else {
-                    self.gamma * self.lambda
-                }
-            })
-            .collect::<Vec<f64>>();
+        .to_device(self.model.device())
+        .detach();
+        let gae = if self.gae_std {
+            (&_gae - (&_gae).mean(Kind::Float)) / ((&_gae).std(true) + 1e-8)
+        } else {
+            _gae
+        };
 
-        let batch_log_prob = self
-            .model
-            .forward(&state)
-            .0
-            .log_prob(&action.detach())
-            .detach();
+        // Compute value target
+        let value_target = &gae + &old_value;
 
         for i in 0..self.epoch {
             for j in 0..n_iter {
@@ -169,38 +174,26 @@ impl PPO {
 
                 // Forward
                 let (action_distrib, value) = self.model.forward(&state);
-                let value = value.unwrap().flatten(0, 1);
-                let next_value = self.model.forward(&next_state).1.unwrap().flatten(0, 1);
+                let value = value
+                    .unwrap()
+                    .flatten(0, 1)
+                    .index_select(0, &minibatch_indice);
 
                 // Compute ratio.
                 let log_prob = action_distrib.log_prob(&action.detach());
-                let ratio = (log_prob - &batch_log_prob)
+                let ratio = (log_prob - &old_log_prob)
                     .index_select(0, &minibatch_indice)
                     .exp();
                 let clipped_ratio = ratio.clip(1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon);
 
-                // Compute GAE
-                let td_error = &reward + self.gamma * next_value - &value;
-                let mut gae = Tensor::from_slice(&cumsum_rev(
-                    &(0..td_error.size()[0])
-                        .map(|i| td_error.double_value(&[i]))
-                        .collect::<Vec<f64>>(),
-                    td_error_decay,
-                ))
-                .to_device(self.model.device())
-                .detach();
-                if self.gae_std {
-                    gae = (&gae - (&gae).mean(Kind::Float)) / ((&gae).std(true) + 1e-8);
-                }
-                gae = gae.index_select(0, &minibatch_indice).detach();
+                let minibatch_gae = gae.index_select(0, &minibatch_indice).detach();
 
                 // Compute loss
                 let policy_loss: Tensor = -1.0
-                    * (ratio * &gae)
-                        .minimum(&(clipped_ratio * &gae))
+                    * (ratio * &minibatch_gae)
+                        .minimum(&(clipped_ratio * &minibatch_gae))
                         .sum(Kind::Float);
-                let value_loss = (&discounted_reward - value)
-                    .index_select(0, &minibatch_indice)
+                let value_loss = (value_target.index_select(0, &minibatch_indice).detach() - value)
                     .square()
                     .mean(Kind::Float);
                 let entropy_regularized = -1.0
@@ -235,8 +228,10 @@ impl BaseAgent for PPO {
         self.t += 1;
 
         let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
-        let (action_distrib, _) = self.model.forward(&state);
-        let action = action_distrib.sample().to_device(Device::Cpu);
+        let action = no_grad(|| {
+            let (action_distrib, _) = self.model.forward(&state);
+            action_distrib.sample().detach().to_device(Device::Cpu)
+        });
 
         self.buffer.append(
             self.agent_id,
