@@ -53,12 +53,13 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
 
     let gamma = 0.99;
     let lambda = 0.95;
-    let epoch = 4;
+    let epoch = 10;
     let minibatch_size = 32;
     let update_interval = 500;
-    let clip_epsilon = 0.1;
+    let policy_clip_epsilon = 0.2;
+    let value_clip_range = 0.2;
     let value_coef = 0.5;
-    let entropy_coef = 0.01;
+    let entropy_coef = 0.0;
 
     let buffer = OnPolicyBuffer::new(None);
 
@@ -71,10 +72,11 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
         update_interval,
         epoch,
         minibatch_size,
-        clip_epsilon,
+        policy_clip_epsilon,
+        value_clip_range,
         value_coef,
         entropy_coef,
-        false,
+        true,
     );
     let mut total_reward = 0.0;
     let mut total_steps = 0;

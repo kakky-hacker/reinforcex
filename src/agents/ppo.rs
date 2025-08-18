@@ -11,6 +11,8 @@ use std::sync::Arc;
 use tch::{nn, no_grad, Device, Kind, Tensor};
 use ulid::Ulid;
 
+const POLICY_LOG_PROB_RATIO_CLAMP_RANGE: f64 = 8.0;
+
 pub struct PPO {
     agent_id: Ulid,
     model: Box<dyn BasePolicy>,
@@ -21,7 +23,8 @@ pub struct PPO {
     update_interval: usize,
     epoch: usize,
     minibatch_size: usize,
-    clip_epsilon: f64,
+    policy_clip_epsilon: f64,
+    value_clip_range: f64,
     value_coef: f64,
     entropy_coef: f64,
     gae_std: bool,
@@ -41,7 +44,8 @@ impl PPO {
         update_interval: usize,
         epoch: usize,
         minibatch_size: usize,
-        clip_epsilon: f64,
+        policy_clip_epsilon: f64,
+        value_clip_range: f64,
         value_coef: f64,
         entropy_coef: f64,
         gae_std: bool,
@@ -57,7 +61,8 @@ impl PPO {
             update_interval,
             epoch,
             minibatch_size,
-            clip_epsilon,
+            policy_clip_epsilon,
+            value_clip_range,
             value_coef,
             entropy_coef,
             gae_std,
@@ -148,7 +153,7 @@ impl PPO {
         let old_next_value = (old_next_value * non_terminal).detach();
 
         // Compute GAE
-        let td_error = (reward + self.gamma * old_next_value - &old_value).to_device(Device::Cpu);
+        let td_error = (reward + self.gamma * &old_next_value - &old_value).to_device(Device::Cpu);
         let _gae = Tensor::from_slice(&cumsum_rev(
             &(0..td_error.size()[0])
                 .map(|i| td_error.double_value(&[i]))
@@ -167,13 +172,13 @@ impl PPO {
         .to_device(self.model.device())
         .detach();
         let gae = if self.gae_std {
-            (&_gae - (&_gae).mean(Kind::Float)) / ((&_gae).std(true) + 1e-8)
+            (&_gae - (&_gae).mean(Kind::Float)) / ((&_gae).std(false) + 1e-8)
         } else {
             _gae
         };
 
         // Compute value target
-        let value_target = &gae + old_value;
+        let value_target = &gae + &old_value;
 
         for i in 0..self.epoch {
             for j in 0..n_iter {
@@ -190,31 +195,49 @@ impl PPO {
                     .flatten(0, 1)
                     .index_select(0, &minibatch_indice);
 
-                // Compute ratio.
+                // Compute policy ratio.
                 let log_prob = action_distrib.log_prob(&action.detach());
-                let ratio = (log_prob - &old_log_prob)
+                let policy_ratio = (log_prob - &old_log_prob)
                     .index_select(0, &minibatch_indice)
+                    .clamp(
+                        -POLICY_LOG_PROB_RATIO_CLAMP_RANGE,
+                        POLICY_LOG_PROB_RATIO_CLAMP_RANGE,
+                    )
                     .exp();
-                let clipped_ratio = ratio.clip(1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon);
+                let clipped_policy_ratio = policy_ratio.clamp(
+                    1.0 - self.policy_clip_epsilon,
+                    1.0 + self.policy_clip_epsilon,
+                );
+
+                // Compute value ratio.
+                let _old_value = old_value.index_select(0, &minibatch_indice).detach();
+                let clipped_value = &_old_value
+                    + (&value - &_old_value).clamp(-self.value_clip_range, self.value_clip_range);
 
                 let minibatch_gae = gae.index_select(0, &minibatch_indice).detach();
 
                 // Compute loss
+                let _value_target = (&value_target).index_select(0, &minibatch_indice).detach();
                 let policy_loss: Tensor = -1.0
-                    * (ratio * &minibatch_gae)
-                        .minimum(&(clipped_ratio * &minibatch_gae))
-                        .sum(Kind::Float);
-                let value_loss = (value_target.index_select(0, &minibatch_indice).detach() - value)
-                    .square()
-                    .mean(Kind::Float);
-                let entropy_regularized = -1.0
-                    * action_distrib
-                        .entropy() // check shape
-                        .index_select(0, &minibatch_indice)
+                    * (policy_ratio * &minibatch_gae)
+                        .minimum(&(clipped_policy_ratio * &minibatch_gae))
                         .mean(Kind::Float);
-                let loss: Tensor = policy_loss
-                    + self.value_coef * value_loss
-                    + self.entropy_coef * entropy_regularized;
+                let value_loss = (&_value_target - value)
+                    .square()
+                    .maximum(&(&_value_target - clipped_value).square())
+                    .mean(Kind::Float);
+                let entropy_regularized = action_distrib
+                    .entropy()
+                    .index_select(0, &minibatch_indice)
+                    .mean(Kind::Float);
+
+                // Check Nan
+                assert!(policy_loss.isnan().any().int64_value(&[]) == 0);
+                assert!(value_loss.isnan().any().int64_value(&[]) == 0);
+                assert!(entropy_regularized.isnan().any().int64_value(&[]) == 0);
+
+                let loss: Tensor = policy_loss + self.value_coef * value_loss
+                    - self.entropy_coef * entropy_regularized;
 
                 // Backward
                 self.optimizer.zero_grad();
@@ -311,6 +334,7 @@ mod tests {
             8,
             16,
             0.1,
+            0.2,
             1.0,
             1.0,
             false,
@@ -339,6 +363,7 @@ mod tests {
             3,
             32,
             0.1,
+            0.2,
             1.0,
             1.0,
             false,

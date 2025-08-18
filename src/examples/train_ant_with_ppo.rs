@@ -40,7 +40,7 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
     let n_hidden_layers = 2;
     let n_hidden_channels = 256;
 
-    let optimizer = nn::Adam::default().build(&vs, 2.5e-4).unwrap();
+    let optimizer = nn::Adam::default().build(&vs, 1e-4).unwrap();
     let model = Box::new(FCGaussianPolicyWithValue::new(
         vs,
         n_input_channels,
@@ -50,18 +50,19 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
         Some(-1.0),
         Some(1.0),
         true,
-        "",
-        1e-4,
+        "spherical",
+        0.1,
     ));
 
     let gamma = 0.99;
-    let lambda = 0.95;
-    let epoch = 4;
+    let lambda = 0.99;
+    let epoch = 10;
     let minibatch_size = 32;
-    let update_interval = 500;
-    let clip_epsilon = 0.1;
-    let value_coef = 0.5;
-    let entropy_coef = 0.01;
+    let update_interval = 512;
+    let policy_clip_epsilon = 0.2;
+    let value_clip_range = 0.2;
+    let value_coef = 0.003;
+    let entropy_coef = 0.005;
 
     let buffer = OnPolicyBuffer::new(None);
 
@@ -74,7 +75,8 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
         update_interval,
         epoch,
         minibatch_size,
-        clip_epsilon,
+        policy_clip_epsilon,
+        value_clip_range,
         value_coef,
         entropy_coef,
         true,
@@ -87,7 +89,7 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
     let start = Instant::now();
 
     let max_steps = 10000;
-    let mut reward = 0.0;
+    let mut reward: f64 = 0.0;
     for episode in 1..max_episode {
         // /reset
         let resp = client
@@ -99,10 +101,10 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
             .expect("reset JSON parse failed");
         let mut obs = resp.observation;
         let session_id = resp.session_id;
-
+        reward = 0.0;
         for step in 0..max_steps {
             let obs_tensor = Tensor::from_slice(&obs).to_kind(Kind::Float);
-            let action_tensor = agent.act_and_train(&obs_tensor, reward).flatten(0, 1);
+            let action_tensor = agent.act_and_train(&obs_tensor, reward.clamp(-1.0, 1.0)).flatten(0, 1);
             let action = (0..action_tensor.size()[0])
                 .map(|i| action_tensor.double_value(&[i]) as f32)
                 .collect::<Vec<f32>>();
@@ -116,7 +118,7 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
                 .expect("step JSON parse failed");
 
             obs = resp.observation;
-            reward = resp.reward / 100.0;
+            reward = resp.reward;
             total_reward += reward;
             total_steps += 1;
 
