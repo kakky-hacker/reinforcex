@@ -4,7 +4,7 @@ use crate::misc::weight_initializer::{he_init, xavier_init};
 use crate::prob_distributions::BaseDistribution;
 use crate::prob_distributions::GaussianDistribution;
 use tch::nn::{linear, Init, Linear, LinearConfig, Module, VarStore};
-use tch::{nn, Device, Tensor};
+use tch::{Device, Tensor};
 
 pub struct FCGaussianPolicy {
     vs: VarStore,

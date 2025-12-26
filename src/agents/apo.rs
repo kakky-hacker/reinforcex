@@ -1,8 +1,9 @@
 use super::base_agent::BaseAgent;
-use crate::memory::{Experience, OnPolicyBuffer};
+use crate::memory::{EpisodicReplayBuffer, Experience, OnPolicyBuffer};
 use crate::misc::batch_states::batch_states;
 use crate::misc::cumsum::cumsum_rev;
 use crate::models::BasePolicy;
+use crate::prob_distributions::BaseDistribution;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::sync::Arc;
@@ -15,7 +16,8 @@ pub struct APO {
     agent_id: Ulid,
     model: Box<dyn BasePolicy>,
     optimizer: nn::Optimizer,
-    buffer: OnPolicyBuffer,
+    local_buffer: OnPolicyBuffer,
+    replay_buffer: EpisodicReplayBuffer,
     gamma: f64,
     lambda: f64,
     update_interval: usize,
@@ -36,7 +38,6 @@ impl APO {
     pub fn new(
         model: Box<dyn BasePolicy>,
         optimizer: nn::Optimizer,
-        buffer: OnPolicyBuffer,
         gamma: f64,
         lambda: f64,
         update_interval: usize,
@@ -53,7 +54,8 @@ impl APO {
             agent_id: Ulid::new(),
             model,
             optimizer,
-            buffer,
+            local_buffer: OnPolicyBuffer::new(),
+            replay_buffer: EpisodicReplayBuffer::new(),
             gamma,
             lambda,
             update_interval,
@@ -70,7 +72,7 @@ impl APO {
     }
 
     fn _update(&mut self) {
-        let experiences_per_episode: Vec<Vec<Arc<Experience>>> = self.buffer.flush();
+        let experiences_per_episode: Vec<Vec<Arc<Experience>>> = self.local_buffer.flush();
 
         let total_transitions = experiences_per_episode
             .iter()
@@ -178,6 +180,31 @@ impl APO {
         // Compute value target
         let value_target = &gae + &old_value;
 
+        // Compute anchor policy
+        let best_episodes = self.replay_buffer.get_best_episode();
+        let mut anchor_states: Option<Tensor> = None;
+        let mut anchor_action_distrib: Option<Box<dyn BaseDistribution>> = None;
+        if best_episodes.len() > 2 {
+            let (_anchor_states, mut anchor_action_distribs): (
+                Vec<Tensor>,
+                Vec<Box<dyn BaseDistribution>>,
+            ) = best_episodes
+                .iter()
+                .filter_map(|e| {
+                    e.action_distrib
+                        .as_ref()
+                        .map(|d| (e.state.shallow_clone(), d.copy()))
+                })
+                .collect::<Vec<(Tensor, Box<dyn BaseDistribution>)>>()
+                .into_iter()
+                .unzip();
+            anchor_states = Some(batch_states(&_anchor_states, self.model.device()));
+            let mut _anchor_action_distrib = anchor_action_distribs.remove(0);
+            _anchor_action_distrib.concat(anchor_action_distribs);
+            _anchor_action_distrib.detach();
+            anchor_action_distrib = Some(_anchor_action_distrib);
+        }
+
         for i in 0..self.epoch {
             for j in 0..n_iter {
                 let minibatch_indice = Tensor::from_slice(
@@ -192,6 +219,18 @@ impl APO {
                     .unwrap()
                     .flatten(0, 1)
                     .index_select(0, &minibatch_indice);
+
+                // Compute kl from anchor
+                let mut kl_from_anchor = Tensor::from_slice(&[0.0]);
+                if (&anchor_states).is_some() {
+                    let (action_distrib_for_anchor, _) =
+                        self.model.forward(&(&anchor_states).as_ref().unwrap());
+                    kl_from_anchor = anchor_action_distrib
+                        .as_ref()
+                        .unwrap()
+                        .kl(&action_distrib_for_anchor)
+                        .sum(Kind::Float);
+                }
 
                 // Compute policy ratio.
                 let log_prob = action_distrib.log_prob(&action.detach());
@@ -233,9 +272,11 @@ impl APO {
                 assert!(policy_loss.isnan().any().int64_value(&[]) == 0);
                 assert!(value_loss.isnan().any().int64_value(&[]) == 0);
                 assert!(entropy_regularized.isnan().any().int64_value(&[]) == 0);
+                assert!(kl_from_anchor.isnan().any().int64_value(&[]) == 0);
 
                 let loss: Tensor = policy_loss + self.value_coef * value_loss
-                    - self.entropy_coef * entropy_regularized;
+                    - self.entropy_coef * entropy_regularized
+                    + kl_from_anchor * 10;
 
                 // Backward
                 self.optimizer.zero_grad();
@@ -260,20 +301,23 @@ impl BaseAgent for APO {
         self.t += 1;
 
         let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
-        let action = no_grad(|| {
+        let action_distrib = no_grad(|| {
             let (action_distrib, _) = self.model.forward(&state);
-            action_distrib.sample().detach().to_device(Device::Cpu)
+            action_distrib
         });
+        let action = action_distrib.sample().detach().to_device(Device::Cpu);
 
-        self.buffer.append(
+        let experience = self.local_buffer.append(
             self.agent_id,
             self.current_episode_id,
             state,
             Some(action.shallow_clone()),
+            Some(action_distrib),
             reward,
             false,
-            self.gamma,
         );
+
+        self.replay_buffer.append(experience);
 
         if self.t % self.update_interval == 0 {
             self._update();
@@ -284,15 +328,16 @@ impl BaseAgent for APO {
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
-        self.buffer.append(
+        let experience = self.local_buffer.append(
             self.agent_id,
             self.current_episode_id,
             state,
             None,
+            None,
             reward,
             true,
-            self.gamma,
         );
+        self.replay_buffer.append(experience);
         self.current_episode_id = Ulid::new();
     }
 

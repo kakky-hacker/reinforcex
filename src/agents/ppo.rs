@@ -3,10 +3,8 @@ use crate::memory::{Experience, OnPolicyBuffer};
 use crate::misc::batch_states::batch_states;
 use crate::misc::cumsum::cumsum_rev;
 use crate::models::BasePolicy;
-use futures::lock;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use serde::de::value;
 use std::sync::Arc;
 use tch::{nn, no_grad, Device, Kind, Tensor};
 use ulid::Ulid;
@@ -38,7 +36,6 @@ impl PPO {
     pub fn new(
         model: Box<dyn BasePolicy>,
         optimizer: nn::Optimizer,
-        buffer: OnPolicyBuffer,
         gamma: f64,
         lambda: f64,
         update_interval: usize,
@@ -55,7 +52,7 @@ impl PPO {
             agent_id: Ulid::new(),
             model,
             optimizer,
-            buffer,
+            buffer: OnPolicyBuffer::new(),
             gamma,
             lambda,
             update_interval,
@@ -262,19 +259,20 @@ impl BaseAgent for PPO {
         self.t += 1;
 
         let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
-        let action = no_grad(|| {
+        let action_distrib = no_grad(|| {
             let (action_distrib, _) = self.model.forward(&state);
-            action_distrib.sample().detach().to_device(Device::Cpu)
+            action_distrib
         });
+        let action = action_distrib.sample().detach().to_device(Device::Cpu);
 
         self.buffer.append(
             self.agent_id,
             self.current_episode_id,
             state,
             Some(action.shallow_clone()),
+            Some(action_distrib),
             reward,
             false,
-            self.gamma,
         );
 
         if self.t % self.update_interval == 0 {
@@ -291,9 +289,9 @@ impl BaseAgent for PPO {
             self.current_episode_id,
             state,
             None,
+            None,
             reward,
             true,
-            self.gamma,
         );
         self.current_episode_id = Ulid::new();
     }
@@ -322,12 +320,10 @@ mod tests {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCSoftmaxPolicyWithValue::new(vs, 4, 2, 2, 64, 0.0);
-        let buffer = OnPolicyBuffer::new(None);
 
         let ppo = PPO::new(
             Box::new(model),
             optimizer,
-            buffer,
             0.99,
             0.99,
             100,
@@ -351,12 +347,10 @@ mod tests {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCSoftmaxPolicyWithValue::new(vs, 4, 4, 2, 64, 0.0);
-        let buffer = OnPolicyBuffer::new(None);
 
         let mut ppo = PPO::new(
             Box::new(model),
             optimizer,
-            buffer,
             0.5,
             0.99,
             100,

@@ -4,14 +4,15 @@ use tch::{Kind, Tensor};
 pub struct GaussianDistribution {
     mean: Tensor,
     var: Tensor,
-    ln_var: Tensor,
 }
+
+unsafe impl Sync for GaussianDistribution {}
+unsafe impl Send for GaussianDistribution {}
 
 impl GaussianDistribution {
     pub fn new(mean: Tensor, var: Tensor) -> Self {
         assert_eq!(mean.size(), var.size(), "mean and var must have same shape");
-        let ln_var = var.log();
-        GaussianDistribution { mean, var, ln_var }
+        GaussianDistribution { mean, var }
     }
 }
 
@@ -20,10 +21,10 @@ impl BaseDistribution for GaussianDistribution {
         (&self.mean, &self.var)
     }
 
-    fn kl(&self, q: Box<dyn BaseDistribution>) -> Tensor {
+    fn kl(&self, q: &Box<dyn BaseDistribution>) -> Tensor {
         let (q_mean, q_var) = q.params();
         let mean_diff = (&self.mean - q_mean).pow_tensor_scalar(2.0);
-        let term1 = q_var.log() - &self.ln_var;
+        let term1 = q_var.log() - &self.var.log();
         let term2 = (&self.var + mean_diff) / q_var;
         0.5 * (term1 + term2 - 1.0).sum_dim_intlist([-1].as_ref(), false, Kind::Float)
     }
@@ -34,7 +35,8 @@ impl BaseDistribution for GaussianDistribution {
         log_term * dim as f64
             + 0.5
                 * self
-                    .ln_var
+                    .var
+                    .log()
                     .sum_dim_intlist([-1].as_ref(), false, Kind::Float)
     }
 
@@ -51,19 +53,45 @@ impl BaseDistribution for GaussianDistribution {
     fn log_prob(&self, x: &Tensor) -> Tensor {
         let diff = (x - &self.mean).pow_tensor_scalar(2.0);
         let log_prob_each_dim: Tensor =
-            -0.5 * ((2.0 * std::f64::consts::PI).ln() + &self.ln_var + &diff / &self.var);
+            -0.5 * ((2.0 * std::f64::consts::PI).ln() + &self.var.log() + &diff / &self.var);
         log_prob_each_dim.sum_dim_intlist([-1].as_ref(), false, Kind::Float)
     }
 
     fn copy(&self) -> Box<dyn BaseDistribution> {
         Box::new(Self::new(
-            self.mean.shallow_clone(),
-            self.var.shallow_clone(),
+            self.mean.shallow_clone().detach(),
+            self.var.shallow_clone().detach(),
         ))
     }
 
     fn most_probable(&self) -> Tensor {
         self.mean.shallow_clone()
+    }
+
+    fn detach(&mut self) {
+        self.mean = self.mean.detach();
+        self.var = self.var.detach();
+    }
+
+    fn concat(&mut self, others: Vec<Box<dyn BaseDistribution>>) {
+        let means = others
+            .iter()
+            .map(|d| d.params().0.shallow_clone())
+            .collect::<Vec<Tensor>>();
+        let vars = others
+            .iter()
+            .map(|d| d.params().1.shallow_clone())
+            .collect::<Vec<Tensor>>();
+        self.mean = Tensor::cat(&means, 0);
+        self.var = Tensor::cat(&vars, 0);
+    }
+
+    fn all_prob(&self) -> Tensor {
+        Tensor::new()
+    }
+
+    fn all_log_prob(&self) -> Tensor {
+        Tensor::new()
     }
 }
 
@@ -127,7 +155,7 @@ mod tests {
         let gaussian_q: Box<dyn BaseDistribution> =
             Box::new(GaussianDistribution::new(mean_q, var_q));
 
-        let kl_div = gaussian_p.kl(gaussian_q);
+        let kl_div = gaussian_p.kl(&gaussian_q);
         let expected_kl: f64 = 0.249399221;
         assert!((kl_div.double_value(&[]) - expected_kl).abs() < 1e-6);
     }

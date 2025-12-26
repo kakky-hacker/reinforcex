@@ -8,6 +8,9 @@ pub struct SoftmaxDistribution {
     n_classes: i64,
 }
 
+unsafe impl Sync for SoftmaxDistribution {}
+unsafe impl Send for SoftmaxDistribution {}
+
 impl SoftmaxDistribution {
     pub fn new(logits: Tensor, beta: f64, min_prob: f64) -> Self {
         assert!(
@@ -26,6 +29,12 @@ impl SoftmaxDistribution {
             n_classes,
         }
     }
+}
+
+impl BaseDistribution for SoftmaxDistribution {
+    fn params(&self) -> (&Tensor, &Tensor) {
+        (&self.logits, &self.logits)
+    }
 
     fn all_prob(&self) -> Tensor {
         let scaled_logits = &self.logits * self.beta;
@@ -36,16 +45,13 @@ impl SoftmaxDistribution {
     fn all_log_prob(&self) -> Tensor {
         self.all_prob().log()
     }
-}
 
-impl BaseDistribution for SoftmaxDistribution {
-    fn params(&self) -> (&Tensor, &Tensor) {
-        (&self.logits, &self.logits)
+    fn detach(&mut self) {
+        self.logits = self.logits.detach();
     }
 
-    fn kl(&self, q: Box<dyn BaseDistribution>) -> Tensor {
-        let q_log_prob = q.log_prob(&self.all_prob());
-        (self.all_prob() * (self.all_log_prob() - q_log_prob)).sum_dim_intlist(
+    fn kl(&self, q: &Box<dyn BaseDistribution>) -> Tensor {
+        (self.all_prob() * (self.all_log_prob() - q.all_log_prob())).sum_dim_intlist(
             [-1].as_ref(),
             false,
             Kind::Float,
@@ -72,7 +78,7 @@ impl BaseDistribution for SoftmaxDistribution {
 
     fn copy(&self) -> Box<dyn BaseDistribution> {
         Box::new(Self::new(
-            self.logits.shallow_clone(),
+            self.logits.shallow_clone().detach(),
             self.beta,
             self.min_prob,
         ))
@@ -80,6 +86,17 @@ impl BaseDistribution for SoftmaxDistribution {
 
     fn most_probable(&self) -> Tensor {
         self.all_prob().argmax(-1, false)
+    }
+
+    fn concat(&mut self, others: Vec<Box<dyn BaseDistribution>>) {
+        // self の logits を最初に入れる
+        let mut logits = vec![self.logits.shallow_clone()];
+
+        // others の logits を追加
+        logits.extend(others.iter().map(|d| d.params().0.shallow_clone()));
+
+        // まとめて cat
+        self.logits = Tensor::cat(&logits, 0);
     }
 }
 

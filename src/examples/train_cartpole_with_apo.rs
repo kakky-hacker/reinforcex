@@ -1,5 +1,4 @@
-use reinforcex::agents::{BaseAgent, PPO};
-use reinforcex::memory::OnPolicyBuffer;
+use reinforcex::agents::{BaseAgent, APO};
 use reinforcex::models::FCSoftmaxPolicyWithValue;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
@@ -61,7 +60,7 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
     let value_coef = 0.5;
     let entropy_coef = 0.0;
 
-    let mut agent = PPO::new(
+    let mut agent = APO::new(
         model,
         optimizer,
         gamma,
@@ -143,7 +142,7 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
     }
 }
 
-pub fn train_cartpole_with_ppo() {
+pub fn train_cartpole_with_apo() {
     let ports: Vec<u16> = (8001..=8001).collect();
 
     ports

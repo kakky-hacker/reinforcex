@@ -14,11 +14,8 @@ cargo add reinforcex
 ```
 
 # Algorithms
-| Name | Status | Parallel |
-| --- | --- | --- |
-| DQN | Done | Done |
-| PPO | Done | WIP |
-| SAC | WIP | WIP |
+DQN
+PPO
 
 # API
 Instantiate the agent.
