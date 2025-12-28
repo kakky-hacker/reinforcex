@@ -12,7 +12,7 @@ use ulid::Ulid;
 
 const POLICY_LOG_PROB_RATIO_CLAMP_RANGE: f64 = 8.0;
 
-pub struct APO {
+pub struct PPOX {
     agent_id: Ulid,
     model: Box<dyn BasePolicy>,
     optimizer: nn::Optimizer,
@@ -32,9 +32,9 @@ pub struct APO {
     current_episode_id: Ulid,
 }
 
-unsafe impl Send for APO {}
+unsafe impl Send for PPOX {}
 
-impl APO {
+impl PPOX {
     pub fn new(
         model: Box<dyn BasePolicy>,
         optimizer: nn::Optimizer,
@@ -50,7 +50,7 @@ impl APO {
         gae_std: bool,
     ) -> Self {
         assert!(minibatch_size <= update_interval);
-        APO {
+        PPOX {
             agent_id: Ulid::new(),
             model,
             optimizer,
@@ -287,7 +287,7 @@ impl APO {
     }
 }
 
-impl BaseAgent for APO {
+impl BaseAgent for PPOX {
     fn act(&self, obs: &Tensor) -> Tensor {
         no_grad(|| {
             let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
