@@ -1,5 +1,6 @@
-use super::replay_buffer::{Experience, ReplayBuffer};
+use super::experience::Experience;
 use crate::misc::bounded_vec_deque::BoundedVecDeque;
+use crate::prob_distributions::BaseDistribution;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tch::Tensor;
@@ -7,14 +8,12 @@ use ulid::Ulid;
 
 pub struct OnPolicyBuffer {
     experiences_by_episode: HashMap<Ulid, BoundedVecDeque<Arc<Experience>>>,
-    replay_buffer: Option<Arc<ReplayBuffer>>,
 }
 
 impl OnPolicyBuffer {
-    pub fn new(replay_buffer: Option<Arc<ReplayBuffer>>) -> Self {
+    pub fn new() -> Self {
         Self {
             experiences_by_episode: HashMap::new(),
-            replay_buffer,
         }
     }
 
@@ -24,34 +23,21 @@ impl OnPolicyBuffer {
         episode_id: Ulid,
         state: Tensor,
         action: Option<Tensor>,
+        action_distrib: Option<Box<dyn BaseDistribution>>,
         reward: f64,
         is_episode_terminal: bool,
-        gamma: f64,
     ) -> Arc<Experience> {
-        let experience;
-
-        if self.replay_buffer.is_some() {
-            experience = self.replay_buffer.as_ref().unwrap().append(
-                agent_id,
-                episode_id,
-                state,
-                action,
-                reward,
-                is_episode_terminal,
-                gamma,
-            );
-        } else {
-            experience = Arc::new(Experience {
-                agent_id,
-                episode_id,
-                state,
-                action,
-                reward,
-                n_step_discounted_reward: Mutex::new(None),
-                n_step_after_experience: Mutex::new(None),
-                is_episode_terminal,
-            });
-        }
+        let experience = Arc::new(Experience::new(
+            agent_id,
+            episode_id,
+            state,
+            action,
+            action_distrib,
+            reward,
+            is_episode_terminal,
+            Mutex::new(None),
+            Mutex::new(None),
+        ));
 
         self.experiences_by_episode
             .entry(episode_id)

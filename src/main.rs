@@ -1,7 +1,7 @@
 use std::env;
 
 use examples::train_ant_with_ppo;
-use examples::train_cartpole_with_dqn;
+use examples::train_cartpole_with_ppox;
 use examples::train_web_LunarLander_with_dqn;
 use examples::train_web_cartpole_with_dqn;
 
@@ -42,6 +42,8 @@ fn main() {
         train_web_cartpole_with_dqn();
     } else if env_value == "cartpole" && algo_value == "ppo" {
         train_cartpole_with_ppo();
+    } else if env_value == "cartpole" && algo_value == "ppox" {
+        train_cartpole_with_ppox();
     } else if env_value == "ant" && algo_value == "ppo" {
         train_ant_with_ppo();
     } else if env_value == "Lunar" && algo_value == "dqn" {

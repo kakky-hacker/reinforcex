@@ -1,5 +1,4 @@
 use reinforcex::agents::{BaseAgent, PPO};
-use reinforcex::memory::OnPolicyBuffer;
 use reinforcex::models::FCGaussianPolicyWithValue;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
@@ -64,12 +63,9 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
     let value_coef = 0.003;
     let entropy_coef = 0.005;
 
-    let buffer = OnPolicyBuffer::new(None);
-
     let mut agent = PPO::new(
         model,
         optimizer,
-        buffer,
         gamma,
         lambda,
         update_interval,
@@ -104,7 +100,9 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
         reward = 0.0;
         for step in 0..max_steps {
             let obs_tensor = Tensor::from_slice(&obs).to_kind(Kind::Float);
-            let action_tensor = agent.act_and_train(&obs_tensor, reward.clamp(-1.0, 1.0)).flatten(0, 1);
+            let action_tensor = agent
+                .act_and_train(&obs_tensor, reward.clamp(-1.0, 1.0))
+                .flatten(0, 1);
             let action = (0..action_tensor.size()[0])
                 .map(|i| action_tensor.double_value(&[i]) as f32)
                 .collect::<Vec<f32>>();
