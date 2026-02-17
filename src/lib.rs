@@ -1,6 +1,7 @@
 mod misc;
 
 pub mod agents;
+pub mod curiousity;
 pub mod explorers;
 pub mod memory;
 pub mod models;

@@ -2,24 +2,18 @@ use super::base_curiousity::BaseCuriousity;
 use crate::memory::Experience;
 use std::sync::Arc;
 
-pub struct RND {
-
-}
+pub struct RND {}
 
 impl RND {
     pub fn new() -> Self {
-        RND {
-
-        }
+        RND {}
     }
 }
 
 impl BaseCuriousity for RND {
-    fn observe(&mut self, experience: Arc<Experience>, record: bool) -> f32 {
-        1.0
-    }
+    fn calc_reward(&self, experience: Arc<Experience>) {}
 
-    fn update(&mut self) {
-        
-    }
+    fn observe(&mut self, experience: Arc<Experience>) {}
+
+    fn update(&mut self) {}
 }
