@@ -6,7 +6,7 @@ description = "Deep Reinforcement Learning Framework"
 license = "MIT"
 repository = "https://github.com/kakky-hacker/reinforcex"
 readme = "README.md"
-keywords = ["drl", "ml", "dqn", "ppo", "curiousity driven"]
+keywords = ["drl", "ml", "dqn", "ppo"]
 categories = ["algorithms"]
 exclude = ["src/examples", "src/main.rs"]
 
