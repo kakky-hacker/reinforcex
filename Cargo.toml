@@ -1,33 +1,15 @@
-[package]
-name = "reinforcex"
-version = "0.0.4"
+[workspace]
+members = [
+    "core",
+    "ffi"
+]
+
+resolver = "2"
+
+[workspace.package]
 edition = "2021"
-description = "Deep Reinforcement Learning Framework"
 license = "MIT"
 repository = "https://github.com/kakky-hacker/reinforcex"
-readme = "README.md"
-keywords = ["drl", "ml", "dqn", "ppo"]
-categories = ["algorithms"]
-exclude = ["src/examples", "src/main.rs"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-rand = "0.8"
-tch = { version="0.20.0" }
-torch-sys = { version="0.20.0", optional=true, features=["download-libtorch"] }
-ndarray = "0.15"
-rayon = "1.8"
-ulid = "1"
-gym = { git = "https://github.com/kakky-hacker/gym-rs.git", branch = "master", version="2.2.1" }
-reqwest = { version = "0.11", features = ["blocking", "json"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1" }
-tokio = { version = "1.28", features = ["rt-multi-thread", "macros"] }
-futures = "0.3"
-winapi = { version = "0.3", features = ["libloaderapi"] }
-
-[features]
-default = ["cpu"]
-cpu = ["torch-sys"]
-cuda = []
+[workspace.dependencies]
+tch = "0.20.0"
