@@ -14,7 +14,7 @@ cargo add reinforcex
 ```
 
 # Algorithms
-DQN
+DQN,
 PPO
 
 # API
@@ -108,11 +108,10 @@ let buffer = Arc::new(ReplayBuffer::new(1000, 1));
 
 
 # Sample experiments
-The experimental environment is built using OpenAI Gym. Since Gym is a Python framework, set up a Python environment and run the following pip command:
+Run sample environment server in Docker.
 ```
-pip install gymnasium==0.26.3
+docker-compose -f sample_env/docker-compose.yml up -d
 ```
-We use Gym as the environment by calling Python from Rust.
 
 ```
 cargo run --features cpu -- --env cartpole --algo dqn
@@ -121,6 +120,12 @@ cargo run --features cpu -- --env cartpole --algo dqn
 <img width="597" alt="image" src="https://github.com/user-attachments/assets/b8c0606b-ec11-4b5a-b7fc-3070ad327d72" />
 
 # Unit test
+The experimental environment is built using OpenAI Gym. Since Gym is a Python framework, set up a Python environment and run the following pip command:
+```
+pip install gymnasium==0.26.3
+```
+We use Gym as the environment by calling Python from Rust.
+
 ```
 cargo test
 ```
