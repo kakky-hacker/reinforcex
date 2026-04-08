@@ -1,0 +1,15 @@
+[package]
+name = "reinforcex_ffi"
+version = "0.0.1"
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+name = "reinforcex_ffi"
+crate-type = ["cdylib"]
+
+[dependencies]
+reinforcex = { path = "../core" }
+tch = { workspace = true }
