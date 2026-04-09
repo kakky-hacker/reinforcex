@@ -13,3 +13,4 @@ crate-type = ["cdylib"]
 [dependencies]
 reinforcex = { path = "../core" }
 tch = { workspace = true }
+dashmap = "6.1.0"
