@@ -129,7 +129,7 @@ We use Gym as the environment by calling Python from Rust.
 cargo test
 ```
 
-# ReinforceX FFI Specification
+# FFI
 
 This document describes the Foreign Function Interface (FFI) for interacting with ReinforceX agents from external languages such as C, C++, or C# (Unity).
 
