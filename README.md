@@ -210,8 +210,8 @@ Creates a new agent and returns its unique ID.
 - `config`: Pointer to a valid AgentConfig struct
 
 #### Returns
-- `>= 0`: Agent ID  
-- `-1`: Failure (invalid config or internal error)
+- `>= 1`: Agent ID  
+- `0`: Failure (invalid config or internal error)
 
 ---
 
