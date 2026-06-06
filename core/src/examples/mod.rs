@@ -7,3 +7,8 @@ pub use train_ant_with_ppo::train_ant_with_ppo;
 pub use train_cartpole_with_ppo::train_cartpole_with_ppo;
 pub use train_web_LunarLander_with_dqn::train_web_LunarLander_with_dqn;
 pub use train_web_cartpole_with_dqn::train_web_cartpole_with_dqn;
+
+fn path_for_agent(path: &Option<String>, agent_id: usize) -> Option<String> {
+    path.as_ref()
+        .map(|path| path.replace("{agent_id}", &agent_id.to_string()))
+}

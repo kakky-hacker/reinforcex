@@ -24,7 +24,13 @@ struct StepResponse {
     done: bool,
 }
 
-fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<ReplayBuffer>) {
+fn run_agent_on_env(
+    env_port: u16,
+    agent_id: usize,
+    shared_buffer: Arc<ReplayBuffer>,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) {
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -50,6 +56,8 @@ fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<ReplayBuf
         Box::new(explorer),
         None,
         0.97,
+        save_path,
+        load_path,
     );
 
     // --- Training Loop ---
@@ -118,14 +126,21 @@ fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<ReplayBuf
             total_steps = 0;
         }
     }
+
+    agent.save();
 }
 
-pub fn train_web_cartpole_with_dqn() {
+pub fn train_web_cartpole_with_dqn(save_path: Option<String>, load_path: Option<String>) {
     let shared_buffer = Arc::new(ReplayBuffer::new(300000, 5));
     let ports: Vec<u16> = (8001..=8004).collect();
 
-    ports
-        .into_par_iter()
-        .enumerate()
-        .for_each(|(i, port)| run_agent_on_env(port, i, Arc::clone(&shared_buffer)));
+    ports.into_par_iter().enumerate().for_each(|(i, port)| {
+        run_agent_on_env(
+            port,
+            i,
+            Arc::clone(&shared_buffer),
+            super::path_for_agent(&save_path, i),
+            super::path_for_agent(&load_path, i),
+        )
+    });
 }

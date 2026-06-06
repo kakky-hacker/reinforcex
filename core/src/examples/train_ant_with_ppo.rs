@@ -22,7 +22,12 @@ struct StepResponse {
     done: bool,
 }
 
-fn run_agent_on_env(env_port: u16, agent_id: usize) {
+fn run_agent_on_env(
+    env_port: u16,
+    agent_id: usize,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) {
     println!("train_ant_with_ppo_api");
 
     let client = Client::builder()
@@ -76,6 +81,8 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
         value_coef,
         entropy_coef,
         true,
+        save_path,
+        load_path,
     );
     let mut total_reward = 0.0;
     let mut total_steps = 0;
@@ -139,13 +146,19 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
             total_steps = 0;
         }
     }
+
+    agent.save();
 }
 
-pub fn train_ant_with_ppo() {
+pub fn train_ant_with_ppo(save_path: Option<String>, load_path: Option<String>) {
     let ports: Vec<u16> = (8001..=8001).collect();
 
-    ports
-        .into_par_iter()
-        .enumerate()
-        .for_each(|(i, port)| run_agent_on_env(port, i));
+    ports.into_par_iter().enumerate().for_each(|(i, port)| {
+        run_agent_on_env(
+            port,
+            i,
+            super::path_for_agent(&save_path, i),
+            super::path_for_agent(&load_path, i),
+        )
+    });
 }

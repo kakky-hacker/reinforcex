@@ -47,21 +47,24 @@ let n_steps = 3;
 let batchsize = 16;
 let update_interval = 8;
 let target_update_interval = 100;
-let replay_buffer_capacity = 2000
+let replay_buffer_capacity = 2000;
 
 let explorer = EpsilonGreedy::new(0.5, 0.1, 50000);
 let transition_buffer = Arc::new(ReplayBuffer::new(replay_buffer_capacity, n_steps));
 
 let mut agent = DQN::new(
     model,
-    optimizer,
     transition_buffer,
+    optimizer,
     action_size as usize,
     batchsize,
     update_interval,
     target_update_interval,
     Box::new(explorer),
+    None,
     gamma,
+    Some("models/dqn_latest.ot".to_string()),
+    None,
 );
 ```
 
@@ -70,6 +73,8 @@ Methods of agent.
 fn act(&self, obs: &Tensor) -> Tensor;
 fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor;
 fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64);
+fn save(&self);
+fn load(&mut self);
 ```
 
 Pseudo code for training.
@@ -94,6 +99,8 @@ let buffer = Arc::new(ReplayBuffer::new(1000, 1));
     let mut dqn = DQN::new(
         transition_buffer: Arc::clone(&buffer),
         ...(other params)...
+        save_path: Some(format!("models/dqn_{agent_id}.ot")),
+        load_path: None,
     );
 
     for episode in 0..max_episode {
@@ -114,6 +121,12 @@ docker-compose -f sample_env/docker-compose.yml up -d
 
 ```
 cargo run --features cpu -- --env cartpole --algo dqn
+```
+
+Use `--save-path` and `--load-path` to persist models. Multi-agent samples can include
+`{agent_id}` in the path.
+```
+cargo run --features cpu -- --env cartpole --algo dqn --save-path models/cartpole_dqn_{agent_id}.ot --load-path models/cartpole_dqn_{agent_id}.ot
 ```
 
 <img width="597" alt="image" src="https://github.com/user-attachments/assets/b8c0606b-ec11-4b5a-b7fc-3070ad327d72" />
