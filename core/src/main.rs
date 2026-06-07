@@ -1,6 +1,7 @@
 use std::env;
 
 use examples::train_ant_with_ppo;
+use examples::train_lunar_lander_with_ppo_rnd;
 use examples::train_web_LunarLander_with_dqn;
 use examples::train_web_cartpole_with_dqn;
 
@@ -45,6 +46,8 @@ fn main() {
         train_ant_with_ppo();
     } else if env_value == "Lunar" && algo_value == "dqn" {
         //train_web_LunarLander_with_dqn().await;
+    } else if env_value == "Lunar" && algo_value == "ppo-rnd" {
+        train_lunar_lander_with_ppo_rnd();
     } else {
         panic!("Invalid env or algo");
     }
