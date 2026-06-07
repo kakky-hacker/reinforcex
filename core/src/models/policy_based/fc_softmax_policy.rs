@@ -10,8 +10,9 @@ use tch::{Device, Tensor};
 pub struct FCSoftmaxPolicy {
     vs: VarStore,
     layers: Vec<Linear>,
-    logits_layers: Vec<Linear>,
+    logits_layer: Linear,
     n_input_channels: i64,
+    action_branch_sizes: Vec<i64>,
     min_prob: f64,
 }
 
@@ -76,27 +77,24 @@ impl FCSoftmaxPolicy {
             ));
         }
 
-        let logits_layers = action_branch_sizes
-            .iter()
-            .map(|&n_actions| {
-                linear(
-                    &root,
-                    n_hidden_channels,
-                    n_actions,
-                    LinearConfig {
-                        ws_init: he_init(n_hidden_channels),
-                        bs_init: Some(Init::Const(0.0)),
-                        bias: true,
-                    },
-                )
-            })
-            .collect();
+        let n_actions = action_branch_sizes.iter().sum();
+        let logits_layer = linear(
+            &root,
+            n_hidden_channels,
+            n_actions,
+            LinearConfig {
+                ws_init: he_init(n_hidden_channels),
+                bs_init: Some(Init::Const(0.0)),
+                bias: true,
+            },
+        );
 
         FCSoftmaxPolicy {
             vs,
             layers,
-            logits_layers,
+            logits_layer,
             n_input_channels,
+            action_branch_sizes,
             min_prob,
         }
     }
@@ -117,29 +115,21 @@ impl FCSoftmaxPolicy {
         beta: f64,
         relu_logits: bool,
     ) -> Box<dyn BaseDistribution> {
-        let logits = self
-            .logits_layers
-            .iter()
-            .map(|layer| {
-                let logits = layer.forward(h);
-                if relu_logits {
-                    logits.relu()
-                } else {
-                    logits
-                }
-            })
-            .collect::<Vec<Tensor>>();
+        let logits = self.logits_layer.forward(h);
+        let logits = if relu_logits { logits.relu() } else { logits };
 
-        if logits.len() == 1 {
-            Box::new(SoftmaxDistribution::new(
-                logits.into_iter().next().unwrap(),
-                beta,
-                self.min_prob,
-            ))
+        if self.action_branch_sizes.len() == 1 {
+            Box::new(SoftmaxDistribution::new(logits, beta, self.min_prob))
         } else {
-            let distributions = logits
-                .into_iter()
-                .map(|branch_logits| SoftmaxDistribution::new(branch_logits, beta, self.min_prob))
+            let mut branch_start = 0;
+            let distributions = self
+                .action_branch_sizes
+                .iter()
+                .map(|&branch_size| {
+                    let branch_logits = logits.narrow(1, branch_start, branch_size);
+                    branch_start += branch_size;
+                    SoftmaxDistribution::new(branch_logits, beta, self.min_prob)
+                })
                 .collect();
             Box::new(MultiSoftmaxDistribution::new(distributions))
         }
@@ -236,7 +226,7 @@ mod tests {
     fn test_multi_softmax_policy_forward() {
         let vs = nn::VarStore::new(Device::Cpu);
         let policy = FCSoftmaxPolicyWithValue::new_multi(vs, 4, vec![3, 2], 2, 16, 0.0);
-        let input = Tensor::randn(&[5, 4], (Kind::Float, Device::Cpu));
+        let input = Tensor::randn(&[100, 4], (Kind::Float, Device::Cpu));
 
         let (dist, value) = policy.forward(&input);
         let value = value.unwrap();
@@ -245,13 +235,13 @@ mod tests {
         let entropy = dist.entropy();
         let most_probable = dist.most_probable();
 
-        assert_eq!(value.size(), [5, 1]);
-        assert_eq!(action.size(), [5, 2]);
-        assert_eq!(log_prob.size(), [5]);
-        assert_eq!(entropy.size(), [5]);
-        assert_eq!(most_probable.size(), [5, 2]);
+        assert_eq!(value.size(), [100, 1]);
+        assert_eq!(action.size(), [100, 2]);
+        assert_eq!(log_prob.size(), [100]);
+        assert_eq!(entropy.size(), [100]);
+        assert_eq!(most_probable.size(), [100, 2]);
 
-        for batch in 0..5 {
+        for batch in 0..100 {
             let branch0 = action.int64_value(&[batch, 0]);
             let branch1 = action.int64_value(&[batch, 1]);
             assert!(0 <= branch0 && branch0 < 3);

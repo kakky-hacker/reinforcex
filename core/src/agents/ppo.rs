@@ -408,15 +408,15 @@ mod tests {
         );
 
         let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
-        let action = ppo.act_and_train(&obs, 0.0);
-        assert_multi_branch_action(&action);
 
-        let action = ppo.act_and_train(&obs, 1.0);
-        assert_multi_branch_action(&action);
-        assert_eq!(ppo.t, 2);
+        for i in 0..100 {
+            let action = ppo.act_and_train(&obs, 1.0);
+            assert_multi_branch_action(&action);
+            assert_eq!(ppo.t, i + 1);
 
-        let action = ppo.act(&obs);
-        assert_multi_branch_action(&action);
+            let action = ppo.act(&obs);
+            assert_multi_branch_action(&action);
+        }
     }
 
     fn assert_multi_branch_action(action: &Tensor) {
