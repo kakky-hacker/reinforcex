@@ -1,8 +1,9 @@
 use std::env;
 
 use examples::train_ant_with_ppo;
-use examples::train_web_LunarLander_with_dqn;
 use examples::train_web_cartpole_with_dqn;
+use examples::train_web_cartpole_with_sac;
+use examples::train_web_lunar_lander_with_sac;
 
 use crate::examples::train_cartpole_with_ppo;
 mod examples;
@@ -37,14 +38,21 @@ fn main() {
 
     println!("is_cuda: {}", Cuda::is_available());
 
-    if env_value == "cartpole" && algo_value == "dqn" {
+    let env_key = env_value.to_ascii_lowercase();
+    let algo_key = algo_value.to_ascii_lowercase();
+
+    if env_key == "cartpole" && algo_key == "dqn" {
         train_web_cartpole_with_dqn();
-    } else if env_value == "cartpole" && algo_value == "ppo" {
+    } else if env_key == "cartpole" && algo_key == "ppo" {
         train_cartpole_with_ppo();
-    } else if env_value == "ant" && algo_value == "ppo" {
+    } else if env_key == "cartpole" && algo_key == "sac" {
+        train_web_cartpole_with_sac();
+    } else if env_key == "ant" && algo_key == "ppo" {
         train_ant_with_ppo();
-    } else if env_value == "Lunar" && algo_value == "dqn" {
+    } else if env_key == "lunar" && algo_key == "dqn" {
         //train_web_LunarLander_with_dqn().await;
+    } else if (env_key == "lunar" || env_key == "lunarlander") && algo_key == "sac" {
+        train_web_lunar_lander_with_sac();
     } else {
         panic!("Invalid env or algo");
     }
