@@ -9,9 +9,17 @@ mod value_based {
     pub mod fc_q_network;
 }
 
+mod curiousity {
+    pub mod base_curiousity_model;
+    pub mod fc_rnd_model;
+}
+
 pub use policy_based::base_policy_network::BasePolicy;
 pub use policy_based::fc_gaussian_policy::{FCGaussianPolicy, FCGaussianPolicyWithValue};
 pub use policy_based::fc_softmax_policy::{FCSoftmaxPolicy, FCSoftmaxPolicyWithValue};
 
 pub use value_based::base_q_network::BaseQFunction;
 pub use value_based::fc_q_network::FCQNetwork;
+
+pub use curiousity::base_curiousity_model::BaseCuriousityModel;
+pub use curiousity::fc_rnd_model::FCRNDModel;
