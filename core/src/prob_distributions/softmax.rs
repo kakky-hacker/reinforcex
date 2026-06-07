@@ -29,6 +29,14 @@ impl SoftmaxDistribution {
             n_classes,
         }
     }
+
+    pub fn beta(&self) -> f64 {
+        self.beta
+    }
+
+    pub fn min_prob(&self) -> f64 {
+        self.min_prob
+    }
 }
 
 impl BaseDistribution for SoftmaxDistribution {
@@ -89,13 +97,8 @@ impl BaseDistribution for SoftmaxDistribution {
     }
 
     fn concat(&mut self, others: Vec<Box<dyn BaseDistribution>>) {
-        // self の logits を最初に入れる
         let mut logits = vec![self.logits.shallow_clone()];
-
-        // others の logits を追加
         logits.extend(others.iter().map(|d| d.params().0.shallow_clone()));
-
-        // まとめて cat
         self.logits = Tensor::cat(&logits, 0);
     }
 }
