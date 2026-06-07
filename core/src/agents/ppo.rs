@@ -385,4 +385,46 @@ mod tests {
             assert_eq!(action_value, 2);
         }
     }
+
+    #[test]
+    fn test_ppo_act_and_train_multi_branch_discrete() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+        let model = FCSoftmaxPolicyWithValue::new_multi(vs, 4, vec![3, 2], 1, 8, 0.0);
+
+        let mut ppo = PPO::new(
+            Box::new(model),
+            optimizer,
+            0.5,
+            0.99,
+            2,
+            1,
+            1,
+            0.1,
+            0.2,
+            1.0,
+            1.0,
+            false,
+        );
+
+        let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
+
+        for i in 0..100 {
+            let action = ppo.act_and_train(&obs, 1.0);
+            assert_multi_branch_action(&action);
+            assert_eq!(ppo.t, i + 1);
+
+            let action = ppo.act(&obs);
+            assert_multi_branch_action(&action);
+        }
+    }
+
+    fn assert_multi_branch_action(action: &Tensor) {
+        assert_eq!(action.size(), [1, 2]);
+
+        let branch0 = action.int64_value(&[0, 0]);
+        let branch1 = action.int64_value(&[0, 1]);
+        assert!(0 <= branch0 && branch0 < 3);
+        assert!(0 <= branch1 && branch1 < 2);
+    }
 }
