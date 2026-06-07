@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use reinforcex::agents::{BaseAgent, SAC};
 use reinforcex::memory::ReplayBuffer;
 use reinforcex::models::{FCGaussianPolicy, FCQNetwork};
@@ -16,11 +17,10 @@ struct ResetResponse {
 #[derive(Deserialize)]
 struct StepResponse {
     observation: Vec<f32>,
-    reward: f64,
     done: bool,
 }
 
-fn build_sac_agent() -> SAC {
+fn build_sac_agent(shared_buffer: Arc<ReplayBuffer>) -> SAC {
     let device = Device::cuda_if_available();
     let obs_size = 4;
     let action_size = 1;
@@ -69,7 +69,7 @@ fn build_sac_agent() -> SAC {
         critic1_optimizer,
         Box::new(critic2),
         critic2_optimizer,
-        Arc::new(ReplayBuffer::new(100000, 1)),
+        shared_buffer,
         128,
         1,
         0.99,
@@ -79,14 +79,14 @@ fn build_sac_agent() -> SAC {
     )
 }
 
-pub fn train_web_cartpole_with_sac() {
+fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<ReplayBuffer>) {
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("HTTP client build failed");
-    let base_url = "http://localhost:8001";
+    let base_url = format!("http://localhost:{}", env_port);
 
-    let mut agent = build_sac_agent();
+    let mut agent = build_sac_agent(shared_buffer);
     let episodes = 10000;
     let max_steps = 500;
     let log_interval = 100;
@@ -126,7 +126,7 @@ pub fn train_web_cartpole_with_sac() {
             if resp.done && (max_steps - step) > 10 {
                 reward = -30.0;
             }
-            total_reward += resp.reward;
+            total_reward += reward;
             total_steps += 1;
 
             if resp.done {
@@ -139,7 +139,8 @@ pub fn train_web_cartpole_with_sac() {
         if episode % log_interval == 0 {
             let statistics = agent.get_statistics();
             println!(
-                "Episode {}, Avg Reward: {:.1}, Avg Steps: {}, Stats: {:?}, Elapsed: {:?}",
+                "[Agent {}] Episode {}, Avg Reward: {:.1}, Avg Steps: {}, Stats: {:?}, Elapsed: {:?}",
+                agent_id,
                 episode,
                 total_reward / log_interval as f64,
                 total_steps / log_interval,
@@ -150,4 +151,22 @@ pub fn train_web_cartpole_with_sac() {
             total_steps = 0;
         }
     }
+}
+
+pub fn train_web_cartpole_with_sac(parallel_count: usize) {
+    assert!(parallel_count > 0);
+
+    let shared_buffer = Arc::new(ReplayBuffer::new(300000, 1));
+    let ports = (0..parallel_count)
+        .map(|i| {
+            8001u16
+                .checked_add(u16::try_from(i).expect("parallel count is too large"))
+                .expect("parallel count is too large")
+        })
+        .collect::<Vec<u16>>();
+
+    ports
+        .into_par_iter()
+        .enumerate()
+        .for_each(|(i, port)| run_agent_on_env(port, i, Arc::clone(&shared_buffer)));
 }

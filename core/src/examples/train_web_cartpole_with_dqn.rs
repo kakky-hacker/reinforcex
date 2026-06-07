@@ -120,9 +120,17 @@ fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<ReplayBuf
     }
 }
 
-pub fn train_web_cartpole_with_dqn() {
+pub fn train_web_cartpole_with_dqn(parallel_count: usize) {
+    assert!(parallel_count > 0);
+
     let shared_buffer = Arc::new(ReplayBuffer::new(300000, 5));
-    let ports: Vec<u16> = (8001..=8004).collect();
+    let ports = (0..parallel_count)
+        .map(|i| {
+            8001u16
+                .checked_add(u16::try_from(i).expect("parallel count is too large"))
+                .expect("parallel count is too large")
+        })
+        .collect::<Vec<u16>>();
 
     ports
         .into_par_iter()
