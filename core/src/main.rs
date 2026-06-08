@@ -14,6 +14,8 @@ fn main() {
 
     let mut env_value = String::new();
     let mut algo_value = String::new();
+    let mut save_path: Option<String> = None;
+    let mut load_path: Option<String> = None;
     let mut parallel_count = 4usize;
 
     let mut iter = args.iter();
@@ -27,6 +29,16 @@ fn main() {
             "--algo" => {
                 if let Some(value) = iter.next() {
                     algo_value = value.clone();
+                }
+            }
+            "--save-path" => {
+                if let Some(value) = iter.next() {
+                    save_path = Some(value.clone());
+                }
+            }
+            "--load-path" => {
+                if let Some(value) = iter.next() {
+                    load_path = Some(value.clone());
                 }
             }
             "--parallel" | "--parallel-count" | "--num-agents" => {
@@ -43,8 +55,8 @@ fn main() {
     assert!(parallel_count > 0, "parallel count must be positive");
 
     println!(
-        "Environment: {}, Algorithm: {}, Parallel: {}",
-        env_value, algo_value, parallel_count
+        "Environment: {}, Algorithm: {}, Save path: {:?}, Load path: {:?} Parallel: {}",
+        env_value, algo_value, save_path, load_path, parallel_count
     );
 
     reinforcex::load_cuda_dlls();
@@ -54,18 +66,14 @@ fn main() {
     let env_key = env_value.to_ascii_lowercase();
     let algo_key = algo_value.to_ascii_lowercase();
 
-    if env_key == "cartpole" && algo_key == "dqn" {
-        train_web_cartpole_with_dqn(parallel_count);
-    } else if env_key == "cartpole" && algo_key == "ppo" {
-        train_cartpole_with_ppo();
-    } else if env_key == "cartpole" && algo_key == "sac" {
-        train_web_cartpole_with_sac(parallel_count);
-    } else if env_key == "ant" && algo_key == "ppo" {
-        train_ant_with_ppo();
-    } else if env_key == "lunar" && algo_key == "dqn" {
-        //train_web_LunarLander_with_dqn().await;
-    } else if (env_key == "lunar" || env_key == "lunarlander") && algo_key == "sac" {
-        train_web_lunar_lander_with_sac(parallel_count);
+    if env_value == "cartpole" && algo_value == "dqn" {
+        train_web_cartpole_with_dqn(save_path, load_path);
+    } else if env_value == "cartpole" && algo_value == "ppo" {
+        train_cartpole_with_ppo(save_path, load_path);
+    } else if env_value == "ant" && algo_value == "ppo" {
+        train_ant_with_ppo(save_path, load_path);
+    } else if env_value == "Lunar" && algo_value == "dqn" {
+        //train_web_LunarLander_with_dqn(save_path, load_path).await;
     } else {
         panic!("Invalid env or algo");
     }

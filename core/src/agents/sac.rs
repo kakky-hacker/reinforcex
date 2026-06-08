@@ -332,9 +332,9 @@ impl BaseAgent for SAC {
         &self.agent_id
     }
 
-    fn save(&self, _dirname: &str, _ancestors: std::collections::HashSet<String>) {}
+    fn save(&self) {}
 
-    fn load(&self, _dirname: &str, _ancestors: std::collections::HashSet<String>) {}
+    fn load(&mut self) {}
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use super::base_agent::BaseAgent;
+use super::base_agent::{ensure_parent_dir, BaseAgent};
 use crate::memory::{Experience, OnPolicyBuffer};
 use crate::misc::batch_states::batch_states;
 use crate::misc::cumsum::cumsum_rev;
@@ -28,6 +28,8 @@ pub struct PPO {
     gae_std: bool,
     t: usize,
     current_episode_id: Ulid,
+    save_path: Option<String>,
+    load_path: Option<String>,
 }
 
 unsafe impl Send for PPO {}
@@ -46,9 +48,11 @@ impl PPO {
         value_coef: f64,
         entropy_coef: f64,
         gae_std: bool,
+        save_path: Option<String>,
+        load_path: Option<String>,
     ) -> Self {
         assert!(minibatch_size <= update_interval);
-        PPO {
+        let mut agent = PPO {
             agent_id: Ulid::new(),
             model,
             optimizer,
@@ -65,7 +69,11 @@ impl PPO {
             gae_std,
             t: 0,
             current_episode_id: Ulid::new(),
-        }
+            save_path,
+            load_path,
+        };
+        agent.load();
+        agent
     }
 
     fn _update(&mut self) {
@@ -304,9 +312,24 @@ impl BaseAgent for PPO {
         &self.agent_id
     }
 
-    fn save(&self, dirname: &str, ancestors: std::collections::HashSet<String>) {}
+    fn save(&self) {
+        if let Some(path) = &self.save_path {
+            if path.is_empty() {
+                return;
+            }
+            ensure_parent_dir(path);
+            self.model.save(path);
+        }
+    }
 
-    fn load(&self, dirname: &str, ancestors: std::collections::HashSet<String>) {}
+    fn load(&mut self) {
+        if let Some(path) = self.load_path.clone() {
+            if path.is_empty() {
+                return;
+            }
+            self.model.load(&path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +357,8 @@ mod tests {
             1.0,
             1.0,
             false,
+            None,
+            None,
         );
 
         assert_eq!(ppo.update_interval, 100);
@@ -361,6 +386,8 @@ mod tests {
             1.0,
             1.0,
             false,
+            None,
+            None,
         );
 
         let mut reward = 0.0;
@@ -405,6 +432,8 @@ mod tests {
             1.0,
             1.0,
             false,
+            None,
+            None,
         );
 
         let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);

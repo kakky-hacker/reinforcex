@@ -83,6 +83,8 @@ fn create_agent(config: &AgentConfig) -> Option<AgentWrapper> {
                 Box::new(explorer),
                 None,
                 config.gamma,
+                None,
+                None,
             );
 
             Some(AgentWrapper {
@@ -118,6 +120,8 @@ fn create_agent(config: &AgentConfig) -> Option<AgentWrapper> {
                 0.5,
                 0.01,
                 true,
+                None,
+                None,
             );
 
             Some(AgentWrapper {

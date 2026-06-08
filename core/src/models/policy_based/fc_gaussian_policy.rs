@@ -146,6 +146,18 @@ impl BasePolicy for FCGaussianPolicy {
     fn device(&self) -> Device {
         self.vs.device()
     }
+
+    fn save(&self, path: &str) {
+        self.vs
+            .save(path)
+            .unwrap_or_else(|e| panic!("failed to save FCGaussianPolicy to {}: {}", path, e));
+    }
+
+    fn load(&mut self, path: &str) {
+        self.vs
+            .load(path)
+            .unwrap_or_else(|e| panic!("failed to load FCGaussianPolicy from {}: {}", path, e));
+    }
 }
 
 impl FCGaussianPolicyWithValue {
@@ -207,6 +219,24 @@ impl BasePolicy for FCGaussianPolicyWithValue {
 
     fn device(&self) -> Device {
         self.base_policy.vs.device()
+    }
+
+    fn save(&self, path: &str) {
+        self.base_policy.vs.save(path).unwrap_or_else(|e| {
+            panic!(
+                "failed to save FCGaussianPolicyWithValue to {}: {}",
+                path, e
+            )
+        });
+    }
+
+    fn load(&mut self, path: &str) {
+        self.base_policy.vs.load(path).unwrap_or_else(|e| {
+            panic!(
+                "failed to load FCGaussianPolicyWithValue from {}: {}",
+                path, e
+            )
+        });
     }
 }
 

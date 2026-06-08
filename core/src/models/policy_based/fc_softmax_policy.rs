@@ -145,6 +145,18 @@ impl BasePolicy for FCSoftmaxPolicy {
     fn device(&self) -> Device {
         self.vs.device()
     }
+
+    fn save(&self, path: &str) {
+        self.vs
+            .save(path)
+            .unwrap_or_else(|e| panic!("failed to save FCSoftmaxPolicy to {}: {}", path, e));
+    }
+
+    fn load(&mut self, path: &str) {
+        self.vs
+            .load(path)
+            .unwrap_or_else(|e| panic!("failed to load FCSoftmaxPolicy from {}: {}", path, e));
+    }
 }
 
 impl FCSoftmaxPolicyWithValue {
@@ -214,6 +226,21 @@ impl BasePolicy for FCSoftmaxPolicyWithValue {
 
     fn device(&self) -> Device {
         self.base_policy.vs.device()
+    }
+
+    fn save(&self, path: &str) {
+        self.base_policy.vs.save(path).unwrap_or_else(|e| {
+            panic!("failed to save FCSoftmaxPolicyWithValue to {}: {}", path, e)
+        });
+    }
+
+    fn load(&mut self, path: &str) {
+        self.base_policy.vs.load(path).unwrap_or_else(|e| {
+            panic!(
+                "failed to load FCSoftmaxPolicyWithValue from {}: {}",
+                path, e
+            )
+        });
     }
 }
 

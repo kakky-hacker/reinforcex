@@ -1,4 +1,4 @@
-use super::base_agent::BaseAgent;
+use super::base_agent::{ensure_parent_dir, BaseAgent};
 use crate::explorers::BaseExplorer;
 use crate::memory::ReplayBuffer;
 use crate::misc::batch_states::batch_states;
@@ -23,6 +23,8 @@ pub struct DQN {
     gamma: f64,
     t: usize,
     current_episode_id: Ulid,
+    save_path: Option<String>,
+    load_path: Option<String>,
 }
 
 unsafe impl Send for DQN {}
@@ -39,9 +41,11 @@ impl DQN {
         explorer: Box<dyn BaseExplorer>,
         selector: Option<Arc<Box<dyn BaseSelector>>>,
         gamma: f64,
+        save_path: Option<String>,
+        load_path: Option<String>,
     ) -> Self {
         let target_model = model.clone();
-        DQN {
+        let mut agent = DQN {
             agent_id: Ulid::new(),
             model,
             optimizer,
@@ -56,7 +60,11 @@ impl DQN {
             gamma,
             t: 0,
             current_episode_id: Ulid::new(),
-        }
+            save_path,
+            load_path,
+        };
+        agent.load();
+        agent
     }
 
     fn _update(&mut self) {
@@ -216,9 +224,25 @@ impl BaseAgent for DQN {
         &self.agent_id
     }
 
-    fn save(&self, dirname: &str, ancestors: std::collections::HashSet<String>) {}
+    fn save(&self) {
+        if let Some(path) = &self.save_path {
+            if path.is_empty() {
+                return;
+            }
+            ensure_parent_dir(path);
+            self.model.save(path);
+        }
+    }
 
-    fn load(&self, dirname: &str, ancestors: std::collections::HashSet<String>) {}
+    fn load(&mut self) {
+        if let Some(path) = self.load_path.clone() {
+            if path.is_empty() {
+                return;
+            }
+            self.model.load(&path);
+            self._sync_target_model();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -248,6 +272,8 @@ mod tests {
             Box::new(explorer),
             None,
             0.99,
+            None,
+            None,
         );
 
         assert_eq!(dqn.action_size, 2);
@@ -276,6 +302,8 @@ mod tests {
             Box::new(explorer),
             None,
             0.5,
+            None,
+            None,
         );
 
         let mut reward = 0.0;
@@ -337,6 +365,8 @@ mod tests {
                 Box::new(explorer),
                 None,
                 0.5,
+                None,
+                None,
             );
 
             let mut reward = 0.0;

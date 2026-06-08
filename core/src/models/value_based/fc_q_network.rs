@@ -111,6 +111,18 @@ impl BaseQFunction for FCQNetwork {
     fn trainable_variables(&self) -> Vec<Tensor> {
         self.vs.trainable_variables()
     }
+
+    fn save(&self, path: &str) {
+        self.vs
+            .save(path)
+            .unwrap_or_else(|e| panic!("failed to save FCQNetwork to {}: {}", path, e));
+    }
+
+    fn load(&mut self, path: &str) {
+        self.vs
+            .load(path)
+            .unwrap_or_else(|e| panic!("failed to load FCQNetwork from {}: {}", path, e));
+    }
 }
 
 #[cfg(test)]
