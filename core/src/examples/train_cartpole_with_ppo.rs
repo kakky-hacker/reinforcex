@@ -146,6 +146,7 @@ fn run_agent_on_env(
             );
             total_reward = 0.0;
             total_steps = 0;
+            agent.save();
         }
     }
 

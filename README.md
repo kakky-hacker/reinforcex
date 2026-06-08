@@ -126,7 +126,7 @@ cargo run --features cpu -- --env cartpole --algo dqn
 Use `--save-path` and `--load-path` to persist models. Multi-agent samples can include
 `{agent_id}` in the path.
 ```
-cargo run --features cpu -- --env cartpole --algo dqn --save-path models/cartpole_dqn_{agent_id}.ot --load-path models/cartpole_dqn_{agent_id}.ot
+cargo run --features cpu -- --env cartpole --algo dqn --save-path 'models/cartpole_dqn_{agent_id}.ot' --load-path 'models/cartpole_dqn_{agent_id}.ot'
 ```
 
 <img width="597" alt="image" src="https://github.com/user-attachments/assets/b8c0606b-ec11-4b5a-b7fc-3070ad327d72" />

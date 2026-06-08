@@ -144,10 +144,9 @@ fn run_agent_on_env(
             );
             total_reward = 0.0;
             total_steps = 0;
+            agent.save();
         }
     }
-
-    agent.save();
 }
 
 pub fn train_ant_with_ppo(save_path: Option<String>, load_path: Option<String>) {

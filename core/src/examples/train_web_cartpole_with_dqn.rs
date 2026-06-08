@@ -124,10 +124,9 @@ fn run_agent_on_env(
             );
             total_reward = 0.0;
             total_steps = 0;
+            agent.save();
         }
     }
-
-    agent.save();
 }
 
 pub fn train_web_cartpole_with_dqn(save_path: Option<String>, load_path: Option<String>) {

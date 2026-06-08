@@ -141,7 +141,6 @@ async fn run_agent_on_env(
                 start.elapsed()
             );
 
-            // ログ追加
             {
                 let mut map = reward_log_map.lock().unwrap();
                 map.entry(agent_id)
