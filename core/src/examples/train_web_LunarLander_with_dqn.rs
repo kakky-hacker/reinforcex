@@ -141,7 +141,6 @@ async fn run_agent_on_env(
                 start.elapsed()
             );
 
-            // ログ追加
             {
                 let mut map = reward_log_map.lock().unwrap();
                 map.entry(agent_id)
@@ -154,7 +153,7 @@ async fn run_agent_on_env(
     }
 }
 
-pub async fn train_web_LunarLander_with_dqn() {
+pub async fn train_web_LunarLander_with_dqn(save_path: Option<String>, load_path: Option<String>) {
     let shared_buffer1 = Arc::new(ReplayBuffer::new(36000, 1));
     let shared_buffer2 = Arc::new(ReplayBuffer::new(36000, 1));
     let selector1: Arc<Box<dyn BaseSelector>> =
@@ -193,6 +192,8 @@ pub async fn train_web_LunarLander_with_dqn() {
         let model = Box::new(FCQNetwork::new(vs, 8, 4, 2, 300));
 
         let explorer = EpsilonGreedy::new(1.0, 0.05, 10000);
+        let agent_save_path = super::path_for_agent(&save_path, i);
+        let agent_load_path = super::path_for_agent(&load_path, i);
         let agent = Mutex::new(DQN::new(
             model,
             buffer,
@@ -204,6 +205,8 @@ pub async fn train_web_LunarLander_with_dqn() {
             Box::new(explorer),
             Some(selector.clone()),
             0.99,
+            agent_save_path,
+            agent_load_path,
         ));
         agents.push(agent);
     }
@@ -236,6 +239,10 @@ pub async fn train_web_LunarLander_with_dqn() {
     }
 
     join_all(handles).await;
+
+    for agent in arc_agents.iter() {
+        agent.lock().unwrap().save();
+    }
 
     let map = reward_log_map.lock().unwrap();
     let json = serde_json::to_string_pretty(&*map).unwrap();
