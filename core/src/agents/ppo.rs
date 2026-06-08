@@ -432,6 +432,8 @@ mod tests {
             1.0,
             1.0,
             false,
+            None,
+            None,
         );
 
         let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
