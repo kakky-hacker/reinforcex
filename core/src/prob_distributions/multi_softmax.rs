@@ -32,6 +32,10 @@ impl MultiSoftmaxDistribution {
 }
 
 impl BaseDistribution for MultiSoftmaxDistribution {
+    fn is_discrete(&self) -> bool {
+        true
+    }
+
     fn params(&self) -> (&Tensor, &Tensor) {
         panic!("MultiSoftmaxDistribution::params() is unsupported");
     }

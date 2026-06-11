@@ -108,6 +108,10 @@ impl BaseQFunction for FCQNetwork {
         Box::new(cloned_network)
     }
 
+    fn trainable_variables(&self) -> Vec<Tensor> {
+        self.vs.trainable_variables()
+    }
+
     fn save(&self, path: &str) {
         self.vs
             .save(path)
