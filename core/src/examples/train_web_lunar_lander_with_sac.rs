@@ -21,7 +21,11 @@ struct StepResponse {
     done: bool,
 }
 
-fn build_sac_agent(shared_buffer: Arc<ReplayBuffer>) -> SAC {
+fn build_sac_agent(
+    shared_buffer: Arc<ReplayBuffer>,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) -> SAC {
     let device = Device::cuda_if_available();
     let obs_size = 8;
     let action_size = 2;
@@ -63,7 +67,7 @@ fn build_sac_agent(shared_buffer: Arc<ReplayBuffer>) -> SAC {
         n_hidden_channels,
     );
 
-    SAC::new(
+    SAC::new_with_save_load(
         Box::new(actor),
         actor_optimizer,
         Box::new(critic1),
@@ -74,21 +78,30 @@ fn build_sac_agent(shared_buffer: Arc<ReplayBuffer>) -> SAC {
         1000,
         256,
         1,
+        1,
         0.99,
         0.005,
         0.2,
         true,
+        save_path,
+        load_path,
     )
 }
 
-fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<ReplayBuffer>) {
+fn run_agent_on_env(
+    env_port: u16,
+    agent_id: usize,
+    shared_buffer: Arc<ReplayBuffer>,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) {
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .expect("HTTP client build failed");
     let base_url = format!("http://localhost:{}", env_port);
 
-    let mut agent = build_sac_agent(shared_buffer);
+    let mut agent = build_sac_agent(shared_buffer, save_path, load_path);
     let episodes = 5000;
     let max_steps = 1000;
     let log_interval = 10;
@@ -149,11 +162,16 @@ fn run_agent_on_env(env_port: u16, agent_id: usize, shared_buffer: Arc<ReplayBuf
             );
             total_reward = 0.0;
             total_steps = 0;
+            agent.save();
         }
     }
 }
 
-pub fn train_web_lunar_lander_with_sac(parallel_count: usize) {
+pub fn train_web_lunar_lander_with_sac(
+    parallel_count: usize,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) {
     assert!(parallel_count > 0);
 
     let shared_buffer = Arc::new(ReplayBuffer::new(300000, 1));
@@ -165,8 +183,13 @@ pub fn train_web_lunar_lander_with_sac(parallel_count: usize) {
         })
         .collect::<Vec<u16>>();
 
-    ports
-        .into_par_iter()
-        .enumerate()
-        .for_each(|(i, port)| run_agent_on_env(port, i, Arc::clone(&shared_buffer)));
+    ports.into_par_iter().enumerate().for_each(|(i, port)| {
+        run_agent_on_env(
+            port,
+            i,
+            Arc::clone(&shared_buffer),
+            super::path_for_agent(&save_path, i),
+            super::path_for_agent(&load_path, i),
+        )
+    });
 }
