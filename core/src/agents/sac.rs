@@ -27,6 +27,7 @@ pub struct SAC {
     target_critic1: Box<dyn BaseQFunction>,
     target_critic2: Box<dyn BaseQFunction>,
     transition_buffer: Arc<ReplayBuffer>,
+    replay_start_size: usize,
     batch_size: usize,
     update_interval: usize,
     gamma: f64,
@@ -38,6 +39,7 @@ pub struct SAC {
     latest_actor_loss: Option<f64>,
     latest_critic1_loss: Option<f64>,
     latest_critic2_loss: Option<f64>,
+    n_updates: usize,
 }
 
 unsafe impl Send for SAC {}
@@ -51,6 +53,7 @@ impl SAC {
         critic2: Box<dyn BaseQFunction>,
         critic2_optimizer: nn::Optimizer,
         transition_buffer: Arc<ReplayBuffer>,
+        replay_start_size: usize,
         batch_size: usize,
         update_interval: usize,
         gamma: f64,
@@ -58,6 +61,7 @@ impl SAC {
         alpha: f64,
         squash_action: bool,
     ) -> Self {
+        assert!(replay_start_size > 0);
         assert!(batch_size > 0);
         assert!(update_interval > 0);
         assert!((0.0..=1.0).contains(&gamma));
@@ -80,6 +84,7 @@ impl SAC {
             target_critic1,
             target_critic2,
             transition_buffer,
+            replay_start_size,
             batch_size,
             update_interval,
             gamma,
@@ -91,28 +96,31 @@ impl SAC {
             latest_actor_loss: None,
             latest_critic1_loss: None,
             latest_critic2_loss: None,
+            n_updates: 0,
         }
     }
 
     fn _update(&mut self) {
-        if self.transition_buffer.len() < self.batch_size {
+        if self.transition_buffer.len() < self.replay_start_size.max(self.batch_size) {
             return;
         }
 
         let batch = self._sample_batch();
 
-        let (next_actions, next_log_prob) =
-            no_grad(|| self._sample_action_and_log_prob(&batch.next_states));
-        let next_inputs = self._critic_input(&batch.next_states, &next_actions);
-        let next_q1 = self.target_critic1.forward(&next_inputs).view([-1]);
-        let next_q2 = self.target_critic2.forward(&next_inputs).view([-1]);
-        let next_q = next_q1.minimum(&next_q2) - self.alpha * next_log_prob;
         let gamma_n = self.gamma.powi(self.transition_buffer.get_n_steps() as i32);
-        let target_q = (&batch.rewards + gamma_n * &batch.non_terminal * next_q).detach();
+        let target_q = no_grad(|| {
+            let (next_actions, next_log_prob) =
+                self._sample_action_and_log_prob(&batch.next_states);
+            let next_inputs = self._critic_input(&batch.next_states, &next_actions);
+            let next_q1 = self.target_critic1.forward(&next_inputs).view([-1]);
+            let next_q2 = self.target_critic2.forward(&next_inputs).view([-1]);
+            let next_q = next_q1.minimum(&next_q2) - self.alpha * next_log_prob;
+            &batch.rewards + gamma_n * &batch.non_terminal * next_q
+        });
 
         let critic_inputs = self._critic_input(&batch.states, &batch.actions);
         let pred_q1 = self.critic1.forward(&critic_inputs).view([-1]);
-        let critic1_loss = (&pred_q1 - &target_q).square().mean(Kind::Float);
+        let critic1_loss: Tensor = (&pred_q1 - &target_q).square().mean(Kind::Float) * 0.5;
         assert!(critic1_loss.isnan().any().int64_value(&[]) == 0);
 
         self.latest_critic1_loss = Some(critic1_loss.double_value(&[]));
@@ -121,7 +129,7 @@ impl SAC {
         self.critic1_optimizer.step();
 
         let pred_q2 = self.critic2.forward(&critic_inputs).view([-1]);
-        let critic2_loss = (&pred_q2 - &target_q).square().mean(Kind::Float);
+        let critic2_loss: Tensor = (&pred_q2 - &target_q).square().mean(Kind::Float) * 0.5;
         assert!(critic2_loss.isnan().any().int64_value(&[]) == 0);
 
         self.latest_critic2_loss = Some(critic2_loss.double_value(&[]));
@@ -145,6 +153,7 @@ impl SAC {
             .soft_update_from(self.critic1.as_ref(), self.tau);
         self.target_critic2
             .soft_update_from(self.critic2.as_ref(), self.tau);
+        self.n_updates += 1;
     }
 
     fn _sample_batch(&self) -> SACBatch {
@@ -309,6 +318,8 @@ impl BaseAgent for SAC {
     fn get_statistics(&self) -> Vec<(String, f64)> {
         let mut statistics = vec![
             ("t".to_string(), self.t as f64),
+            ("n_updates".to_string(), self.n_updates as f64),
+            ("temperature".to_string(), self.alpha),
             (
                 "replay_buffer_len".to_string(),
                 self.transition_buffer.len() as f64,
@@ -394,6 +405,7 @@ mod tests {
             critic2_optimizer,
             Arc::new(ReplayBuffer::new(100, 1)),
             4,
+            4,
             2,
             0.99,
             0.005,
@@ -406,6 +418,7 @@ mod tests {
     fn test_soft_actor_critic_new() {
         let sac = build_sac();
 
+        assert_eq!(sac.replay_start_size, 4);
         assert_eq!(sac.batch_size, 4);
         assert_eq!(sac.update_interval, 2);
         assert_eq!(sac.gamma, 0.99);

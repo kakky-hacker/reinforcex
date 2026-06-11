@@ -71,6 +71,7 @@ fn build_sac_agent(shared_buffer: Arc<ReplayBuffer>) -> SAC {
         Box::new(critic2),
         critic2_optimizer,
         shared_buffer,
+        1000,
         256,
         1,
         0.99,

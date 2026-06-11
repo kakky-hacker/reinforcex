@@ -74,6 +74,10 @@ fn main() {
         train_ant_with_ppo(save_path, load_path);
     } else if env_value == "Lunar" && algo_value == "dqn" {
         //train_web_LunarLander_with_dqn(save_path, load_path).await;
+    } else if env_value == "cartpole" && algo_value == "sac" {
+        train_web_cartpole_with_sac(parallel_count);
+    } else if env_value == "Lunar" && algo_value == "sac" {
+        train_web_lunar_lander_with_sac(parallel_count);
     } else {
         panic!("Invalid env or algo");
     }
