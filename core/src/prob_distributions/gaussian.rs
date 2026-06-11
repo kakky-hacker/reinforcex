@@ -17,6 +17,10 @@ impl GaussianDistribution {
 }
 
 impl BaseDistribution for GaussianDistribution {
+    fn is_discrete(&self) -> bool {
+        false
+    }
+
     fn params(&self) -> (&Tensor, &Tensor) {
         (&self.mean, &self.var)
     }
