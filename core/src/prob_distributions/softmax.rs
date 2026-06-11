@@ -40,6 +40,10 @@ impl SoftmaxDistribution {
 }
 
 impl BaseDistribution for SoftmaxDistribution {
+    fn is_discrete(&self) -> bool {
+        true
+    }
+
     fn params(&self) -> (&Tensor, &Tensor) {
         (&self.logits, &self.logits)
     }
@@ -71,9 +75,7 @@ impl BaseDistribution for SoftmaxDistribution {
     }
 
     fn sample(&self) -> Tensor {
-        let probs = self.all_prob();
-        let noise = Tensor::rand(&probs.size(), (Kind::Float, probs.device())).log() * -1.0;
-        (probs.log() + noise).argmax(-1, false)
+        self.all_prob().multinomial(1, true).squeeze_dim(-1)
     }
 
     fn prob(&self, x: &Tensor) -> Tensor {

@@ -1,6 +1,7 @@
 use tch::Tensor;
 
 pub trait BaseDistribution: Send + Sync {
+    fn is_discrete(&self) -> bool;
     fn params(&self) -> (&Tensor, &Tensor);
     fn kl(&self, q: &Box<dyn BaseDistribution>) -> Tensor;
     fn entropy(&self) -> Tensor;
