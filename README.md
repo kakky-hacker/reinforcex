@@ -1,39 +1,91 @@
 # About ReinforceX
-ReinforceX (ReX) is a deep reinforcement learning framework built entirely from scratch in Rust.
-We plan to implement various reinforcement learning algorithms, including value-based, policy-based, and actor-critic methods.
+ReinforceX (ReX) is an early-stage deep reinforcement learning framework built
+in Rust. It is designed as a Rust-first playground for implementing,
+experimenting with, and eventually productionizing reinforcement learning
+agents without making Python the core runtime.
 
-Advantages of Rust:
-Efficient memory management prevents memory leaks that often trouble data scientists when using Python.
-Enables thread-safe execution for parallel training.
-Offers overall faster training speeds compared to Python-based frameworks.
+The project currently focuses on:
+
+- a small, readable core for value-based, policy-based, and actor-critic
+  algorithms;
+- neural-network policies and Q-functions backed by `tch` / libtorch;
+- replay and on-policy buffers that can be shared across training workers;
+- sample Gymnasium environments exposed through a simple HTTP server;
+- an optional C ABI for embedding agents from C, C++, C#, Unity, or other
+  runtimes.
+
+Advantages of Rust for this project:
+
+- ownership and RAII make long-running training jobs easier to reason about;
+- `Send` / `Sync` boundaries make parallel training explicit;
+- native binaries are a good fit for simulators, games, robotics, and embedded
+  integrations;
+- Rust can still use libtorch through `tch`, so the project can combine systems
+  programming ergonomics with modern tensor operations.
+
+ReinforceX is not yet a stable 1.0 API. Contributions are welcome, especially
+around algorithms, documentation, benchmark environments, test coverage, and
+safe public API design.
 
 # Package
 crates.io: https://crates.io/crates/reinforcex
-```
+
+```sh
 cargo add reinforcex
 ```
 
+The default `cpu` feature enables `torch-sys` with `download-libtorch`.
+
+```toml
+[dependencies]
+reinforcex = "0.0.5"
+```
+
+For CUDA experiments, build with the `cuda` feature and make sure your local
+libtorch / CUDA runtime is visible to `tch`. On Windows, `load_cuda_dlls()` also
+checks `TORCH_CUDA_DLL` when the `cuda` feature is enabled.
+
 # Algorithms
-DQN,
-PPO
+Implemented agents:
+
+- DQN: Double-DQN style target network, n-step replay, epsilon-greedy
+  exploration, optional reward-based selector, shared replay buffer support.
+- PPO: clipped policy objective, GAE, value clipping, entropy regularization,
+  discrete, multi-branch discrete, and Gaussian policies.
+- SAC: continuous and discrete Soft Actor-Critic, twin critics, soft target
+  updates, automatic temperature updates for discrete policies, and component
+  checkpointing.
+
+Core building blocks:
+
+- Models: `FCQNetwork`, `FCSoftmaxPolicy`, `FCSoftmaxPolicyWithValue`,
+  `FCGaussianPolicy`, `FCGaussianPolicyWithValue`.
+- Distributions: `SoftmaxDistribution`, `MultiSoftmaxDistribution`,
+  `GaussianDistribution`.
+- Memory: `ReplayBuffer` with n-step transitions, `OnPolicyBuffer`.
+- Exploration and selection: `EpsilonGreedy`, `RewardBasedSelector`.
+- FFI: DQN and PPO can be created and trained through a C-compatible API.
 
 # API
-Instantiate the agent.
-```Rust
+Instantiate a DQN agent.
+
+```rust
 use reinforcex::agents::{BaseAgent, DQN};
 use reinforcex::explorers::EpsilonGreedy;
-use reinforcex::models::FCQNetwork;
 use reinforcex::memory::ReplayBuffer;
+use reinforcex::models::FCQNetwork;
 use std::sync::Arc;
+use tch::{nn, nn::OptimizerConfig, Device};
 
 let device = Device::cuda_if_available();
 let vs = nn::VarStore::new(device);
+let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
+
 let n_input_channels = 4;
 let action_size = 2;
 let n_hidden_layers = 2;
 let n_hidden_channels = 128;
 
-let optimizer = nn::Adam::default().build(&vs, 3e-4).unwrap();
 let model = Box::new(FCQNetwork::new(
     vs,
     n_input_channels,
@@ -44,12 +96,12 @@ let model = Box::new(FCQNetwork::new(
 
 let gamma = 0.97;
 let n_steps = 3;
-let batchsize = 16;
+let batch_size = 16;
 let update_interval = 8;
 let target_update_interval = 100;
-let replay_buffer_capacity = 2000;
+let replay_buffer_capacity = 2_000;
 
-let explorer = EpsilonGreedy::new(0.5, 0.1, 50000);
+let explorer = EpsilonGreedy::new(0.5, 0.1, 50_000);
 let transition_buffer = Arc::new(ReplayBuffer::new(replay_buffer_capacity, n_steps));
 
 let mut agent = DQN::new(
@@ -57,7 +109,7 @@ let mut agent = DQN::new(
     transition_buffer,
     optimizer,
     action_size as usize,
-    batchsize,
+    batch_size,
     update_interval,
     target_update_interval,
     Box::new(explorer),
@@ -68,100 +120,170 @@ let mut agent = DQN::new(
 );
 ```
 
-Methods of agent.
-```Rust
+Common agent methods are provided by `BaseAgent`.
+
+```rust
 fn act(&self, obs: &Tensor) -> Tensor;
 fn act_and_train(&mut self, obs: &Tensor, reward: f64) -> Tensor;
 fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64);
+fn get_statistics(&self) -> Vec<(String, f64)>;
 fn save(&self);
 fn load(&mut self);
 ```
 
-Pseudo code for training.
-```Rust
+Pseudo code for training:
+
+```rust
 for episode in 0..max_episode {
-  for step in 0..max_step {
-    action = agent.act_and_train(&mut self, obs: &Tensor, reward: f64)
-    obs, reward = env.step(action)
-  }
-  agent.stop_episode_and_train(&mut self, obs: &Tensor, reward: f64)
+    let mut reward = 0.0;
+
+    for step in 0..max_step {
+        let action = agent.act_and_train(&obs, reward);
+        let (next_obs, next_reward, done) = env.step(action);
+
+        obs = next_obs;
+        reward = next_reward;
+
+        if done {
+            agent.stop_episode_and_train(&obs, reward);
+            break;
+        }
+    }
 }
 ```
 
-This is a pseudo code for parallel learning.
-ReplayBuffer is shared by all agents.
-```Rust
+Pseudo code for parallel learning:
+
+```rust
 use rayon::prelude::*;
+use std::sync::Arc;
 
-let buffer = Arc::new(ReplayBuffer::new(1000, 1));
+let buffer = Arc::new(ReplayBuffer::new(1_000, 1));
 
-(0..n_threads).into_par_iter().for_each(|_| {
-    let mut dqn = DQN::new(
-        transition_buffer: Arc::clone(&buffer),
-        ...(other params)...
-        save_path: Some(format!("models/dqn_{agent_id}.ot")),
-        load_path: None,
+(0..n_threads).into_par_iter().for_each(|agent_id| {
+    let (model, optimizer, explorer) = build_agent_components();
+
+    let mut agent = DQN::new(
+        model,
+        Arc::clone(&buffer),
+        optimizer,
+        action_size,
+        batch_size,
+        update_interval,
+        target_update_interval,
+        Box::new(explorer),
+        None,
+        gamma,
+        Some(format!("models/dqn_{agent_id}.ot")),
+        None,
     );
 
     for episode in 0..max_episode {
-        for step in 0..max_step {
-            action = agent.act_and_train(&mut self, obs: &Tensor, reward: f64)
-            obs, reward = env.step(action)
-        }
-        agent.stop_episode_and_train(&mut self, obs: &Tensor, reward: f64)
+        // Run the same training loop as above.
     }
 });
 ```
 
+`build_agent_components()` is a placeholder for creating a separate model,
+optimizer, and explorer per worker. Share only the replay buffer or other
+explicitly thread-safe state.
+
 # Sample experiments
-Run sample environment server in Docker.
-```
-docker-compose -f sample_env/docker-compose.yml up -d
+The sample experiments call Gymnasium environments through FastAPI servers.
+Docker Compose starts ten environment servers on ports `8001` to `8010`.
+
+```sh
+docker compose -f sample_env/docker-compose.yml up -d --build
 ```
 
-```
-cargo run --features cpu -- --env cartpole --algo dqn
+Run CartPole with DQN:
+
+```sh
+cargo run -p reinforcex --features cpu -- --env cartpole --algo dqn
 ```
 
-Use `--save-path` and `--load-path` to persist models. Multi-agent samples can include
-`{agent_id}` in the path.
-```
-cargo run --features cpu -- --env cartpole --algo dqn --save-path 'models/cartpole_dqn_{agent_id}.ot' --load-path 'models/cartpole_dqn_{agent_id}.ot'
+Run CartPole with PPO:
+
+```sh
+cargo run -p reinforcex --features cpu -- --env cartpole --algo ppo
 ```
 
-<img width="597" alt="image" src="https://github.com/user-attachments/assets/b8c0606b-ec11-4b5a-b7fc-3070ad327d72" />
+Run CartPole with discrete SAC using four parallel environment servers:
+
+```sh
+cargo run -p reinforcex --features cpu -- --env cartpole --algo sac --parallel 4
+```
+
+Run LunarLanderContinuous with continuous SAC:
+
+```sh
+cargo run -p reinforcex --features cpu -- --env lunar --algo sac --parallel 4
+```
+
+Run Ant with PPO:
+
+```sh
+cargo run -p reinforcex --features cpu -- --env ant --algo ppo
+```
+
+Use `--save-path` and `--load-path` to persist models. Multi-agent samples can
+include `{agent_id}` in the path.
+
+```sh
+cargo run -p reinforcex --features cpu -- \
+  --env cartpole \
+  --algo dqn \
+  --save-path "models/cartpole_dqn_{agent_id}.ot" \
+  --load-path "models/cartpole_dqn_{agent_id}.ot"
+```
+
+For SAC, a single save path expands into component checkpoints such as actor,
+critic1, critic2, and temperature files.
+
+Stop the sample environment servers:
+
+```sh
+docker compose -f sample_env/docker-compose.yml down
+```
+
+<img width="597" alt="CartPole training sample" src="https://github.com/user-attachments/assets/b8c0606b-ec11-4b5a-b7fc-3070ad327d72" />
 
 # Unit test
-The experimental environment is built using OpenAI Gym. Since Gym is a Python framework, set up a Python environment and run the following pip command:
-```
-pip install gymnasium==0.26.3
-```
-We use Gym as the environment by calling Python from Rust.
+Run all Rust unit tests from the workspace root:
 
+```sh
+cargo test --workspace
 ```
-cargo test
-```
+
+The core unit tests exercise agents, models, probability distributions, memory
+buffers, selectors, and the FFI wrapper. The Docker-based Gymnasium server is
+only required for the sample experiments above.
 
 # FFI
+ReinforceX also provides a small Foreign Function Interface (FFI) crate for
+embedding agents from external runtimes such as C, C++, C#, or Unity.
 
-This document describes the Foreign Function Interface (FFI) for interacting with ReinforceX agents from external languages such as C, C++, or C# (Unity).
+Build the dynamic library:
 
----
+```sh
+cargo build -p reinforcex_ffi --release
+```
+
+The generated library is named `reinforcex` with the platform-specific dynamic
+library extension, for example `reinforcex.dll`, `libreinforcex.so`, or
+`libreinforcex.dylib`.
 
 ## Overview
 
-- All agents are managed internally and referenced via a `u64` ID.
-- The API is **panic-safe**: all functions fail silently on error.
-- All sizes use `u64` (ABI-safe across platforms).
-- The caller is responsible for memory allocation of input/output buffers.
-
----
+- All agents are managed internally and referenced through a `u64` ID.
+- The public FFI functions catch panics and return silently on invalid inputs.
+- All sizes use `u64` for ABI-friendly boundaries.
+- The caller owns input and output buffer allocation.
+- `agent_type = 0` creates DQN; any other value creates PPO.
 
 ## Data Structures
 
 ### AgentConfig
-
-Configuration used to create an agent.
 
 ```c
 typedef struct {
@@ -186,27 +308,23 @@ typedef struct {
 } AgentConfig;
 ```
 
-### Fields
-
 | Field | Description |
-|------|------------|
-| agent_type | 0 = DQN, otherwise PPO |
-| obs_size | Size of observation vector |
-| action_size | Size of action space |
-| learning_rate | Optimizer learning rate |
-| gamma | Discount factor |
-| batch_size | Batch size (DQN) |
-| buffer_size | Replay buffer size (DQN) |
-| epsilon_start | Initial epsilon (DQN) |
-| epsilon_end | Final epsilon (DQN) |
-| epsilon_decay | Epsilon decay steps (DQN) |
-| lambda | GAE lambda (PPO) |
-| update_interval | PPO update interval |
-| epoch | PPO training epochs |
-| minibatch_size | PPO minibatch size |
-| clip_eps | PPO clipping epsilon |
-
----
+|------|-------------|
+| `agent_type` | `0 = DQN`, otherwise PPO |
+| `obs_size` | Observation vector size |
+| `action_size` | Action space size |
+| `learning_rate` | Optimizer learning rate |
+| `gamma` | Discount factor |
+| `batch_size` | DQN batch size |
+| `buffer_size` | DQN replay buffer size |
+| `epsilon_start` | Initial epsilon for DQN |
+| `epsilon_end` | Final epsilon for DQN |
+| `epsilon_decay` | Epsilon decay steps for DQN |
+| `lambda` | PPO GAE lambda |
+| `update_interval` | PPO update interval |
+| `epoch` | PPO training epochs |
+| `minibatch_size` | PPO minibatch size |
+| `clip_eps` | PPO clipping epsilon |
 
 ## Functions
 
@@ -216,17 +334,7 @@ typedef struct {
 uint64_t rx_agent_create(const AgentConfig* config);
 ```
 
-#### Description
-Creates a new agent and returns its unique ID.
-
-#### Parameters
-- `config`: Pointer to a valid AgentConfig struct
-
-#### Returns
-- `>= 1`: Agent ID  
-- `0`: Failure (invalid config or internal error)
-
----
+Creates a new agent and returns its ID. Returns `0` on failure.
 
 ### rx_agent_act_and_train
 
@@ -241,29 +349,9 @@ void rx_agent_act_and_train(
 );
 ```
 
-#### Description
-Performs action selection and training step.
-
-- For DQN: outputs a single scalar action  
-- For PPO: outputs a vector action  
-
-#### Parameters
-- `id`: Agent ID  
-- `obs`: Pointer to observation array  
-- `obs_len`: Length of observation array  
-- `reward`: Reward from previous step  
-- `out`: Output buffer (pre-allocated)  
-- `out_len`: Capacity of output buffer  
-
-#### Output
-- Writes action(s) into `out`  
-- Writes up to `out_len` elements  
-
-#### Notes
-- If `out_len` is too small, output will be truncated  
-- If pointers are null, function returns silently  
-
----
+Performs action selection and one training step. DQN writes one scalar action.
+PPO writes a vector action and truncates to `out_len` if the output buffer is
+smaller than the action tensor.
 
 ### rx_agent_stop_episode
 
@@ -276,16 +364,7 @@ void rx_agent_stop_episode(
 );
 ```
 
-#### Description
-Signals the end of an episode and performs a final training step.
-
-#### Parameters
-- `id`: Agent ID  
-- `obs`: Final observation  
-- `obs_len`: Length of observation  
-- `reward`: Final reward  
-
----
+Signals the end of an episode and performs the final training step.
 
 ### rx_agent_destroy
 
@@ -293,17 +372,26 @@ Signals the end of an episode and performs a final training step.
 void rx_agent_destroy(uint64_t id);
 ```
 
-#### Description
-Destroys the agent associated with the given ID.
+Destroys the agent for the given ID. Calling it with an unknown ID is a no-op.
 
-#### Parameters
-- `id`: Agent ID  
+# Contributing
+ReinforceX is a good place to contribute if you are interested in Rust,
+reinforcement learning, libtorch bindings, simulator integration, or FFI.
 
-#### Notes
-- Safe to call multiple times  
-- If the agent does not exist, this is a no-op  
+Useful contribution areas:
 
----
+- algorithm implementations and correctness tests;
+- benchmark scripts and reproducible training results;
+- safer public APIs around tensor shapes, device placement, and errors;
+- documentation for model construction and environment integration;
+- CI for Rust tests, formatting, and platform-specific FFI builds.
+
+Before opening a pull request, please run:
+
+```sh
+cargo fmt --all -- --check
+cargo test --workspace
+```
 
 # License
 MIT License (https://github.com/kakky-hacker/reinforcex/blob/master/LICENSE)
