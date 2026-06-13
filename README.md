@@ -38,7 +38,7 @@ The default `cpu` feature enables `torch-sys` with `download-libtorch`.
 
 ```toml
 [dependencies]
-reinforcex = "0.0.4"
+reinforcex = "0.0.5"
 ```
 
 For CUDA experiments, build with the `cuda` feature and make sure your local
