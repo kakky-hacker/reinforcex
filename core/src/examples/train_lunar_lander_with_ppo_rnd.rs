@@ -103,18 +103,18 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
         None,
     );
 
-    let rnd_predictor_vs = nn::VarStore::new(device);
-    let rnd_target_vs = nn::VarStore::new(device);
-    let rnd_model = Box::new(FCRNDModel::new(
-        rnd_predictor_vs,
-        rnd_target_vs,
+    let rnd_model = FCRNDModel::new(
+        nn::VarStore::new(device),
+        nn::VarStore::new(device),
         n_input_channels,
         128,
         n_hidden_layers,
         n_hidden_channels,
-        1e-4,
-    ));
-    let mut curiosity = RND::new(rnd_model, 128);
+    );
+    let rnd_optimizer = nn::Adam::default()
+        .build(rnd_model.predictor_var_store(), 1e-4)
+        .unwrap();
+    let mut curiosity = RND::new(Box::new(rnd_model), rnd_optimizer, 128, None, None);
     let intrinsic_reward_scale = 0.01;
 
     let max_episode = 5000;

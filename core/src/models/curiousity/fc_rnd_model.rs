@@ -1,8 +1,8 @@
 use super::base_curiousity_model::BaseCuriousityModel;
 use crate::misc::weight_initializer::{he_init, xavier_init};
-use tch::nn::{
-    linear, Adam, Init, Linear, LinearConfig, Module, Optimizer, OptimizerConfig, Path, VarStore,
-};
+use std::fs;
+use std::path::Path as StdPath;
+use tch::nn::{linear, Init, Linear, LinearConfig, Module, Path, VarStore};
 use tch::{no_grad, Device, Kind, Tensor};
 
 pub struct FCRNDModel {
@@ -10,7 +10,6 @@ pub struct FCRNDModel {
     target_vs: VarStore,
     predictor_layers: Vec<Linear>,
     target_layers: Vec<Linear>,
-    optimizer: Optimizer,
     n_input_channels: i64,
     feature_size: i64,
 }
@@ -23,12 +22,10 @@ impl FCRNDModel {
         feature_size: i64,
         n_hidden_layers: usize,
         n_hidden_channels: i64,
-        learning_rate: f64,
     ) -> Self {
         assert!(n_input_channels > 0);
         assert!(feature_size > 0);
         assert!(n_hidden_channels > 0);
-        assert!(learning_rate > 0.0);
         assert_eq!(predictor_vs.device(), target_vs.device());
 
         let predictor_layers = {
@@ -51,16 +48,12 @@ impl FCRNDModel {
                 n_hidden_channels,
             )
         };
-        let optimizer = Adam::default()
-            .build(&predictor_vs, learning_rate)
-            .expect("failed to build RND predictor optimizer");
 
         FCRNDModel {
             predictor_vs,
             target_vs,
             predictor_layers,
             target_layers,
-            optimizer,
             n_input_channels,
             feature_size,
         }
@@ -131,6 +124,17 @@ impl FCRNDModel {
     fn target_forward(&self, x: &Tensor) -> Tensor {
         self.forward_layers(&self.target_layers, x)
     }
+
+    pub fn predictor_var_store(&self) -> &VarStore {
+        &self.predictor_vs
+    }
+
+    fn checkpoint_path(path: &str, filename: &str) -> String {
+        StdPath::new(path)
+            .join(filename)
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
 impl BaseCuriousityModel for FCRNDModel {
@@ -142,18 +146,28 @@ impl BaseCuriousityModel for FCRNDModel {
             .mean_dim(&[1i64][..], false, Kind::Float)
     }
 
-    fn update(&mut self, x: &Tensor) -> Tensor {
-        let loss = self.forward(x).mean(Kind::Float);
-        let detached_loss = loss.detach();
-        self.optimizer.zero_grad();
-        loss.backward();
-        self.optimizer.step();
-        detached_loss
-    }
-
     fn device(&self) -> Device {
         debug_assert_eq!(self.predictor_vs.device(), self.target_vs.device());
         self.predictor_vs.device()
+    }
+
+    fn save(&self, path: &str) {
+        fs::create_dir_all(path).expect("failed to create RND checkpoint directory");
+        self.predictor_vs
+            .save(Self::checkpoint_path(path, "rnd_predictor.ot"))
+            .expect("failed to save RND predictor model");
+        self.target_vs
+            .save(Self::checkpoint_path(path, "rnd_target.ot"))
+            .expect("failed to save RND target model");
+    }
+
+    fn load(&mut self, path: &str) {
+        self.predictor_vs
+            .load(Self::checkpoint_path(path, "rnd_predictor.ot"))
+            .expect("failed to load RND predictor model");
+        self.target_vs
+            .load(Self::checkpoint_path(path, "rnd_target.ot"))
+            .expect("failed to load RND target model");
     }
 }
 
@@ -166,7 +180,7 @@ mod tests {
     fn test_fc_rnd_model_forward() {
         let predictor_vs = nn::VarStore::new(Device::Cpu);
         let target_vs = nn::VarStore::new(Device::Cpu);
-        let model = FCRNDModel::new(predictor_vs, target_vs, 4, 8, 1, 16, 1e-3);
+        let model = FCRNDModel::new(predictor_vs, target_vs, 4, 8, 1, 16);
 
         let input = Tensor::randn([3, 4], (Kind::Float, Device::Cpu));
         let reward = model.forward(&input);
@@ -176,15 +190,16 @@ mod tests {
     }
 
     #[test]
-    fn test_fc_rnd_model_update() {
+    fn test_fc_rnd_model_save_and_load() {
         let predictor_vs = nn::VarStore::new(Device::Cpu);
         let target_vs = nn::VarStore::new(Device::Cpu);
-        let mut model = FCRNDModel::new(predictor_vs, target_vs, 4, 8, 1, 16, 1e-3);
+        let mut model = FCRNDModel::new(predictor_vs, target_vs, 4, 8, 1, 16);
+        let path = std::env::temp_dir().join(format!("reinforcex-rnd-{}", ulid::Ulid::new()));
+        let path = path.to_string_lossy().into_owned();
 
-        let input = Tensor::randn([8, 4], (Kind::Float, Device::Cpu));
-        let loss = model.update(&input);
+        model.save(&path);
+        model.load(&path);
 
-        assert_eq!(loss.size(), Vec::<i64>::new());
-        assert!(loss.isfinite().int64_value(&[]) == 1);
+        let _ = std::fs::remove_dir_all(path);
     }
 }
