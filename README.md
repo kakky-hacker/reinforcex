@@ -9,6 +9,7 @@ The project currently focuses on:
 - a small, readable core for value-based, policy-based, and actor-critic
   algorithms;
 - neural-network policies and Q-functions backed by `tch` / libtorch;
+- intrinsic-motivation modules for curiosity-driven exploration;
 - replay and on-policy buffers that can be shared across training workers;
 - sample Gymnasium environments exposed through a simple HTTP server;
 - an optional C ABI for embedding agents from C, C++, C#, Unity, or other
@@ -46,7 +47,7 @@ libtorch / CUDA runtime is visible to `tch`. On Windows, `load_cuda_dlls()` also
 checks `TORCH_CUDA_DLL` when the `cuda` feature is enabled.
 
 # Algorithms
-Implemented agents:
+Implemented agents and exploration modules:
 
 - DQN: Double-DQN style target network, n-step replay, epsilon-greedy
   exploration, optional reward-based selector, shared replay buffer support.
@@ -55,15 +56,20 @@ Implemented agents:
 - SAC: continuous and discrete Soft Actor-Critic, twin critics, soft target
   updates, automatic temperature updates for discrete policies, and component
   checkpointing.
+- RND: Random Network Distillation with a fixed random target network, a
+  trainable predictor, batched predictor updates, and predictor/target
+  checkpointing.
 
 Core building blocks:
 
 - Models: `FCQNetwork`, `FCSoftmaxPolicy`, `FCSoftmaxPolicyWithValue`,
-  `FCGaussianPolicy`, `FCGaussianPolicyWithValue`.
+  `FCGaussianPolicy`, `FCGaussianPolicyWithValue`, `FCRNDModel`.
 - Distributions: `SoftmaxDistribution`, `MultiSoftmaxDistribution`,
   `GaussianDistribution`.
 - Memory: `ReplayBuffer` with n-step transitions, `OnPolicyBuffer`.
 - Exploration and selection: `EpsilonGreedy`, `RewardBasedSelector`.
+- Curiosity: `RND` computes intrinsic rewards and periodically trains its
+  predictor from buffered observations.
 - FFI: DQN and PPO can be created and trained through a C-compatible API.
 
 # API
@@ -188,6 +194,52 @@ let buffer = Arc::new(ReplayBuffer::new(1_000, 1));
 optimizer, and explorer per worker. Share only the replay buffer or other
 explicitly thread-safe state.
 
+## Random Network Distillation
+
+RND assigns a larger intrinsic reward to observations for which a trainable
+predictor does not yet match the output of a fixed, randomly initialized target
+network. As observations become familiar, predictor error decreases and so does
+their curiosity reward.
+
+Create an RND module with separate predictor and target variable stores. The
+optimizer must be built from the predictor variable store after the model has
+registered its layers.
+
+```rust
+use reinforcex::curiousity::RND;
+use reinforcex::models::FCRNDModel;
+use tch::{nn, nn::OptimizerConfig, Device};
+
+let device = Device::cuda_if_available();
+let observation_size = 8;
+
+let rnd_model = FCRNDModel::new(
+    nn::VarStore::new(device),
+    nn::VarStore::new(device),
+    observation_size,
+    128, // feature size
+    2,   // hidden layers
+    256, // hidden channels
+);
+let rnd_optimizer = nn::Adam::default()
+    .build(rnd_model.predictor_var_store(), 1e-4)
+    .unwrap();
+
+let mut curiosity = RND::new(
+    Box::new(rnd_model),
+    rnd_optimizer,
+    128, // observations per predictor update
+    Some("models/lunar_rnd".to_string()),
+    None,
+);
+```
+
+`RND::calc_reward` evaluates predictor error without gradients.
+`RND::observe` buffers the state and updates the predictor whenever
+`update_interval` observations have accumulated. Both methods are provided by
+the `BaseCuriousity` trait. RND checkpoints contain `rnd_predictor.ot` and
+`rnd_target.ot` in the configured directory.
+
 # Sample experiments
 The sample experiments call Gymnasium environments through FastAPI servers.
 Docker Compose starts ten environment servers on ports `8001` to `8010`.
@@ -220,6 +272,36 @@ Run LunarLanderContinuous with continuous SAC:
 cargo run -p reinforcex --features cpu -- --env lunar --algo sac --parallel 4
 ```
 
+Run discrete LunarLander with PPO and RND curiosity using four parallel
+environment servers:
+
+```sh
+cargo run -p reinforcex --features cpu -- \
+  --env lunar \
+  --algo ppo-rnd \
+  --parallel 4 \
+  --save-path "models/lunar_ppo_rnd_{agent_id}.ot"
+```
+
+Each worker owns an independent PPO agent and RND predictor. Port `8001` is
+used by agent 0, `8002` by agent 1, and so on. Make sure the corresponding
+environment servers are running before increasing `--parallel`.
+
+To share one RND predictor across all PPO workers, use `ppo-shared-rnd`:
+
+```sh
+cargo run -p reinforcex --features cpu -- \
+  --env lunar \
+  --algo ppo-shared-rnd \
+  --parallel 4 \
+  --save-path "models/lunar_ppo_shared_rnd_{agent_id}.ot"
+```
+
+The PPO agents remain independent, while intrinsic-reward calculation and RND
+predictor updates use one `Arc<Mutex<RND>>`. This lets observations from every
+environment train the same predictor. RND access is serialized by the mutex;
+environment stepping and PPO updates still run in parallel.
+
 Run Ant with PPO:
 
 ```sh
@@ -240,6 +322,17 @@ cargo run -p reinforcex --features cpu -- \
 For SAC, a single save path expands into component checkpoints such as actor,
 critic1, critic2, and temperature files.
 
+For PPO+RND, the PPO model uses the configured agent path. Its RND checkpoint is
+stored beside it using the same path with `.rnd` appended. For example,
+`models/lunar_ppo_rnd_0.ot` is paired with the directory
+`models/lunar_ppo_rnd_0.ot.rnd`. Pass the same base path through `--load-path`
+to restore both components.
+
+The shared-RND example replaces `{agent_id}` with `shared` for the RND
+checkpoint. With the command above, PPO checkpoints use agent-specific paths
+and the shared predictor is stored in
+`models/lunar_ppo_shared_rnd_shared.ot.rnd`.
+
 Stop the sample environment servers:
 
 ```sh
@@ -255,9 +348,9 @@ Run all Rust unit tests from the workspace root:
 cargo test --workspace
 ```
 
-The core unit tests exercise agents, models, probability distributions, memory
-buffers, selectors, and the FFI wrapper. The Docker-based Gymnasium server is
-only required for the sample experiments above.
+The core unit tests exercise agents, models, curiosity modules, probability
+distributions, memory buffers, selectors, and the FFI wrapper. The Docker-based
+Gymnasium server is only required for the sample experiments above.
 
 # FFI
 ReinforceX also provides a small Foreign Function Interface (FFI) crate for

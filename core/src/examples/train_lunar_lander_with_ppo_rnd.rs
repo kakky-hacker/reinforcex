@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use reinforcex::agents::{BaseAgent, PPO};
 use reinforcex::curiousity::{BaseCuriousity, RND};
 use reinforcex::memory::Experience;
@@ -36,30 +37,22 @@ fn curiosity_experience(state: &Tensor, is_episode_terminal: bool) -> Arc<Experi
     ))
 }
 
-fn calc_intrinsic_reward(curiosity: &RND, state: &Tensor, is_episode_terminal: bool) -> f64 {
+fn calc_and_observe_intrinsic_reward(
+    curiosity: &mut RND,
+    state: &Tensor,
+    is_episode_terminal: bool,
+) -> f64 {
     let experience = curiosity_experience(state, is_episode_terminal);
     let reward = curiosity.calc_reward(Arc::clone(&experience));
-    reward
+    let reward = reward
         .to_device(Device::Cpu)
         .mean(Kind::Float)
-        .double_value(&[])
+        .double_value(&[]);
+    curiosity.observe(experience);
+    reward
 }
 
-fn observe_curiosity(curiosity: &mut RND, state: &Tensor, is_episode_terminal: bool) {
-    curiosity.observe(curiosity_experience(state, is_episode_terminal));
-}
-
-fn run_agent_on_env(env_port: u16, agent_id: usize) {
-    println!("train_lunar_lander_with_ppo_rnd");
-
-    let client = Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .expect("HTTP client build failed");
-
-    let base_url = format!("http://localhost:{}", env_port);
-    let device = Device::cuda_if_available();
-
+fn build_ppo_agent(device: Device, save_path: Option<String>, load_path: Option<String>) -> PPO {
     let n_input_channels = 8;
     let action_size = 4;
     let n_hidden_layers = 2;
@@ -86,7 +79,7 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
     let value_coef = 0.5;
     let entropy_coef = 0.01;
 
-    let mut agent = PPO::new(
+    PPO::new(
         policy_model,
         policy_optimizer,
         gamma,
@@ -99,23 +92,59 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
         value_coef,
         entropy_coef,
         true,
-        None,
-        None,
-    );
+        save_path,
+        load_path,
+    )
+}
 
+pub(super) fn build_curiosity(
+    device: Device,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) -> RND {
     let rnd_model = FCRNDModel::new(
         nn::VarStore::new(device),
         nn::VarStore::new(device),
-        n_input_channels,
+        8,
         128,
-        n_hidden_layers,
-        n_hidden_channels,
+        2,
+        256,
     );
     let rnd_optimizer = nn::Adam::default()
         .build(rnd_model.predictor_var_store(), 1e-4)
         .unwrap();
-    let mut curiosity = RND::new(Box::new(rnd_model), rnd_optimizer, 128, None, None);
-    let intrinsic_reward_scale = 0.01;
+    RND::new(
+        Box::new(rnd_model),
+        rnd_optimizer,
+        128,
+        save_path,
+        load_path,
+    )
+}
+
+fn curiosity_checkpoint_path(path: &Option<String>) -> Option<String> {
+    path.as_ref().map(|path| format!("{}.rnd", path))
+}
+
+pub(super) fn run_agent_on_env(
+    env_port: u16,
+    agent_id: usize,
+    save_path: Option<String>,
+    load_path: Option<String>,
+    curiosity: Arc<Mutex<RND>>,
+    save_curiosity: bool,
+) {
+    println!("train_lunar_lander_with_ppo_rnd");
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("HTTP client build failed");
+
+    let base_url = format!("http://localhost:{}", env_port);
+    let device = Device::cuda_if_available();
+    let mut agent = build_ppo_agent(device, save_path, load_path);
+    let intrinsic_reward_scale = 1.0;
 
     let max_episode = 5000;
     let max_steps = 1000;
@@ -137,7 +166,10 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
         let mut obs = resp.observation;
         let session_id = resp.session_id;
         let initial_state = Tensor::from_slice(&obs).to_kind(Kind::Float);
-        observe_curiosity(&mut curiosity, &initial_state, false);
+        curiosity
+            .lock()
+            .unwrap()
+            .observe(curiosity_experience(&initial_state, false));
 
         let mut reward = 0.0;
 
@@ -156,8 +188,10 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
 
             obs = resp.observation;
             let next_state = Tensor::from_slice(&obs).to_kind(Kind::Float);
-            let intrinsic_reward = calc_intrinsic_reward(&curiosity, &next_state, resp.done);
-            observe_curiosity(&mut curiosity, &next_state, resp.done);
+            let intrinsic_reward = {
+                let mut curiosity = curiosity.lock().unwrap();
+                calc_and_observe_intrinsic_reward(&mut curiosity, &next_state, resp.done)
+            };
 
             reward = resp.reward + intrinsic_reward_scale * intrinsic_reward;
             total_extrinsic_reward += resp.reward;
@@ -183,14 +217,46 @@ fn run_agent_on_env(env_port: u16, agent_id: usize) {
             total_extrinsic_reward = 0.0;
             total_intrinsic_reward = 0.0;
             total_steps = 0;
+            agent.save();
+            if save_curiosity {
+                curiosity.lock().unwrap().save();
+            }
         }
+    }
+
+    agent.save();
+    if save_curiosity {
+        curiosity.lock().unwrap().save();
     }
 }
 
-pub fn train_lunar_lander_with_ppo_rnd() {
-    let ports: Vec<u16> = (8001..=8001).collect();
+pub(super) fn environment_ports(parallel_count: usize) -> Vec<u16> {
+    assert!(parallel_count > 0);
 
-    for (i, port) in ports.into_iter().enumerate() {
-        run_agent_on_env(port, i);
-    }
+    (0..parallel_count)
+        .map(|i| {
+            8001u16
+                .checked_add(u16::try_from(i).expect("parallel count is too large"))
+                .expect("parallel count is too large")
+        })
+        .collect()
+}
+
+pub fn train_lunar_lander_with_ppo_rnd(
+    parallel_count: usize,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) {
+    let ports = environment_ports(parallel_count);
+
+    ports.into_par_iter().enumerate().for_each(|(i, port)| {
+        let save_path = super::path_for_agent(&save_path, i);
+        let load_path = super::path_for_agent(&load_path, i);
+        let curiosity = Arc::new(Mutex::new(build_curiosity(
+            Device::cuda_if_available(),
+            curiosity_checkpoint_path(&save_path),
+            curiosity_checkpoint_path(&load_path),
+        )));
+        run_agent_on_env(port, i, save_path, load_path, curiosity, true)
+    });
 }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tch::{nn, no_grad, Kind, Tensor};
 
 pub struct RND {
-    model: Box<dyn BaseCuriousityModel>,
+    model: Box<dyn BaseCuriousityModel + Send>,
     optimizer: nn::Optimizer,
     experiences: BoundedVecDeque<Arc<Experience>>,
     update_interval: usize,
@@ -17,7 +17,7 @@ pub struct RND {
 
 impl RND {
     pub fn new(
-        model: Box<dyn BaseCuriousityModel>,
+        model: Box<dyn BaseCuriousityModel + Send>,
         optimizer: nn::Optimizer,
         update_interval: usize,
         save_path: Option<String>,
