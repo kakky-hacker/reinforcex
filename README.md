@@ -73,7 +73,7 @@ Core building blocks:
 - Exploration and selection: `EpsilonGreedy`, `RewardBasedSelector`.
 - Curiosity: `RND` computes intrinsic rewards and periodically trains its
   predictor from buffered observations.
-- FFI: DQN and PPO can be created and trained through a C-compatible API.
+- FFI: DQN, PPO, and SAC can be created and trained through a C-compatible API.
 
 # API
 Instantiate a DQN agent.
@@ -407,8 +407,9 @@ distributions, memory buffers, selectors, and the FFI wrapper. The Docker-based
 Gymnasium server is only required for the sample experiments above.
 
 # FFI
-ReinforceX also provides a small Foreign Function Interface (FFI) crate for
-embedding agents from external runtimes such as C, C++, C#, or Unity.
+ReinforceX provides a C-compatible API for embedding DQN, PPO, and SAC agents
+from C, C++, C#, Unity, and other runtimes. The canonical declarations are in
+[`ffi/include/reinforcex.h`](ffi/include/reinforcex.h).
 
 Build the dynamic library:
 
@@ -423,103 +424,169 @@ library extension, for example `reinforcex.dll`, `libreinforcex.so`, or
 ## Overview
 
 - All agents are managed internally and referenced through a `u64` ID.
-- The public FFI functions catch panics and return silently on invalid inputs.
-- All sizes use `u64` for ABI-friendly boundaries.
+- DQN, PPO, and SAC have separate configuration structures and create
+  functions. Algorithm-specific settings no longer leak into unrelated agents.
+- PPO and SAC support both `RX_ACTION_DISCRETE` and `RX_ACTION_CONTINUOUS`.
+- Public functions catch Rust panics and return an error code across the ABI.
+- Calls for one agent ID are serialized; different IDs can be used from
+  different threads.
 - The caller owns input and output buffer allocation.
-- `agent_type = 0` creates DQN; any other value creates PPO.
+- Observation buffers must contain exactly `obs_size` finite `float` values.
+- Discrete agents write one action value. Continuous agents write
+  `action_size` values.
 
-## Data Structures
+This API replaces the old catch-all `AgentConfig` and `rx_agent_create` API.
+Use a typed config and its matching create function instead.
 
-### AgentConfig
+## Configuration
+
+All typed configs begin with the common network and environment settings:
 
 ```c
-typedef struct {
-    uint32_t agent_type;
-
+typedef struct RxAgentConfig {
     uint64_t obs_size;
     uint64_t action_size;
-    double learning_rate;
+    uint64_t hidden_layers;
+    uint64_t hidden_size;
     double gamma;
-
-    uint64_t batch_size;
-    uint64_t buffer_size;
-    double epsilon_start;
-    double epsilon_end;
-    uint64_t epsilon_decay;
-
-    double lambda;
-    uint64_t update_interval;
-    uint64_t epoch;
-    uint64_t minibatch_size;
-    double clip_eps;
-} AgentConfig;
+} RxAgentConfig;
 ```
 
-| Field | Description |
-|------|-------------|
-| `agent_type` | `0 = DQN`, otherwise PPO |
-| `obs_size` | Observation vector size |
-| `action_size` | Action space size |
-| `learning_rate` | Optimizer learning rate |
-| `gamma` | Discount factor |
-| `batch_size` | DQN batch size |
-| `buffer_size` | DQN replay buffer size |
-| `epsilon_start` | Initial epsilon for DQN |
-| `epsilon_end` | Final epsilon for DQN |
-| `epsilon_decay` | Epsilon decay steps for DQN |
-| `lambda` | PPO GAE lambda |
-| `update_interval` | PPO update interval |
-| `epoch` | PPO training epochs |
-| `minibatch_size` | PPO minibatch size |
-| `clip_eps` | PPO clipping epsilon |
+Each algorithm then exposes only its own settings:
+
+```c
+typedef struct RxDqnConfig {
+    RxAgentConfig agent;
+    double learning_rate;
+    uint64_t batch_size;
+    uint64_t replay_capacity;
+    uint64_t replay_n_steps;
+    uint64_t update_interval;
+    uint64_t target_update_interval;
+    double epsilon_start;
+    double epsilon_end;
+    uint64_t epsilon_decay_steps;
+} RxDqnConfig;
+
+typedef struct RxPpoConfig {
+    RxAgentConfig agent;
+    uint32_t action_space;
+    double learning_rate;
+    double gae_lambda;
+    uint64_t update_interval;
+    uint64_t epochs;
+    uint64_t minibatch_size;
+    double policy_clip_epsilon;
+    double value_clip_range;
+    double value_loss_coefficient;
+    double entropy_coefficient;
+    uint32_t standardize_gae;
+    double min_action;
+    double max_action;
+    double min_variance;
+} RxPpoConfig;
+
+typedef struct RxSacConfig {
+    RxAgentConfig agent;
+    uint32_t action_space;
+    double actor_learning_rate;
+    double critic_learning_rate;
+    uint64_t replay_capacity;
+    uint64_t replay_start_size;
+    uint64_t batch_size;
+    uint64_t replay_n_steps;
+    uint64_t update_interval;
+    uint64_t target_update_interval;
+    double tau;
+    double alpha;
+    double min_variance;
+    uint32_t squash_action;
+} RxSacConfig;
+```
+
+Use the default helpers to initialize every field, then override only what the
+application needs:
+
+```c
+RxSacConfig config;
+int32_t status = rx_sac_config_default(&config, 8, 2);
+config.action_space = RX_ACTION_CONTINUOUS;
+config.replay_start_size = 5000;
+
+uint64_t agent_id = 0;
+if (status == RX_OK) {
+    status = rx_sac_create(&config, &agent_id);
+}
+```
+
+The matching helpers are `rx_dqn_config_default`, `rx_ppo_config_default`, and
+`rx_sac_config_default`. A `uint32_t` flag must be `0` or `1`. For PPO,
+`min_action`, `max_action`, and `min_variance` configure the continuous Gaussian
+policy and are ignored for a discrete policy. Continuous SAC uses a diagonal
+Gaussian policy; when `squash_action` is `1`, its output is tanh-squashed to
+`[-1, 1]`. `min_variance` is ignored by discrete SAC.
 
 ## Functions
 
-### rx_agent_create
+Create an agent with the function matching its config:
 
 ```c
-uint64_t rx_agent_create(const AgentConfig* config);
+int32_t rx_dqn_create(const RxDqnConfig *config, uint64_t *out_id);
+int32_t rx_ppo_create(const RxPpoConfig *config, uint64_t *out_id);
+int32_t rx_sac_create(const RxSacConfig *config, uint64_t *out_id);
 ```
 
-Creates a new agent and returns its ID. Returns `0` on failure.
+On success the function returns `RX_OK` and writes a non-zero ID to `out_id`.
+On failure it leaves `out_id` as zero.
 
-### rx_agent_act_and_train
+Select an action without changing the training state with `rx_agent_act`, or
+select and train with `rx_agent_act_and_train`:
 
 ```c
-void rx_agent_act_and_train(
+int64_t rx_agent_act(
     uint64_t id,
-    const float* obs,
+    const float *obs,
+    uint64_t obs_len,
+    float *out,
+    uint64_t out_len);
+
+int64_t rx_agent_act_and_train(
+    uint64_t id,
+    const float *obs,
     uint64_t obs_len,
     float reward,
-    float* out,
-    uint64_t out_len
-);
+    float *out,
+    uint64_t out_len);
 ```
 
-Performs action selection and one training step. DQN writes one scalar action.
-PPO writes a vector action and truncates to `out_len` if the output buffer is
-smaller than the action tensor.
+These return the number of `float` values written, or a negative `RX_ERROR_*`
+code. An undersized output buffer returns `RX_ERROR_BUFFER_TOO_SMALL` without a
+partial write. As in the Rust `BaseAgent` API, `reward` is the reward received
+after the previously selected action.
 
-### rx_agent_stop_episode
+Finish an episode and destroy an agent with:
 
 ```c
-void rx_agent_stop_episode(
+int32_t rx_agent_stop_episode(
     uint64_t id,
-    const float* obs,
+    const float *obs,
     uint64_t obs_len,
-    float reward
-);
+    float reward);
+
+int32_t rx_agent_destroy(uint64_t id);
 ```
 
-Signals the end of an episode and performs the final training step.
+Every status-returning function uses these values:
 
-### rx_agent_destroy
-
-```c
-void rx_agent_destroy(uint64_t id);
-```
-
-Destroys the agent for the given ID. Calling it with an unknown ID is a no-op.
+| Status | Meaning |
+|---|---|
+| `RX_OK` (`0`) | Success |
+| `RX_ERROR_NULL_POINTER` (`-1`) | A required pointer was null |
+| `RX_ERROR_INVALID_ARGUMENT` (`-2`) | A size, enum, flag, or numeric setting was invalid |
+| `RX_ERROR_NOT_FOUND` (`-3`) | The agent ID does not exist |
+| `RX_ERROR_BUFFER_TOO_SMALL` (`-4`) | The action output buffer is too small |
+| `RX_ERROR_PANIC` (`-5`) | A Rust panic was caught at the ABI boundary |
+| `RX_ERROR_INTERNAL` (`-6`) | An optimizer, mutex, tensor shape, or handle operation failed |
 
 # Contributing
 ReinforceX is a good place to contribute if you are interested in Rust,
