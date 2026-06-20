@@ -330,6 +330,39 @@ cargo run -p reinforcex --features cpu -- \
   --load-path "models/cartpole_dqn_{agent_id}.ot"
 ```
 
+Additional examples use the same `--parallel`, `--save-path`, and
+`--load-path` options. Multi-agent paths may contain `{agent_id}`.
+
+| Environment | Algorithms |
+| --- | --- |
+| `taxi` | `dqn`, `ppo`, `sac` |
+| `frozen-lake` | `dqn`, `ppo`, `sac` |
+| `half-cheetah` | `ppo`, `ppo-rnd`, `ppo-shared-rnd`, `sac` |
+| `bipedal-walker` | `ppo`, `ppo-rnd`, `ppo-shared-rnd`, `sac` |
+| `pusher` | `ppo`, `ppo-rnd`, `ppo-shared-rnd`, `sac` |
+| `ant` | `ppo`, `ppo-rnd`, `ppo-shared-rnd`, `sac` |
+
+For example:
+
+```sh
+cargo run -p reinforcex --features cpu -- \
+  --env taxi --algo dqn --parallel 4 \
+  --save-path "models/taxi_dqn_{agent_id}.ot"
+
+cargo run -p reinforcex --features cpu -- \
+  --env half-cheetah --algo ppo-shared-rnd --parallel 4 \
+  --save-path "models/half_cheetah_ppo_{agent_id}.ot"
+
+cargo run -p reinforcex --features cpu -- \
+  --env bipedal-walker --algo sac --parallel 4 \
+  --save-path "models/bipedal_sac_{agent_id}.ot"
+```
+
+Parallel SAC workers share one replay buffer. `ppo-rnd` gives each PPO worker
+its own RND model, while `ppo-shared-rnd` shares one RND model across all PPO
+workers. Taxi and FrozenLake scalar states are one-hot encoded before they are
+passed to the neural networks.
+
 For SAC, a single save path expands into component checkpoints such as actor,
 critic1, critic2, and temperature files.
 
