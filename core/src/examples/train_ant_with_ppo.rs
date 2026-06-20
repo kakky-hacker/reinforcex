@@ -2,8 +2,6 @@ use reinforcex::agents::{BaseAgent, PPO};
 use reinforcex::models::FCGaussianPolicyWithValue;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
-use std::time::Instant;
-
 use rayon::prelude::*;
 use reqwest::blocking::Client;
 use serde::Deserialize;
@@ -86,13 +84,9 @@ fn run_agent_on_env(
     );
     let mut total_reward = 0.0;
     let mut total_steps = 0;
-    let log_interval = 100;
     let max_episode = 10000;
 
-    let start = Instant::now();
-
     let max_steps = 10000;
-    let mut reward: f64 = 0.0;
     for episode in 1..max_episode {
         // /reset
         let resp = client
@@ -104,8 +98,8 @@ fn run_agent_on_env(
             .expect("reset JSON parse failed");
         let mut obs = resp.observation;
         let session_id = resp.session_id;
-        reward = 0.0;
-        for step in 0..max_steps {
+        let mut reward: f64 = 0.0;
+        for _step in 0..max_steps {
             let obs_tensor = Tensor::from_slice(&obs).to_kind(Kind::Float);
             let action_tensor = agent
                 .act_and_train(&obs_tensor, reward.clamp(-1.0, 1.0))
@@ -149,8 +143,12 @@ fn run_agent_on_env(
     }
 }
 
-pub fn train_ant_with_ppo(save_path: Option<String>, load_path: Option<String>) {
-    let ports: Vec<u16> = (8001..=8001).collect();
+pub fn train_ant_with_ppo(
+    parallel_count: usize,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) {
+    let ports = super::environment_ports(parallel_count);
 
     ports.into_par_iter().enumerate().for_each(|(i, port)| {
         run_agent_on_env(

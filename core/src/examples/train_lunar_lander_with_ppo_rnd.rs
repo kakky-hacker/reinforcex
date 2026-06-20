@@ -230,24 +230,12 @@ pub(super) fn run_agent_on_env(
     }
 }
 
-pub(super) fn environment_ports(parallel_count: usize) -> Vec<u16> {
-    assert!(parallel_count > 0);
-
-    (0..parallel_count)
-        .map(|i| {
-            8001u16
-                .checked_add(u16::try_from(i).expect("parallel count is too large"))
-                .expect("parallel count is too large")
-        })
-        .collect()
-}
-
 pub fn train_lunar_lander_with_ppo_rnd(
     parallel_count: usize,
     save_path: Option<String>,
     load_path: Option<String>,
 ) {
-    let ports = environment_ports(parallel_count);
+    let ports = super::environment_ports(parallel_count);
 
     ports.into_par_iter().enumerate().for_each(|(i, port)| {
         let save_path = super::path_for_agent(&save_path, i);

@@ -1,17 +1,19 @@
 use std::env;
 
 use examples::train_ant_with_ppo;
+use examples::train_cartpole_with_dqn;
+use examples::train_cartpole_with_sac;
+use examples::train_lunar_lander_with_dqn;
 use examples::train_lunar_lander_with_ppo_rnd;
 use examples::train_lunar_lander_with_ppo_shared_rnd;
-use examples::train_web_cartpole_with_dqn;
-use examples::train_web_cartpole_with_sac;
-use examples::train_web_lunar_lander_with_sac;
+use examples::train_lunar_lander_with_sac;
 
 use crate::examples::train_cartpole_with_ppo;
 mod examples;
 use tch::Cuda;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = env::args().collect();
 
     let mut env_value = String::new();
@@ -69,17 +71,17 @@ fn main() {
     let algo_key = algo_value.to_ascii_lowercase();
 
     if env_key == "cartpole" && algo_key == "dqn" {
-        train_web_cartpole_with_dqn(save_path, load_path);
+        train_cartpole_with_dqn(parallel_count, save_path, load_path);
     } else if env_key == "cartpole" && algo_key == "ppo" {
-        train_cartpole_with_ppo(save_path, load_path);
+        train_cartpole_with_ppo(parallel_count, save_path, load_path);
     } else if env_key == "ant" && algo_key == "ppo" {
-        train_ant_with_ppo(save_path, load_path);
+        train_ant_with_ppo(parallel_count, save_path, load_path);
     } else if env_key == "lunar" && algo_key == "dqn" {
-        //train_web_LunarLander_with_dqn(save_path, load_path).await;
+        train_lunar_lander_with_dqn(parallel_count, save_path, load_path).await;
     } else if env_key == "cartpole" && algo_key == "sac" {
-        train_web_cartpole_with_sac(parallel_count, save_path, load_path);
+        train_cartpole_with_sac(parallel_count, save_path, load_path);
     } else if env_key == "lunar" && algo_key == "sac" {
-        train_web_lunar_lander_with_sac(parallel_count, save_path, load_path);
+        train_lunar_lander_with_sac(parallel_count, save_path, load_path);
     } else if env_key == "lunar" && algo_key == "ppo-rnd" {
         train_lunar_lander_with_ppo_rnd(parallel_count, save_path, load_path);
     } else if env_key == "lunar" && algo_key == "ppo-shared-rnd" {

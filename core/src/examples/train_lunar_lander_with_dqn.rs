@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use futures::future::join_all;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fs;
 use std::time::Duration;
 use tch::{nn, nn::OptimizerConfig, Cuda, Device, Kind, Tensor};
@@ -35,7 +35,6 @@ async fn run_agent_on_env(
     agents: Arc<Vec<Mutex<DQN>>>,
     selector: Arc<Box<dyn BaseSelector>>,
     reward_log_map: Arc<Mutex<HashMap<usize, Vec<f64>>>>,
-    is_cuda: bool,
 ) {
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
@@ -69,7 +68,7 @@ async fn run_agent_on_env(
         let session_id = resp.session_id;
         let mut reward = 0.0;
 
-        for t in 0..max_steps {
+        for _step in 0..max_steps {
             let obs_tensor = Tensor::from_slice(&obs).to_kind(Kind::Float);
             let action_tensor = agents[agent_id]
                 .lock()
@@ -153,15 +152,18 @@ async fn run_agent_on_env(
     }
 }
 
-pub async fn train_web_LunarLander_with_dqn(save_path: Option<String>, load_path: Option<String>) {
-    let shared_buffer1 = Arc::new(ReplayBuffer::new(36000, 1));
-    let shared_buffer2 = Arc::new(ReplayBuffer::new(36000, 1));
+pub async fn train_lunar_lander_with_dqn(
+    parallel_count: usize,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) {
+    let shared_buffer = Arc::new(ReplayBuffer::new(36000, 1));
     let selector1: Arc<Box<dyn BaseSelector>> =
         Arc::new(Box::new(RewardBasedSelector::new(-1.96, 5000, 5000)));
     let selector2: Arc<Box<dyn BaseSelector>> =
         Arc::new(Box::new(RewardBasedSelector::new(-1.96, 5000, 5000)));
 
-    let ports: Vec<u16> = (8001..=8010).collect();
+    let ports = super::environment_ports(parallel_count);
 
     let reward_log_map: Arc<Mutex<HashMap<usize, Vec<f64>>>> = Arc::new(Mutex::new(HashMap::new()));
 
@@ -170,12 +172,6 @@ pub async fn train_web_LunarLander_with_dqn(save_path: Option<String>, load_path
     let mut agents: Vec<Mutex<DQN>> = vec![];
     // --- Agent Setup ---
     for i in 0..ports.len() {
-        let buffer = if i == 0 {
-            Arc::clone(&shared_buffer1)
-        } else {
-            Arc::clone(&shared_buffer2)
-        };
-
         let selector: Arc<Box<dyn BaseSelector>> = if i == 0 {
             Arc::clone(&selector1)
         } else {
@@ -196,7 +192,7 @@ pub async fn train_web_LunarLander_with_dqn(save_path: Option<String>, load_path
         let agent_load_path = super::path_for_agent(&load_path, i);
         let agent = Mutex::new(DQN::new(
             model,
-            buffer,
+            Arc::clone(&shared_buffer),
             optimizer,
             4,
             64,
@@ -224,15 +220,7 @@ pub async fn train_web_LunarLander_with_dqn(save_path: Option<String>, load_path
         let agents = Arc::clone(&arc_agents);
 
         let handle = tokio::spawn(async move {
-            run_agent_on_env(
-                port,
-                i,
-                agents,
-                selector,
-                reward_log_map,
-                Cuda::is_available(),
-            )
-            .await;
+            run_agent_on_env(port, i, agents, selector, reward_log_map).await;
         });
 
         handles.push(handle);
