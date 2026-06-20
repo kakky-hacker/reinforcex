@@ -49,16 +49,19 @@ checks `TORCH_CUDA_DLL` when the `cuda` feature is enabled.
 # Algorithms
 Implemented agents and exploration modules:
 
-- DQN: Double-DQN style target network, n-step replay, epsilon-greedy
-  exploration, optional reward-based selector, shared replay buffer support.
-- PPO: clipped policy objective, GAE, value clipping, entropy regularization,
+- DQN ([Playing Atari with Deep Reinforcement Learning](https://arxiv.org/abs/1312.5602)):
+  Double-DQN style target network, n-step replay, epsilon-greedy exploration,
+  optional reward-based selector, shared replay buffer support.
+- PPO ([Proximal Policy Optimization Algorithms](https://arxiv.org/abs/1707.06347)):
+  clipped policy objective, GAE, value clipping, entropy regularization,
   discrete, multi-branch discrete, and Gaussian policies.
-- SAC: continuous and discrete Soft Actor-Critic, twin critics, soft target
-  updates, automatic temperature updates for discrete policies, and component
-  checkpointing.
-- RND: Random Network Distillation with a fixed random target network, a
-  trainable predictor, batched predictor updates, and predictor/target
-  checkpointing.
+- SAC ([Soft Actor-Critic](https://arxiv.org/abs/1801.01290),
+  [Discrete SAC](https://arxiv.org/abs/1910.07207)): continuous and discrete
+  Soft Actor-Critic, twin critics, soft target updates, automatic temperature
+  updates for discrete policies, and component checkpointing.
+- RND ([Exploration by Random Network Distillation](https://arxiv.org/abs/1810.12894)):
+  Random Network Distillation with a fixed random target network, a trainable
+  predictor, batched predictor updates, and predictor/target checkpointing.
 
 Core building blocks:
 
@@ -340,6 +343,49 @@ The shared-RND example replaces `{agent_id}` with `shared` for the RND
 checkpoint. With the command above, PPO checkpoints use agent-specific paths
 and the shared predictor is stored in
 `models/lunar_ppo_shared_rnd_shared.ot.rnd`.
+
+Run the hybrid discrete LunarLander example with four PPO explorers and two
+SAC learners/actors:
+
+```sh
+cargo run -p reinforcex --features cpu -- \
+  --env lunar \
+  --algo ppo-sac-rnd \
+  --ppo-agents 4 \
+  --sac-agents 2 \
+  --save-path "models/lunar_hybrid_{role}_{agent_id}.ot"
+```
+
+This starts one environment per agent: PPO uses ports `8001` through `8004`
+and SAC uses `8005` and `8006`. All workers write extrinsic-reward transitions
+to one `Arc<ReplayBuffer>`, and every SAC instance samples from it. PPO alone
+adds RND intrinsic reward to its on-policy update; intrinsic rewards are never
+stored in the SAC replay buffer. The PPO workers share one `Arc<Mutex<RND>>`,
+but each has a deterministic random binary mask over the 128 RND error
+features. This gives each explorer a different novelty projection while all of
+them continue training the same predictor. Use at most ten total agents with
+the supplied Docker Compose file.
+
+`{role}` expands to `ppo`, `sac`, or `rnd`; `{agent_id}` expands to the worker
+index. If the placeholders are omitted, role and agent suffixes are added
+automatically to avoid checkpoint collisions.
+
+The same hybrid topology is available for continuous `Ant-v5`. PPO and SAC
+both use its eight-dimensional `[-1, 1]` action space; SAC applies the tanh
+transform internally:
+
+```sh
+cargo run -p reinforcex --features cpu -- \
+  --env ant \
+  --algo ppo-sac-rnd \
+  --ppo-agents 4 \
+  --sac-agents 2 \
+  --save-path "models/ant_hybrid_{role}_{agent_id}.ot"
+```
+
+As in the LunarLander example, PPO workers share one RND model but use distinct
+fixed random feature masks. Only raw Ant environment rewards enter the shared
+SAC replay buffer; masked intrinsic rewards affect PPO updates only.
 
 Stop the sample environment servers:
 
