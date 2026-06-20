@@ -248,16 +248,17 @@ Docker Compose starts ten environment servers on ports `8001` to `8010`.
 docker compose -f sample_env/docker-compose.yml up -d --build
 ```
 
-Run CartPole with DQN:
+Run CartPole with DQN using four parallel environments and one shared replay
+buffer:
 
 ```sh
-cargo run -p reinforcex --features cpu -- --env cartpole --algo dqn
+cargo run -p reinforcex --features cpu -- --env cartpole --algo dqn --parallel 4
 ```
 
-Run CartPole with PPO:
+Run CartPole with four independent PPO workers:
 
 ```sh
-cargo run -p reinforcex --features cpu -- --env cartpole --algo ppo
+cargo run -p reinforcex --features cpu -- --env cartpole --algo ppo --parallel 4
 ```
 
 Run CartPole with discrete SAC using four parallel environment servers:
@@ -270,6 +271,13 @@ Run LunarLanderContinuous with continuous SAC:
 
 ```sh
 cargo run -p reinforcex --features cpu -- --env lunar --algo sac --parallel 4
+```
+
+Run discrete LunarLander with DQN using four parallel environments and one
+shared replay buffer:
+
+```sh
+cargo run -p reinforcex --features cpu -- --env lunar --algo dqn --parallel 4
 ```
 
 Run discrete LunarLander with PPO and RND curiosity using four parallel
@@ -302,10 +310,10 @@ predictor updates use one `Arc<Mutex<RND>>`. This lets observations from every
 environment train the same predictor. RND access is serialized by the mutex;
 environment stepping and PPO updates still run in parallel.
 
-Run Ant with PPO:
+Run Ant with four independent PPO workers:
 
 ```sh
-cargo run -p reinforcex --features cpu -- --env ant --algo ppo
+cargo run -p reinforcex --features cpu -- --env ant --algo ppo --parallel 4
 ```
 
 Use `--save-path` and `--load-path` to persist models. Multi-agent samples can

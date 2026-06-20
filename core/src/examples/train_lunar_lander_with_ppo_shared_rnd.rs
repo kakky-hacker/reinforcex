@@ -1,6 +1,4 @@
-use super::train_lunar_lander_with_ppo_rnd::{
-    build_curiosity, environment_ports, run_agent_on_env,
-};
+use super::train_lunar_lander_with_ppo_rnd::{build_curiosity, run_agent_on_env};
 use rayon::prelude::*;
 use reinforcex::curiousity::BaseCuriousity;
 use std::sync::{Arc, Mutex};
@@ -21,7 +19,7 @@ pub fn train_lunar_lander_with_ppo_shared_rnd(
         shared_curiosity_checkpoint_path(&save_path),
         shared_curiosity_checkpoint_path(&load_path),
     )));
-    let ports = environment_ports(parallel_count);
+    let ports = super::environment_ports(parallel_count);
 
     ports.into_par_iter().enumerate().for_each(|(i, port)| {
         run_agent_on_env(

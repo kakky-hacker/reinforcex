@@ -168,21 +168,13 @@ fn run_agent_on_env(
     }
 }
 
-pub fn train_web_cartpole_with_sac(
+pub fn train_cartpole_with_sac(
     parallel_count: usize,
     save_path: Option<String>,
     load_path: Option<String>,
 ) {
-    assert!(parallel_count > 0);
-
     let shared_buffer = Arc::new(ReplayBuffer::new(300000, 3));
-    let ports = (0..parallel_count)
-        .map(|i| {
-            8001u16
-                .checked_add(u16::try_from(i).expect("parallel count is too large"))
-                .expect("parallel count is too large")
-        })
-        .collect::<Vec<u16>>();
+    let ports = super::environment_ports(parallel_count);
 
     ports.into_par_iter().enumerate().for_each(|(i, port)| {
         run_agent_on_env(

@@ -1,9 +1,6 @@
 use reinforcex::agents::{BaseAgent, PPO};
-use reinforcex::memory::OnPolicyBuffer;
 use reinforcex::models::FCSoftmaxPolicyWithValue;
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
-
-use std::time::Instant;
 
 use rayon::prelude::*;
 use reqwest::blocking::Client;
@@ -84,10 +81,7 @@ fn run_agent_on_env(
     );
     let mut total_reward = 0.0;
     let mut total_steps = 0;
-    let log_interval = 100;
     let max_episode = 10000;
-
-    let start = Instant::now();
 
     let max_steps = 500;
     for episode in 1..max_episode {
@@ -153,8 +147,12 @@ fn run_agent_on_env(
     agent.save();
 }
 
-pub fn train_cartpole_with_ppo(save_path: Option<String>, load_path: Option<String>) {
-    let ports: Vec<u16> = (8001..=8001).collect();
+pub fn train_cartpole_with_ppo(
+    parallel_count: usize,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) {
+    let ports = super::environment_ports(parallel_count);
 
     ports.into_par_iter().enumerate().for_each(|(i, port)| {
         run_agent_on_env(

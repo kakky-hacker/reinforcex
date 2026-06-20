@@ -1,10 +1,8 @@
+use rayon::prelude::*;
 use reinforcex::agents::{BaseAgent, DQN};
 use reinforcex::explorers::EpsilonGreedy;
 use reinforcex::memory::ReplayBuffer;
 use reinforcex::models::FCQNetwork;
-use std::time::Instant;
-
-use rayon::prelude::*;
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -65,8 +63,6 @@ fn run_agent_on_env(
     let max_steps = 500;
     let mut total_reward = 0.0;
     let mut total_steps = 0;
-
-    let start = Instant::now();
 
     for episode in 1..episodes {
         // /reset
@@ -129,9 +125,13 @@ fn run_agent_on_env(
     }
 }
 
-pub fn train_web_cartpole_with_dqn(save_path: Option<String>, load_path: Option<String>) {
+pub fn train_cartpole_with_dqn(
+    parallel_count: usize,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) {
     let shared_buffer = Arc::new(ReplayBuffer::new(300000, 5));
-    let ports: Vec<u16> = (8001..=8004).collect();
+    let ports = super::environment_ports(parallel_count);
 
     ports.into_par_iter().enumerate().for_each(|(i, port)| {
         run_agent_on_env(
