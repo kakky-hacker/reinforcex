@@ -8,6 +8,11 @@ app = FastAPI()
 environments = {}
 
 
+def observation_to_list(observation):
+    value = observation.tolist() if hasattr(observation, "tolist") else observation
+    return value if isinstance(value, list) else [value]
+
+
 class StepRequest(BaseModel):
     session_id: str
     action: list | int | float
@@ -35,7 +40,7 @@ def reset(data: ResetRequest):
     obs, _ = env.reset()
     session_id = str(uuid.uuid4())
     environments[session_id] = env
-    return {"session_id": session_id, "observation": obs.tolist()}
+    return {"session_id": session_id, "observation": observation_to_list(obs)}
 
 
 @app.post("/step", response_model=StepResponse)
@@ -54,4 +59,9 @@ def step(data: StepRequest):
         env.close()
         del environments[session_id]
 
-    return {"observation": obs.tolist(), "reward": reward, "done": done, "info": info}
+    return {
+        "observation": observation_to_list(obs),
+        "reward": reward,
+        "done": done,
+        "info": info,
+    }
