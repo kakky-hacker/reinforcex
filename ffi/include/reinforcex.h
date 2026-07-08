@@ -22,6 +22,10 @@ enum {
     RX_ACTION_CONTINUOUS = 1
 };
 
+enum {
+    RX_STAT_NAME_LEN = 64
+};
+
 typedef struct RxAgentConfig {
     uint64_t obs_size;
     uint64_t action_size;
@@ -78,6 +82,31 @@ typedef struct RxSacConfig {
     uint32_t squash_action;
 } RxSacConfig;
 
+typedef struct RxReplayBufferConfig {
+    uint64_t capacity;
+    uint64_t n_steps;
+} RxReplayBufferConfig;
+
+typedef struct RxReplayWriterConfig {
+    uint64_t obs_size;
+    uint64_t action_len;
+    double gamma;
+} RxReplayWriterConfig;
+
+typedef struct RxRndConfig {
+    uint64_t obs_size;
+    uint64_t feature_size;
+    uint64_t hidden_layers;
+    uint64_t hidden_size;
+    double learning_rate;
+    uint64_t update_interval;
+} RxRndConfig;
+
+typedef struct RxStatistic {
+    char name[RX_STAT_NAME_LEN];
+    double value;
+} RxStatistic;
+
 int32_t rx_dqn_config_default(
     RxDqnConfig *out_config,
     uint64_t obs_size,
@@ -93,9 +122,70 @@ int32_t rx_sac_config_default(
     uint64_t obs_size,
     uint64_t action_size);
 
+int32_t rx_replay_buffer_config_default(
+    RxReplayBufferConfig *out_config,
+    uint64_t capacity,
+    uint64_t n_steps);
+
+int32_t rx_replay_writer_config_default(
+    RxReplayWriterConfig *out_config,
+    uint64_t obs_size,
+    uint64_t action_len);
+
+int32_t rx_rnd_config_default(
+    RxRndConfig *out_config,
+    uint64_t obs_size);
+
 int32_t rx_dqn_create(const RxDqnConfig *config, uint64_t *out_id);
 int32_t rx_ppo_create(const RxPpoConfig *config, uint64_t *out_id);
 int32_t rx_sac_create(const RxSacConfig *config, uint64_t *out_id);
+
+int32_t rx_dqn_create_with_paths(
+    const RxDqnConfig *config,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
+int32_t rx_ppo_create_with_paths(
+    const RxPpoConfig *config,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
+int32_t rx_sac_create_with_paths(
+    const RxSacConfig *config,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
+int32_t rx_replay_buffer_create(
+    const RxReplayBufferConfig *config,
+    uint64_t *out_id);
+
+int32_t rx_sac_create_with_replay(
+    const RxSacConfig *config,
+    uint64_t replay_id,
+    uint64_t *out_id);
+
+int32_t rx_sac_create_with_replay_and_paths(
+    const RxSacConfig *config,
+    uint64_t replay_id,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
+int32_t rx_replay_writer_create(
+    uint64_t replay_id,
+    const RxReplayWriterConfig *config,
+    uint64_t *out_id);
+
+int32_t rx_rnd_create(const RxRndConfig *config, uint64_t *out_id);
+
+int32_t rx_rnd_create_with_paths(
+    const RxRndConfig *config,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
 
 /* Returns the number of floats written, or a negative RX_ERROR_* value. */
 int64_t rx_agent_act(
@@ -119,6 +209,60 @@ int32_t rx_agent_stop_episode(
     const float *obs,
     uint64_t obs_len,
     float reward);
+
+int32_t rx_agent_statistics_len(uint64_t id, uint64_t *out_len);
+
+/* Returns the number of statistics written, or a negative RX_ERROR_* value. */
+int64_t rx_agent_statistics(
+    uint64_t id,
+    RxStatistic *out_stats,
+    uint64_t out_len);
+
+int32_t rx_agent_save(uint64_t id);
+int32_t rx_agent_load(uint64_t id);
+
+int32_t rx_replay_buffer_len(uint64_t id, uint64_t *out_len);
+int32_t rx_replay_buffer_clear(uint64_t id);
+int32_t rx_replay_buffer_destroy(uint64_t id);
+
+int32_t rx_replay_writer_append(
+    uint64_t id,
+    const float *obs,
+    uint64_t obs_len,
+    const float *action,
+    uint64_t action_len,
+    float reward);
+
+int32_t rx_replay_writer_stop_episode(
+    uint64_t id,
+    const float *obs,
+    uint64_t obs_len,
+    float reward);
+
+int32_t rx_replay_writer_destroy(uint64_t id);
+
+int32_t rx_rnd_calc_reward(
+    uint64_t id,
+    const float *obs,
+    uint64_t obs_len,
+    double *out_reward);
+
+int32_t rx_rnd_calc_reward_and_observe(
+    uint64_t id,
+    const float *obs,
+    uint64_t obs_len,
+    uint32_t is_episode_terminal,
+    double *out_reward);
+
+int32_t rx_rnd_observe(
+    uint64_t id,
+    const float *obs,
+    uint64_t obs_len,
+    uint32_t is_episode_terminal);
+
+int32_t rx_rnd_save(uint64_t id);
+int32_t rx_rnd_load(uint64_t id);
+int32_t rx_rnd_destroy(uint64_t id);
 
 int32_t rx_agent_destroy(uint64_t id);
 
