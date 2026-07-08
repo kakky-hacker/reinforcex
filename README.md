@@ -407,8 +407,9 @@ distributions, memory buffers, selectors, and the FFI wrapper. The Docker-based
 Gymnasium server is only required for the sample experiments above.
 
 # FFI
-ReinforceX provides a C-compatible API for embedding DQN, PPO, and SAC agents
-from C, C++, C#, Unity, and other runtimes. The canonical declarations are in
+ReinforceX provides a C-compatible API for embedding DQN, PPO, SAC, shared replay
+buffers, and RND curiosity modules from C, C++, C#, Unity, Python `ctypes`/CFFI,
+and other runtimes. The canonical declarations are in
 [`ffi/include/reinforcex.h`](ffi/include/reinforcex.h).
 
 Build the dynamic library:
@@ -421,26 +422,67 @@ The generated library is named `reinforcex` with the platform-specific dynamic
 library extension, for example `reinforcex.dll`, `libreinforcex.so`, or
 `libreinforcex.dylib`.
 
-## Overview
+## FFI design
 
-- All agents are managed internally and referenced through a `u64` ID.
-- DQN, PPO, and SAC have separate configuration structures and create
-  functions. Algorithm-specific settings no longer leak into unrelated agents.
-- PPO and SAC support both `RX_ACTION_DISCRETE` and `RX_ACTION_CONTINUOUS`.
-- Public functions catch Rust panics and return an error code across the ABI.
-- Calls for one agent ID are serialized; different IDs can be used from
-  different threads.
+- All long-lived objects are owned by the Rust library and referenced through a
+  non-zero `uint64_t` handle.
+- DQN, PPO, SAC, replay buffers, replay writers, and RND modules each have their
+  own create/destroy lifecycle.
+- PPO and SAC support `RX_ACTION_DISCRETE` and `RX_ACTION_CONTINUOUS`.
+- Public functions catch Rust panics and return `RX_ERROR_PANIC` instead of
+  unwinding across the ABI.
+- Calls for one agent, replay writer, or RND handle are serialized internally.
+  Different handles may be used from different host threads.
 - The caller owns input and output buffer allocation.
 - Observation buffers must contain exactly `obs_size` finite `float` values.
-- Discrete agents write one action value. Continuous agents write
-  `action_size` values.
+- Discrete agents write one action value. Continuous agents write `action_size`
+  values.
+- `const char *save_path` and `const char *load_path` are optional. Pass `NULL`
+  or an empty string to disable that path. Non-null paths must be valid UTF-8.
 
-This API replaces the old catch-all `AgentConfig` and `rx_agent_create` API.
-Use a typed config and its matching create function instead.
+This API replaces the old catch-all `AgentConfig` and `rx_agent_create` API. Use
+a typed config and its matching create function instead.
 
-## Configuration
+## Constants and status codes
 
-All typed configs begin with the common network and environment settings:
+```c
+enum {
+    RX_OK = 0,
+    RX_ERROR_NULL_POINTER = -1,
+    RX_ERROR_INVALID_ARGUMENT = -2,
+    RX_ERROR_NOT_FOUND = -3,
+    RX_ERROR_BUFFER_TOO_SMALL = -4,
+    RX_ERROR_PANIC = -5,
+    RX_ERROR_INTERNAL = -6
+};
+
+enum {
+    RX_ACTION_DISCRETE = 0,
+    RX_ACTION_CONTINUOUS = 1
+};
+
+enum {
+    RX_STAT_NAME_LEN = 64
+};
+```
+
+| Status | Meaning |
+|---|---|
+| `RX_OK` (`0`) | Success |
+| `RX_ERROR_NULL_POINTER` (`-1`) | A required pointer was null |
+| `RX_ERROR_INVALID_ARGUMENT` (`-2`) | A size, enum, flag, path string, or numeric setting was invalid |
+| `RX_ERROR_NOT_FOUND` (`-3`) | The requested handle does not exist |
+| `RX_ERROR_BUFFER_TOO_SMALL` (`-4`) | The caller-provided output buffer is too small |
+| `RX_ERROR_PANIC` (`-5`) | A Rust panic was caught at the ABI boundary |
+| `RX_ERROR_INTERNAL` (`-6`) | An optimizer, mutex, tensor shape, conversion, or handle operation failed |
+
+Functions returning `int32_t` return one of the status codes above. Functions
+returning `int64_t` return a non-negative count on success, or a negative
+`RX_ERROR_*` value on failure.
+
+## FFI data structures
+
+All typed agent configs begin with the common network and environment settings:
 
 ```c
 typedef struct RxAgentConfig {
@@ -452,7 +494,7 @@ typedef struct RxAgentConfig {
 } RxAgentConfig;
 ```
 
-Each algorithm then exposes only its own settings:
+Algorithm configs:
 
 ```c
 typedef struct RxDqnConfig {
@@ -504,8 +546,88 @@ typedef struct RxSacConfig {
 } RxSacConfig;
 ```
 
-Use the default helpers to initialize every field, then override only what the
-application needs:
+Replay, RND, and statistics structs:
+
+```c
+typedef struct RxReplayBufferConfig {
+    uint64_t capacity;
+    uint64_t n_steps;
+} RxReplayBufferConfig;
+
+typedef struct RxReplayWriterConfig {
+    uint64_t obs_size;
+    uint64_t action_len;
+    double gamma;
+} RxReplayWriterConfig;
+
+typedef struct RxRndConfig {
+    uint64_t obs_size;
+    uint64_t feature_size;
+    uint64_t hidden_layers;
+    uint64_t hidden_size;
+    double learning_rate;
+    uint64_t update_interval;
+} RxRndConfig;
+
+typedef struct RxStatistic {
+    char name[RX_STAT_NAME_LEN];
+    double value;
+} RxStatistic;
+```
+
+Notes:
+
+- A `uint32_t` flag must be `0` or `1`.
+- `RxPpoConfig.action_space` and `RxSacConfig.action_space` must be
+  `RX_ACTION_DISCRETE` or `RX_ACTION_CONTINUOUS`.
+- For continuous PPO, `min_action`, `max_action`, and `min_variance` configure
+  the Gaussian policy. They are ignored for discrete PPO.
+- Continuous SAC uses a diagonal Gaussian policy. If `squash_action` is `1`, the
+  action is tanh-squashed to `[-1, 1]`. `min_variance` is ignored for discrete
+  SAC.
+- `RxReplayWriterConfig.action_len` is the action tensor length written into a
+  replay buffer. Use `1` for discrete actions and the action dimension for
+  continuous actions.
+- `RxStatistic.name` is null-terminated when shorter than `RX_STAT_NAME_LEN`.
+  Longer names are truncated to fit.
+
+## Default config helpers
+
+Use default helpers to initialize every field, then override only what your
+application needs.
+
+```c
+int32_t rx_dqn_config_default(
+    RxDqnConfig *out_config,
+    uint64_t obs_size,
+    uint64_t action_size);
+
+int32_t rx_ppo_config_default(
+    RxPpoConfig *out_config,
+    uint64_t obs_size,
+    uint64_t action_size);
+
+int32_t rx_sac_config_default(
+    RxSacConfig *out_config,
+    uint64_t obs_size,
+    uint64_t action_size);
+
+int32_t rx_replay_buffer_config_default(
+    RxReplayBufferConfig *out_config,
+    uint64_t capacity,
+    uint64_t n_steps);
+
+int32_t rx_replay_writer_config_default(
+    RxReplayWriterConfig *out_config,
+    uint64_t obs_size,
+    uint64_t action_len);
+
+int32_t rx_rnd_config_default(
+    RxRndConfig *out_config,
+    uint64_t obs_size);
+```
+
+Example:
 
 ```c
 RxSacConfig config;
@@ -519,28 +641,59 @@ if (status == RX_OK) {
 }
 ```
 
-The matching helpers are `rx_dqn_config_default`, `rx_ppo_config_default`, and
-`rx_sac_config_default`. A `uint32_t` flag must be `0` or `1`. For PPO,
-`min_action`, `max_action`, and `min_variance` configure the continuous Gaussian
-policy and are ignored for a discrete policy. Continuous SAC uses a diagonal
-Gaussian policy; when `squash_action` is `1`, its output is tanh-squashed to
-`[-1, 1]`. `min_variance` is ignored by discrete SAC.
-
-## Functions
-
-Create an agent with the function matching its config:
+## Agent creation APIs
 
 ```c
 int32_t rx_dqn_create(const RxDqnConfig *config, uint64_t *out_id);
 int32_t rx_ppo_create(const RxPpoConfig *config, uint64_t *out_id);
 int32_t rx_sac_create(const RxSacConfig *config, uint64_t *out_id);
+
+int32_t rx_dqn_create_with_paths(
+    const RxDqnConfig *config,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
+int32_t rx_ppo_create_with_paths(
+    const RxPpoConfig *config,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
+int32_t rx_sac_create_with_paths(
+    const RxSacConfig *config,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
+int32_t rx_sac_create_with_replay(
+    const RxSacConfig *config,
+    uint64_t replay_id,
+    uint64_t *out_id);
+
+int32_t rx_sac_create_with_replay_and_paths(
+    const RxSacConfig *config,
+    uint64_t replay_id,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
 ```
 
-On success the function returns `RX_OK` and writes a non-zero ID to `out_id`.
-On failure it leaves `out_id` as zero.
+| Function | Purpose |
+|---|---|
+| `rx_dqn_create` | Creates a DQN agent with its own replay buffer. |
+| `rx_ppo_create` | Creates a PPO agent with its own on-policy buffer. |
+| `rx_sac_create` | Creates a SAC agent with its own replay buffer. |
+| `rx_*_create_with_paths` | Creates an agent with optional save/load checkpoint paths. |
+| `rx_sac_create_with_replay` | Creates a SAC agent that uses an existing shared replay buffer. |
+| `rx_sac_create_with_replay_and_paths` | Same as above, with optional save/load checkpoint paths. |
 
-Select an action without changing the training state with `rx_agent_act`, or
-select and train with `rx_agent_act_and_train`:
+On success, create functions return `RX_OK` and write a non-zero handle to
+`out_id`. On failure, `out_id` is set to zero. Shared SAC replay creation checks
+that the shared replay buffer has the same `n_steps` as the SAC config and is
+large enough for `batch_size` and `replay_start_size`.
+
+## Agent action, training, statistics, and lifecycle APIs
 
 ```c
 int64_t rx_agent_act(
@@ -557,36 +710,168 @@ int64_t rx_agent_act_and_train(
     float reward,
     float *out,
     uint64_t out_len);
-```
 
-These return the number of `float` values written, or a negative `RX_ERROR_*`
-code. An undersized output buffer returns `RX_ERROR_BUFFER_TOO_SMALL` without a
-partial write. As in the Rust `BaseAgent` API, `reward` is the reward received
-after the previously selected action.
-
-Finish an episode and destroy an agent with:
-
-```c
 int32_t rx_agent_stop_episode(
     uint64_t id,
     const float *obs,
     uint64_t obs_len,
     float reward);
 
+int32_t rx_agent_statistics_len(uint64_t id, uint64_t *out_len);
+
+int64_t rx_agent_statistics(
+    uint64_t id,
+    RxStatistic *out_stats,
+    uint64_t out_len);
+
+int32_t rx_agent_save(uint64_t id);
+int32_t rx_agent_load(uint64_t id);
 int32_t rx_agent_destroy(uint64_t id);
 ```
 
-Every status-returning function uses these values:
-
-| Status | Meaning |
+| Function | Purpose |
 |---|---|
-| `RX_OK` (`0`) | Success |
-| `RX_ERROR_NULL_POINTER` (`-1`) | A required pointer was null |
-| `RX_ERROR_INVALID_ARGUMENT` (`-2`) | A size, enum, flag, or numeric setting was invalid |
-| `RX_ERROR_NOT_FOUND` (`-3`) | The agent ID does not exist |
-| `RX_ERROR_BUFFER_TOO_SMALL` (`-4`) | The action output buffer is too small |
-| `RX_ERROR_PANIC` (`-5`) | A Rust panic was caught at the ABI boundary |
-| `RX_ERROR_INTERNAL` (`-6`) | An optimizer, mutex, tensor shape, or handle operation failed |
+| `rx_agent_act` | Selects an action without adding a transition or updating the agent. |
+| `rx_agent_act_and_train` | Selects an action, records the previous transition, and updates when due. |
+| `rx_agent_stop_episode` | Records the terminal observation/reward and ends the current episode. |
+| `rx_agent_statistics_len` | Returns how many statistics entries are currently available. |
+| `rx_agent_statistics` | Writes `RxStatistic` entries into the caller-provided buffer. |
+| `rx_agent_save` | Saves the agent using the `save_path` supplied at creation. No-ops if no path was supplied. |
+| `rx_agent_load` | Loads the agent using the `load_path` supplied at creation. No-ops if no path was supplied. |
+| `rx_agent_destroy` | Releases the agent handle from the Rust registry. |
+
+`rx_agent_act` and `rx_agent_act_and_train` return the number of `float` values
+written, or a negative `RX_ERROR_*` code. An undersized output buffer returns
+`RX_ERROR_BUFFER_TOO_SMALL` without a partial write.
+
+As in the Rust `BaseAgent` API, the `reward` passed to
+`rx_agent_act_and_train` is the reward received after the previously selected
+action. At the end of an episode, pass the final observation and final reward to
+`rx_agent_stop_episode`.
+
+## Replay buffer APIs
+
+```c
+int32_t rx_replay_buffer_create(
+    const RxReplayBufferConfig *config,
+    uint64_t *out_id);
+
+int32_t rx_replay_buffer_len(uint64_t id, uint64_t *out_len);
+int32_t rx_replay_buffer_clear(uint64_t id);
+int32_t rx_replay_buffer_destroy(uint64_t id);
+```
+
+| Function | Purpose |
+|---|---|
+| `rx_replay_buffer_create` | Creates a replay buffer handle that can be shared by SAC agents or replay writers. |
+| `rx_replay_buffer_len` | Reads the number of fully linkable experiences currently stored. |
+| `rx_replay_buffer_clear` | Clears stored experiences and per-episode n-step state. |
+| `rx_replay_buffer_destroy` | Removes the replay buffer handle from the registry. Existing agents/writers keep their `Arc` reference alive. |
+
+Use shared replay buffers for multi-agent SAC training or for feeding
+experiences collected by another policy into SAC.
+
+## Replay writer APIs
+
+Replay writers let an external policy, such as a Python-managed PPO agent, write
+experience into a shared replay buffer. This is the intended bridge for
+experiments where PPO explores while SAC learns from a shared replay buffer.
+
+```c
+int32_t rx_replay_writer_create(
+    uint64_t replay_id,
+    const RxReplayWriterConfig *config,
+    uint64_t *out_id);
+
+int32_t rx_replay_writer_append(
+    uint64_t id,
+    const float *obs,
+    uint64_t obs_len,
+    const float *action,
+    uint64_t action_len,
+    float reward);
+
+int32_t rx_replay_writer_stop_episode(
+    uint64_t id,
+    const float *obs,
+    uint64_t obs_len,
+    float reward);
+
+int32_t rx_replay_writer_destroy(uint64_t id);
+```
+
+| Function | Purpose |
+|---|---|
+| `rx_replay_writer_create` | Creates a writer attached to an existing replay buffer. |
+| `rx_replay_writer_append` | Appends a non-terminal decision point: observation, action, and reward. |
+| `rx_replay_writer_stop_episode` | Appends the terminal observation/reward and starts a new episode for that writer. |
+| `rx_replay_writer_destroy` | Releases the writer handle. |
+
+The writer follows the same reward convention as `rx_agent_act_and_train`: pass
+the reward received after the previously selected action. A common host loop is:
+
+1. Choose an action for the initial observation.
+2. Call `rx_replay_writer_append(..., initial_obs, action, 0.0)`.
+3. Step the environment.
+4. Choose the next action and call `rx_replay_writer_append(..., next_obs,
+   next_action, reward_from_previous_step)`.
+5. On terminal, call `rx_replay_writer_stop_episode(..., final_obs,
+   final_reward)`.
+
+For discrete actions, write one float containing the action index. For continuous
+actions, write one float per action dimension.
+
+## RND APIs
+
+```c
+int32_t rx_rnd_create(const RxRndConfig *config, uint64_t *out_id);
+
+int32_t rx_rnd_create_with_paths(
+    const RxRndConfig *config,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
+int32_t rx_rnd_calc_reward(
+    uint64_t id,
+    const float *obs,
+    uint64_t obs_len,
+    double *out_reward);
+
+int32_t rx_rnd_calc_reward_and_observe(
+    uint64_t id,
+    const float *obs,
+    uint64_t obs_len,
+    uint32_t is_episode_terminal,
+    double *out_reward);
+
+int32_t rx_rnd_observe(
+    uint64_t id,
+    const float *obs,
+    uint64_t obs_len,
+    uint32_t is_episode_terminal);
+
+int32_t rx_rnd_save(uint64_t id);
+int32_t rx_rnd_load(uint64_t id);
+int32_t rx_rnd_destroy(uint64_t id);
+```
+
+| Function | Purpose |
+|---|---|
+| `rx_rnd_create` | Creates an RND curiosity module. |
+| `rx_rnd_create_with_paths` | Creates an RND module with optional save/load paths. |
+| `rx_rnd_calc_reward` | Computes intrinsic reward for an observation without training RND. |
+| `rx_rnd_calc_reward_and_observe` | Computes intrinsic reward and then observes the same state for periodic RND updates. |
+| `rx_rnd_observe` | Observes a state for periodic RND updates without returning reward. |
+| `rx_rnd_save` | Saves RND using the `save_path` supplied at creation. No-ops if no path was supplied. |
+| `rx_rnd_load` | Loads RND using the `load_path` supplied at creation. No-ops if no path was supplied. |
+| `rx_rnd_destroy` | Releases the RND handle. |
+
+`is_episode_terminal` must be `0` or `1`. To share RND across multiple PPO
+workers, create one RND handle and call it from each worker. To use independent
+RND modules, create one RND handle per worker. Per-worker curiosity masks can be
+applied in the host runtime by scaling or dropping the returned intrinsic reward
+before adding it to the PPO reward.
 
 # Contributing
 ReinforceX is a good place to contribute if you are interested in Rust,
