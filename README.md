@@ -111,11 +111,11 @@ let target_update_interval = 100;
 let replay_buffer_capacity = 2_000;
 
 let explorer = EpsilonGreedy::new(0.5, 0.1, 50_000);
-let transition_buffer = Arc::new(ReplayBuffer::new(replay_buffer_capacity, n_steps));
+let replay_buffer = Arc::new(ReplayBuffer::new(replay_buffer_capacity, n_steps));
 
 let mut agent = DQN::new(
     model,
-    transition_buffer,
+    replay_buffer,
     optimizer,
     action_size as usize,
     batch_size,
@@ -209,7 +209,7 @@ optimizer must be built from the predictor variable store after the model has
 registered its layers.
 
 ```rust
-use reinforcex::curiousity::RND;
+use reinforcex::curiosity::RND;
 use reinforcex::models::FCRNDModel;
 use tch::{nn, nn::OptimizerConfig, Device};
 
@@ -237,10 +237,11 @@ let mut curiosity = RND::new(
 );
 ```
 
-`RND::calc_reward` evaluates predictor error without gradients.
+`RND::calc_internal_reward` evaluates predictor error for a batch of
+experiences without gradients.
 `RND::observe` buffers the state and updates the predictor whenever
 `update_interval` observations have accumulated. Both methods are provided by
-the `BaseCuriousity` trait. RND checkpoints contain `rnd_predictor.ot` and
+the `Basecuriosity` trait. RND checkpoints contain `rnd_predictor.ot` and
 `rnd_target.ot` in the configured directory.
 
 # Sample experiments

@@ -1,6 +1,6 @@
 use super::base_agent::{ensure_parent_dir, BaseAgent};
 use crate::explorers::BaseExplorer;
-use crate::memory::ReplayBuffer;
+use crate::memory::{Experience, ReplayBuffer};
 use crate::misc::batch_states::batch_states;
 use crate::models::BaseQFunction;
 use crate::selector::BaseSelector;
@@ -12,7 +12,7 @@ pub struct DQN {
     agent_id: Ulid,
     model: Box<dyn BaseQFunction>,
     optimizer: nn::Optimizer,
-    transition_buffer: Arc<ReplayBuffer>,
+    replay_buffer: Arc<ReplayBuffer>,
     explorer: Box<dyn BaseExplorer>,
     selector: Option<Arc<Box<dyn BaseSelector>>>,
     action_size: usize,
@@ -32,7 +32,7 @@ unsafe impl Send for DQN {}
 impl DQN {
     pub fn new(
         model: Box<dyn BaseQFunction>,
-        transition_buffer: Arc<ReplayBuffer>,
+        replay_buffer: Arc<ReplayBuffer>,
         optimizer: nn::Optimizer,
         action_size: usize,
         batch_size: usize,
@@ -49,7 +49,7 @@ impl DQN {
             agent_id: Ulid::new(),
             model,
             optimizer,
-            transition_buffer,
+            replay_buffer,
             explorer,
             selector,
             action_size,
@@ -68,10 +68,10 @@ impl DQN {
     }
 
     fn _update(&mut self) {
-        if self.transition_buffer.len() < self.batch_size {
+        if self.replay_buffer.len() < self.batch_size {
             return;
         }
-        let experiences = self.transition_buffer.sample(self.batch_size, true);
+        let experiences = self.replay_buffer.sample(self.batch_size, true);
         let mut states: Vec<Tensor> = vec![];
         let mut n_step_after_states: Vec<Tensor> = vec![];
         let mut actions: Vec<Tensor> = vec![];
@@ -122,7 +122,7 @@ impl DQN {
             .forward(&_states)
             .gather(1, &self.model.forward(&_states).argmax(1, true), false)
             .squeeze_dim(1);
-        let gamma_n = self.gamma.powi(self.transition_buffer.get_n_steps() as i32);
+        let gamma_n = self.gamma.powi(self.replay_buffer.get_n_steps() as i32);
         let n_step_discounted_rewards_tensor =
             Tensor::from_slice(n_step_discounted_rewards).to_device(self.model.device());
         let updated_q_values = max_q_values * gamma_n + n_step_discounted_rewards_tensor;
@@ -177,7 +177,7 @@ impl BaseAgent for DQN {
                 .select_action(self.t, &random_action_func, &greedy_action_func);
         let action = Tensor::from_slice(&[action_idx as i64]).detach();
 
-        let experience = self.transition_buffer.append(
+        let experience = Arc::new(Experience::new(
             self.agent_id,
             self.current_episode_id,
             state,
@@ -185,8 +185,8 @@ impl BaseAgent for DQN {
             None,
             reward,
             false,
-            self.gamma,
-        );
+        ));
+        self.replay_buffer.append(experience.clone(), self.gamma);
 
         if self.selector.is_some() {
             self.selector.as_ref().unwrap().observe(experience.as_ref());
@@ -203,7 +203,7 @@ impl BaseAgent for DQN {
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
-        self.transition_buffer.append(
+        let experience = Arc::new(Experience::new(
             self.agent_id,
             self.current_episode_id,
             state,
@@ -211,8 +211,8 @@ impl BaseAgent for DQN {
             None,
             reward,
             true,
-            self.gamma,
-        );
+        ));
+        self.replay_buffer.append(experience, self.gamma);
         self.current_episode_id = Ulid::new();
     }
 
@@ -259,11 +259,11 @@ mod tests {
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCQNetwork::new(vs, 4, 2, 2, 64);
         let explorer = EpsilonGreedy::new(1.0, 0.1, 1000);
-        let transition_buffer = Arc::new(ReplayBuffer::new(1000, 3));
+        let replay_buffer = Arc::new(ReplayBuffer::new(1000, 3));
 
         let dqn = DQN::new(
             Box::new(model),
-            transition_buffer,
+            replay_buffer,
             optimizer,
             2,
             32,
@@ -290,10 +290,10 @@ mod tests {
         let optimizer = nn::Adam::default().build(&vs, 1e-2).unwrap();
         let model = FCQNetwork::new(vs, 4, 4, 2, 128);
         let explorer = EpsilonGreedy::new(1.0, 0.0, 1000);
-        let transition_buffer = Arc::new(ReplayBuffer::new(1000, 1));
+        let replay_buffer = Arc::new(ReplayBuffer::new(1000, 1));
         let mut dqn = DQN::new(
             Box::new(model),
-            transition_buffer,
+            replay_buffer,
             optimizer,
             4,
             16,

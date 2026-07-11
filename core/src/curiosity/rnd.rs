@@ -1,13 +1,13 @@
-use super::base_curiousity::BaseCuriousity;
+use super::base_curiosity::Basecuriosity;
 use crate::memory::Experience;
 use crate::misc::batch_states::batch_states;
 use crate::misc::bounded_vec_deque::BoundedVecDeque;
-use crate::models::BaseCuriousityModel;
+use crate::models::BasecuriosityModel;
 use std::sync::Arc;
 use tch::{nn, no_grad, Kind, Tensor};
 
 pub struct RND {
-    model: Box<dyn BaseCuriousityModel + Send>,
+    model: Box<dyn BasecuriosityModel + Send>,
     optimizer: nn::Optimizer,
     experiences: BoundedVecDeque<Arc<Experience>>,
     update_interval: usize,
@@ -17,7 +17,7 @@ pub struct RND {
 
 impl RND {
     pub fn new(
-        model: Box<dyn BaseCuriousityModel + Send>,
+        model: Box<dyn BasecuriosityModel + Send>,
         optimizer: nn::Optimizer,
         update_interval: usize,
         save_path: Option<String>,
@@ -58,13 +58,18 @@ impl RND {
     }
 }
 
-impl BaseCuriousity for RND {
-    fn calc_reward(&self, experience: Arc<Experience>) -> Tensor {
-        no_grad(|| {
-            self.model
-                .forward(&experience.state.to_device(self.model.device()))
-        })
-        .detach()
+impl Basecuriosity for RND {
+    fn calc_internal_reward(&self, experiences: &[Arc<Experience>]) -> Tensor {
+        if experiences.is_empty() {
+            return Tensor::zeros([0], (Kind::Float, self.model.device()));
+        }
+
+        let states = experiences
+            .iter()
+            .map(|experience| experience.state.shallow_clone())
+            .collect::<Vec<Tensor>>();
+        let states = batch_states(&states, self.model.device());
+        no_grad(|| self.model.forward(&states)).detach()
     }
 
     fn observe(&mut self, experience: Arc<Experience>) {
@@ -97,7 +102,6 @@ impl BaseCuriousity for RND {
 mod tests {
     use super::*;
     use crate::models::FCRNDModel;
-    use std::sync::Mutex;
     use tch::{nn, nn::OptimizerConfig, Device, Kind};
     use ulid::Ulid;
 
@@ -110,13 +114,11 @@ mod tests {
             None,
             0.0,
             false,
-            Mutex::new(None),
-            Mutex::new(None),
         ))
     }
 
     #[test]
-    fn test_rnd_calc_reward() {
+    fn test_rnd_calc_internal_reward_in_batch() {
         let predictor_vs = nn::VarStore::new(Device::Cpu);
         let target_vs = nn::VarStore::new(Device::Cpu);
         let model = FCRNDModel::new(predictor_vs, target_vs, 4, 8, 1, 16);
@@ -124,11 +126,13 @@ mod tests {
             .build(model.predictor_var_store(), 1e-3)
             .unwrap();
         let rnd = RND::new(Box::new(model), optimizer, 2, None, None);
-        let exp = experience(Tensor::randn([1, 4], (Kind::Float, Device::Cpu)));
+        let experiences = (0..3)
+            .map(|_| experience(Tensor::randn([1, 4], (Kind::Float, Device::Cpu))))
+            .collect::<Vec<Arc<Experience>>>();
 
-        let reward = rnd.calc_reward(exp);
+        let reward = rnd.calc_internal_reward(&experiences);
 
-        assert_eq!(reward.size(), vec![1]);
+        assert_eq!(reward.size(), vec![3]);
         assert!(reward.isfinite().all().int64_value(&[]) == 1);
     }
 
@@ -169,7 +173,7 @@ mod tests {
             .build(model.predictor_var_store(), 1e-3)
             .unwrap();
         let rnd = RND::new(Box::new(model), optimizer, 2, Some(dirname.clone()), None);
-        let expected_reward = rnd.calc_reward(Arc::clone(&exp));
+        let expected_reward = rnd.calc_internal_reward(&[Arc::clone(&exp)]);
         rnd.save();
 
         let predictor_vs = nn::VarStore::new(Device::Cpu);
@@ -179,7 +183,7 @@ mod tests {
             .build(model.predictor_var_store(), 1e-3)
             .unwrap();
         let loaded_rnd = RND::new(Box::new(model), optimizer, 2, None, Some(dirname.clone()));
-        let actual_reward = loaded_rnd.calc_reward(exp);
+        let actual_reward = loaded_rnd.calc_internal_reward(&[exp]);
 
         assert!(expected_reward.allclose(&actual_reward, 1e-6, 1e-6, false));
 

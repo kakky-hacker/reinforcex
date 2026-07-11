@@ -31,7 +31,7 @@ pub struct SAC {
     critic2_optimizer: nn::Optimizer,
     target_critic1: Box<dyn BaseQFunction>,
     target_critic2: Box<dyn BaseQFunction>,
-    transition_buffer: Arc<ReplayBuffer>,
+    replay_buffer: Arc<ReplayBuffer>,
     replay_start_size: usize,
     batch_size: usize,
     update_interval: usize,
@@ -65,7 +65,7 @@ impl SAC {
         critic1_optimizer: nn::Optimizer,
         critic2: Box<dyn BaseQFunction>,
         critic2_optimizer: nn::Optimizer,
-        transition_buffer: Arc<ReplayBuffer>,
+        replay_buffer: Arc<ReplayBuffer>,
         replay_start_size: usize,
         batch_size: usize,
         update_interval: usize,
@@ -82,7 +82,7 @@ impl SAC {
             critic1_optimizer,
             critic2,
             critic2_optimizer,
-            transition_buffer,
+            replay_buffer,
             replay_start_size,
             batch_size,
             update_interval,
@@ -103,7 +103,7 @@ impl SAC {
         critic1_optimizer: nn::Optimizer,
         critic2: Box<dyn BaseQFunction>,
         critic2_optimizer: nn::Optimizer,
-        transition_buffer: Arc<ReplayBuffer>,
+        replay_buffer: Arc<ReplayBuffer>,
         replay_start_size: usize,
         batch_size: usize,
         update_interval: usize,
@@ -147,7 +147,7 @@ impl SAC {
             critic2_optimizer,
             target_critic1,
             target_critic2,
-            transition_buffer,
+            replay_buffer,
             replay_start_size,
             batch_size,
             update_interval,
@@ -175,7 +175,7 @@ impl SAC {
     }
 
     fn _update(&mut self) {
-        if self.transition_buffer.len() < self.replay_start_size.max(self.batch_size) {
+        if self.replay_buffer.len() < self.replay_start_size.max(self.batch_size) {
             return;
         }
 
@@ -198,7 +198,7 @@ impl SAC {
     }
 
     fn _update_continuous(&mut self, batch: &SACBatch) {
-        let gamma_n = self.gamma.powi(self.transition_buffer.get_n_steps() as i32);
+        let gamma_n = self.gamma.powi(self.replay_buffer.get_n_steps() as i32);
         let target_q = no_grad(|| {
             let (next_actions, next_log_prob) =
                 self._sample_action_and_log_prob(&batch.next_states);
@@ -243,7 +243,7 @@ impl SAC {
 
     fn _update_discrete(&mut self, batch: &SACBatch) {
         let batch_size = batch.states.size()[0];
-        let gamma_n = self.gamma.powi(self.transition_buffer.get_n_steps() as i32);
+        let gamma_n = self.gamma.powi(self.replay_buffer.get_n_steps() as i32);
         let target_q = no_grad(|| {
             let (next_action_distrib, _) = self.actor.forward(&batch.next_states);
             let next_prob = next_action_distrib.all_prob();
@@ -362,7 +362,7 @@ impl SAC {
     }
 
     fn _sample_batch(&self) -> SACBatch {
-        let experiences = self.transition_buffer.sample(self.batch_size, true);
+        let experiences = self.replay_buffer.sample(self.batch_size, true);
         let mut states: Vec<Tensor> = Vec::with_capacity(self.batch_size);
         let mut actions: Vec<Tensor> = Vec::with_capacity(self.batch_size);
         let mut rewards: Vec<f64> = Vec::with_capacity(self.batch_size);
@@ -539,7 +539,7 @@ impl BaseAgent for SAC {
         let action = no_grad(|| {
             let (action_distrib, _) = self.actor.forward(&state);
             if action_distrib.is_discrete() {
-                if self.transition_buffer.len() < self.replay_start_size {
+                if self.replay_buffer.len() < self.replay_start_size {
                     let probs = action_distrib.all_prob();
                     Tensor::randint(
                         probs.size()[1],
@@ -555,7 +555,7 @@ impl BaseAgent for SAC {
         });
         let action = action.detach().to_device(Device::Cpu);
 
-        self.transition_buffer.append(
+        let experience = Arc::new(Experience::new(
             self.agent_id,
             self.current_episode_id,
             state,
@@ -563,8 +563,8 @@ impl BaseAgent for SAC {
             None,
             reward,
             false,
-            self.gamma,
-        );
+        ));
+        self.replay_buffer.append(experience, self.gamma);
 
         if self.t % self.update_interval == 0 {
             self._update();
@@ -579,7 +579,7 @@ impl BaseAgent for SAC {
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(&vec![obs.shallow_clone()], self.actor.device());
-        self.transition_buffer.append(
+        let experience = Arc::new(Experience::new(
             self.agent_id,
             self.current_episode_id,
             state,
@@ -587,8 +587,8 @@ impl BaseAgent for SAC {
             None,
             reward,
             true,
-            self.gamma,
-        );
+        ));
+        self.replay_buffer.append(experience, self.gamma);
         self.current_episode_id = Ulid::new();
     }
 
@@ -599,7 +599,7 @@ impl BaseAgent for SAC {
             ("temperature".to_string(), self.alpha),
             (
                 "replay_buffer_len".to_string(),
-                self.transition_buffer.len() as f64,
+                self.replay_buffer.len() as f64,
             ),
         ];
 
@@ -983,7 +983,7 @@ mod tests {
         let obs = Tensor::from_slice(&[0.0, 0.0, 0.0, 0.0]).to_kind(Kind::Float);
         sac.stop_episode_and_train(&obs, reward);
 
-        assert!(sac.transition_buffer.len() > 0);
+        assert!(sac.replay_buffer.len() > 0);
         assert!(sac.latest_actor_loss.is_some());
         assert!(sac.latest_critic1_loss.is_some());
         assert!(sac.latest_critic2_loss.is_some());
@@ -1009,7 +1009,7 @@ mod tests {
         let action = Tensor::from_slice(&[rewarded_action]).to_kind(Kind::Int64);
 
         for _ in 0..6 {
-            sac.transition_buffer.append(
+            let experience = Arc::new(Experience::new(
                 sac.agent_id,
                 sac.current_episode_id,
                 obs.shallow_clone(),
@@ -1017,15 +1017,15 @@ mod tests {
                 None,
                 100.0,
                 false,
-                sac.gamma,
-            );
+            ));
+            sac.replay_buffer.append(experience, sac.gamma);
         }
 
         for _ in 0..200 {
             sac._update();
         }
 
-        assert!(sac.transition_buffer.len() > 0);
+        assert!(sac.replay_buffer.len() > 0);
         assert!(sac.latest_actor_loss.is_some());
         assert!(sac.latest_critic1_loss.is_some());
         assert!(sac.latest_critic2_loss.is_some());
