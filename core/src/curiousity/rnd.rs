@@ -97,7 +97,6 @@ impl BaseCuriousity for RND {
 mod tests {
     use super::*;
     use crate::models::FCRNDModel;
-    use std::sync::Mutex;
     use tch::{nn, nn::OptimizerConfig, Device, Kind};
     use ulid::Ulid;
 
@@ -110,8 +109,6 @@ mod tests {
             None,
             0.0,
             false,
-            Mutex::new(None),
-            Mutex::new(None),
         ))
     }
 

@@ -32,8 +32,6 @@ fn curiosity_experience(state: &Tensor, is_episode_terminal: bool) -> Arc<Experi
         None,
         0.0,
         is_episode_terminal,
-        Mutex::new(None),
-        Mutex::new(None),
     ))
 }
 

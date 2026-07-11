@@ -555,7 +555,7 @@ impl BaseAgent for SAC {
         });
         let action = action.detach().to_device(Device::Cpu);
 
-        self.transition_buffer.append(
+        let experience = Arc::new(Experience::new(
             self.agent_id,
             self.current_episode_id,
             state,
@@ -563,8 +563,8 @@ impl BaseAgent for SAC {
             None,
             reward,
             false,
-            self.gamma,
-        );
+        ));
+        self.transition_buffer.append(experience, self.gamma);
 
         if self.t % self.update_interval == 0 {
             self._update();
@@ -579,7 +579,7 @@ impl BaseAgent for SAC {
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(&vec![obs.shallow_clone()], self.actor.device());
-        self.transition_buffer.append(
+        let experience = Arc::new(Experience::new(
             self.agent_id,
             self.current_episode_id,
             state,
@@ -587,8 +587,8 @@ impl BaseAgent for SAC {
             None,
             reward,
             true,
-            self.gamma,
-        );
+        ));
+        self.transition_buffer.append(experience, self.gamma);
         self.current_episode_id = Ulid::new();
     }
 
@@ -1009,7 +1009,7 @@ mod tests {
         let action = Tensor::from_slice(&[rewarded_action]).to_kind(Kind::Int64);
 
         for _ in 0..6 {
-            sac.transition_buffer.append(
+            let experience = Arc::new(Experience::new(
                 sac.agent_id,
                 sac.current_episode_id,
                 obs.shallow_clone(),
@@ -1017,8 +1017,8 @@ mod tests {
                 None,
                 100.0,
                 false,
-                sac.gamma,
-            );
+            ));
+            sac.transition_buffer.append(experience, sac.gamma);
         }
 
         for _ in 0..200 {

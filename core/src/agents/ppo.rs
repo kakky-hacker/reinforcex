@@ -311,27 +311,19 @@ impl BaseAgent for PPO {
         });
         let action = action_distrib.sample().detach().to_device(Device::Cpu);
 
-        self.buffer.append(
+        let experience = Arc::new(Experience::new(
             self.agent_id,
             self.current_episode_id,
-            state.shallow_clone(),
+            state,
             Some(action.shallow_clone()),
             Some(action_distrib),
             reward,
             false,
-        );
+        ));
+        self.buffer.append(experience.clone());
 
         if let Some(buffer_for_share_experience) = &self.buffer_for_share_experience {
-            buffer_for_share_experience.append(
-                self.agent_id,
-                self.current_episode_id,
-                state,
-                Some(action.shallow_clone()),
-                None,
-                reward,
-                false,
-                self.gamma,
-            );
+            buffer_for_share_experience.append(experience, self.gamma);
         }
 
         if self.t % self.update_interval == 0 {
@@ -343,27 +335,19 @@ impl BaseAgent for PPO {
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
-        self.buffer.append(
+        let experience = Arc::new(Experience::new(
             self.agent_id,
             self.current_episode_id,
-            state.shallow_clone(),
+            state,
             None,
             None,
             reward,
             true,
-        );
+        ));
+        self.buffer.append(experience.clone());
 
         if let Some(buffer_for_share_experience) = &self.buffer_for_share_experience {
-            buffer_for_share_experience.append(
-                self.agent_id,
-                self.current_episode_id,
-                state,
-                None,
-                None,
-                reward,
-                true,
-                self.gamma,
-            );
+            buffer_for_share_experience.append(experience, self.gamma);
         }
         self.current_episode_id = Ulid::new();
     }
@@ -464,6 +448,8 @@ mod tests {
 
         assert_eq!(buffer_for_share_experience.len(), 1);
         let experience = buffer_for_share_experience.sample(1, false).pop().unwrap();
+        let on_policy_experiences = ppo.buffer.flush();
+        assert!(Arc::ptr_eq(&on_policy_experiences[0][0], &experience));
         assert_eq!(experience.state.size(), [1, 4]);
         assert!(experience.action.is_some());
         assert!(!experience.is_episode_terminal);

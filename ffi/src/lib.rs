@@ -900,8 +900,6 @@ fn curiosity_experience(state: Tensor, is_episode_terminal: bool) -> Arc<Experie
         None,
         0.0,
         is_episode_terminal,
-        Mutex::new(None),
-        Mutex::new(None),
     ))
 }
 
@@ -1031,7 +1029,7 @@ fn replay_writer_append_impl(
         Ok(action) => action,
         Err(status) => return status,
     };
-    guard.buffer.append(
+    let experience = Arc::new(Experience::new(
         guard.agent_id,
         guard.current_episode_id,
         state,
@@ -1039,8 +1037,8 @@ fn replay_writer_append_impl(
         None,
         f64::from(reward),
         false,
-        guard.gamma,
-    );
+    ));
+    guard.buffer.append(experience, guard.gamma);
     RX_OK
 }
 
@@ -1060,7 +1058,7 @@ fn replay_writer_stop_episode_impl(id: u64, obs: *const f32, obs_len: u64, rewar
         Ok(obs) => obs,
         Err(status) => return status,
     };
-    guard.buffer.append(
+    let experience = Arc::new(Experience::new(
         guard.agent_id,
         guard.current_episode_id,
         state,
@@ -1068,8 +1066,8 @@ fn replay_writer_stop_episode_impl(id: u64, obs: *const f32, obs_len: u64, rewar
         None,
         f64::from(reward),
         true,
-        guard.gamma,
-    );
+    ));
+    guard.buffer.append(experience, guard.gamma);
     guard.current_episode_id = Ulid::new();
     RX_OK
 }

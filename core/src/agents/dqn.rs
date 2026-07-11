@@ -1,6 +1,6 @@
 use super::base_agent::{ensure_parent_dir, BaseAgent};
 use crate::explorers::BaseExplorer;
-use crate::memory::ReplayBuffer;
+use crate::memory::{Experience, ReplayBuffer};
 use crate::misc::batch_states::batch_states;
 use crate::models::BaseQFunction;
 use crate::selector::BaseSelector;
@@ -177,7 +177,7 @@ impl BaseAgent for DQN {
                 .select_action(self.t, &random_action_func, &greedy_action_func);
         let action = Tensor::from_slice(&[action_idx as i64]).detach();
 
-        let experience = self.transition_buffer.append(
+        let experience = Arc::new(Experience::new(
             self.agent_id,
             self.current_episode_id,
             state,
@@ -185,8 +185,9 @@ impl BaseAgent for DQN {
             None,
             reward,
             false,
-            self.gamma,
-        );
+        ));
+        self.transition_buffer
+            .append(experience.clone(), self.gamma);
 
         if self.selector.is_some() {
             self.selector.as_ref().unwrap().observe(experience.as_ref());
@@ -203,7 +204,7 @@ impl BaseAgent for DQN {
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
         let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
-        self.transition_buffer.append(
+        let experience = Arc::new(Experience::new(
             self.agent_id,
             self.current_episode_id,
             state,
@@ -211,8 +212,8 @@ impl BaseAgent for DQN {
             None,
             reward,
             true,
-            self.gamma,
-        );
+        ));
+        self.transition_buffer.append(experience, self.gamma);
         self.current_episode_id = Ulid::new();
     }
 

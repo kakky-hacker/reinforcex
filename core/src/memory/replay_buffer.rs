@@ -2,10 +2,8 @@ use super::experience::Experience;
 use crate::misc::bounded_vec_deque::BoundedVecDeque;
 use crate::misc::cumsum;
 use crate::misc::random_access_queue::RandomAccessQueue;
-use crate::prob_distributions::BaseDistribution;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tch::Tensor;
 use ulid::Ulid;
 
 #[derive(Clone)]
@@ -26,33 +24,11 @@ impl ReplayBuffer {
         }
     }
 
-    pub fn append(
-        &self,
-        agent_id: Ulid,
-        episode_id: Ulid,
-        state: Tensor,
-        action: Option<Tensor>,
-        action_distrib: Option<Box<dyn BaseDistribution>>,
-        reward: f64,
-        is_episode_terminal: bool,
-        gamma: f64,
-    ) -> Arc<Experience> {
-        let experience = Arc::new(Experience::new(
-            agent_id,
-            episode_id,
-            state,
-            action,
-            action_distrib,
-            reward,
-            is_episode_terminal,
-            Mutex::new(None),
-            Mutex::new(None),
-        ));
-
+    pub fn append(&self, experience: Arc<Experience>, gamma: f64) {
         let mut last_n_experiences_by_episode = self.last_n_experiences_by_episode.lock().unwrap();
 
         let last_n_experiences = last_n_experiences_by_episode
-            .entry(episode_id)
+            .entry(experience.episode_id)
             .or_insert_with(|| BoundedVecDeque::new(self.n_steps));
 
         if let Some(exp) = last_n_experiences.push_back(experience.clone()) {
@@ -71,8 +47,10 @@ impl ReplayBuffer {
             self.experiences.lock().unwrap().append(exp);
         }
 
-        if is_episode_terminal {
-            if let Some(last_n_experiences) = last_n_experiences_by_episode.remove(&episode_id) {
+        if experience.is_episode_terminal {
+            if let Some(last_n_experiences) =
+                last_n_experiences_by_episode.remove(&experience.episode_id)
+            {
                 let mut rewards = last_n_experiences
                     .clone_deque()
                     .into_iter()
@@ -94,8 +72,6 @@ impl ReplayBuffer {
                 }
             }
         }
-
-        experience
     }
 
     pub fn sample(&self, num_experiences: usize, replacement: bool) -> Vec<Arc<Experience>> {
@@ -139,6 +115,23 @@ mod tests {
     use std::{sync::Arc, thread::sleep, time::Duration};
     use tch::Tensor;
 
+    fn experience(
+        episode_id: Ulid,
+        state: Tensor,
+        reward: f64,
+        is_episode_terminal: bool,
+    ) -> Arc<Experience> {
+        Arc::new(Experience::new(
+            episode_id,
+            episode_id,
+            state,
+            None,
+            None,
+            reward,
+            is_episode_terminal,
+        ))
+    }
+
     #[test]
     fn test_replay_buffer_new() {
         let buffer = ReplayBuffer::new(100, 5);
@@ -151,35 +144,17 @@ mod tests {
         let state = Tensor::from_slice(&[1.0]);
         let episode_id = Ulid::new();
         buffer.append(
-            episode_id,
-            episode_id,
-            state.shallow_clone(),
-            None,
-            None,
-            1.0,
-            false,
+            experience(episode_id, state.shallow_clone(), 1.0, false),
             1.0,
         );
         assert_eq!(buffer.len(), 0);
         buffer.append(
-            episode_id,
-            episode_id,
-            state.shallow_clone(),
-            None,
-            None,
-            1.0,
-            false,
+            experience(episode_id, state.shallow_clone(), 1.0, false),
             1.0,
         );
         assert_eq!(buffer.len(), 1);
         buffer.append(
-            episode_id,
-            episode_id,
-            state.shallow_clone(),
-            None,
-            None,
-            1.0,
-            false,
+            experience(episode_id, state.shallow_clone(), 1.0, false),
             1.0,
         );
         assert_eq!(buffer.len(), 2);
@@ -191,13 +166,7 @@ mod tests {
         let state = Tensor::from_slice(&[1.0]);
         let episode_id = Ulid::new();
         buffer.append(
-            episode_id,
-            episode_id,
-            state.shallow_clone(),
-            None,
-            None,
-            1.0,
-            true,
+            experience(episode_id, state.shallow_clone(), 1.0, true),
             1.0,
         );
     }
@@ -208,9 +177,7 @@ mod tests {
         let episode_id = Ulid::new();
         for i in 0..10 {
             let state = Tensor::from_slice(&[i as f64]);
-            buffer.append(
-                episode_id, episode_id, state, None, None, i as f64, false, 1.0,
-            );
+            buffer.append(experience(episode_id, state, i as f64, false), 1.0);
         }
         let samples = buffer.sample(3, false);
         assert_eq!(samples.len(), 3);
@@ -222,16 +189,7 @@ mod tests {
         let episode_id = Ulid::new();
         for i in 0..5 {
             let state = Tensor::from_slice(&[i as f64]);
-            buffer.append(
-                episode_id,
-                episode_id,
-                state,
-                None,
-                None,
-                i as f64,
-                i == 4,
-                1.0,
-            );
+            buffer.append(experience(episode_id, state, i as f64, i == 4), 1.0);
         }
         let last_n_experiences_by_episode = buffer.last_n_experiences_by_episode.lock().unwrap();
         assert_eq!(
@@ -259,78 +217,15 @@ mod tests {
         let episode1_id = Ulid::new();
         let episode2_id = Ulid::new();
 
-        buffer.append(
-            episode1_id,
-            episode1_id,
-            state1,
-            None,
-            None,
-            0.0,
-            false,
-            0.9,
-        );
-        buffer.append(
-            episode1_id,
-            episode1_id,
-            state2,
-            None,
-            None,
-            2.0,
-            false,
-            0.9,
-        );
-        buffer.append(episode1_id, episode1_id, state3, None, None, 3.0, true, 0.9);
-        buffer.append(
-            episode2_id,
-            episode2_id,
-            state4,
-            None,
-            None,
-            0.0,
-            false,
-            0.9,
-        );
-        buffer.append(
-            episode2_id,
-            episode2_id,
-            state5,
-            None,
-            None,
-            0.0,
-            false,
-            0.9,
-        );
-        buffer.append(
-            episode2_id,
-            episode2_id,
-            state6,
-            None,
-            None,
-            0.0,
-            false,
-            0.9,
-        );
-        buffer.append(
-            episode2_id,
-            episode2_id,
-            state7,
-            None,
-            None,
-            0.0,
-            false,
-            0.9,
-        );
-        buffer.append(
-            episode2_id,
-            episode2_id,
-            state8,
-            None,
-            None,
-            0.0,
-            false,
-            0.9,
-        );
-        buffer.append(episode2_id, episode2_id, state9, None, None, 5.0, true, 0.9);
+        buffer.append(experience(episode1_id, state1, 0.0, false), 0.9);
+        buffer.append(experience(episode1_id, state2, 2.0, false), 0.9);
+        buffer.append(experience(episode1_id, state3, 3.0, true), 0.9);
+        buffer.append(experience(episode2_id, state4, 0.0, false), 0.9);
+        buffer.append(experience(episode2_id, state5, 0.0, false), 0.9);
+        buffer.append(experience(episode2_id, state6, 0.0, false), 0.9);
+        buffer.append(experience(episode2_id, state7, 0.0, false), 0.9);
+        buffer.append(experience(episode2_id, state8, 0.0, false), 0.9);
+        buffer.append(experience(episode2_id, state9, 5.0, true), 0.9);
 
         for experience in buffer.sample(7, false) {
             let n_step_discounted_reward = *experience.n_step_discounted_reward.lock().unwrap();
@@ -380,7 +275,7 @@ mod tests {
             let episode_id = Ulid::new();
             for j in 1..100 {
                 let state = Tensor::from_slice(&[i as f64, j as f64]);
-                buffer.append(episode_id, episode_id, state, None, None, 1.0, false, 0.99);
+                buffer.append(experience(episode_id, state, 1.0, false), 0.99);
                 sleep(Duration::from_millis(1));
 
                 if j % 10 == 0 {

@@ -27,8 +27,6 @@ impl Experience {
         action_distrib: Option<Box<dyn BaseDistribution>>,
         reward: f64,
         is_episode_terminal: bool,
-        n_step_discounted_reward: Mutex<Option<f64>>,
-        n_step_after_experience: Mutex<Option<Arc<Experience>>>,
     ) -> Self {
         Self {
             agent_id,
@@ -38,8 +36,8 @@ impl Experience {
             action_distrib,
             reward,
             is_episode_terminal,
-            n_step_discounted_reward,
-            n_step_after_experience,
+            n_step_discounted_reward: Mutex::new(None),
+            n_step_after_experience: Mutex::new(None),
         }
     }
 }
