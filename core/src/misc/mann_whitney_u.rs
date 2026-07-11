@@ -50,7 +50,13 @@ pub fn mann_whitney_u(a: &[f64], b: &[f64], threshold: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::Rng;
+    use rand::{rngs::StdRng, Rng, SeedableRng};
+
+    const TEST_SEED: u64 = 42;
+
+    fn seeded_rng() -> StdRng {
+        StdRng::seed_from_u64(TEST_SEED)
+    }
 
     #[test]
     fn test_mann_whitney_u_obvious_difference() {
@@ -75,66 +81,52 @@ mod tests {
 
     #[test]
     fn test_mann_whitney_u_random_30000_samples() {
-        let a: Vec<f64> = (0..30000)
-            .map(|_| rand::thread_rng().gen::<f64>())
-            .collect();
-        let b: Vec<f64> = (0..30000)
-            .map(|_| rand::thread_rng().gen::<f64>())
-            .collect();
+        let mut rng = seeded_rng();
+        let a: Vec<f64> = (0..30000).map(|_| rng.gen::<f64>()).collect();
+        let b: Vec<f64> = (0..30000).map(|_| rng.gen::<f64>()).collect();
         assert!(!mann_whitney_u(&a, &b, -1.96));
     }
 
     #[test]
     fn test_mann_whitney_u_random_30000_samples_with_difference_bias() {
-        let a: Vec<f64> = (0..30000)
-            .map(|_| rand::thread_rng().gen::<f64>())
-            .collect();
-        let b: Vec<f64> = (0..30000)
-            .map(|_| rand::thread_rng().gen::<f64>() + 0.1)
-            .collect();
+        let mut rng = seeded_rng();
+        let a: Vec<f64> = (0..30000).map(|_| rng.gen::<f64>()).collect();
+        let b: Vec<f64> = (0..30000).map(|_| rng.gen::<f64>() + 0.1).collect();
         assert!(mann_whitney_u(&a, &b, -1.96));
     }
 
     #[test]
     fn test_mann_whitney_u_random_15000_vs_30000_samples() {
-        let a: Vec<f64> = (0..15000)
-            .map(|_| rand::thread_rng().gen::<f64>())
-            .collect();
-        let b: Vec<f64> = (0..30000)
-            .map(|_| rand::thread_rng().gen::<f64>())
-            .collect();
+        let mut rng = seeded_rng();
+        let a: Vec<f64> = (0..15000).map(|_| rng.gen::<f64>()).collect();
+        let b: Vec<f64> = (0..30000).map(|_| rng.gen::<f64>()).collect();
         assert!(!mann_whitney_u(&a, &b, -1.96));
     }
 
     #[test]
     fn test_mann_whitney_u_random_15000_vs_30000_samples_with_difference_bias() {
-        let a: Vec<f64> = (0..15000)
-            .map(|_| rand::thread_rng().gen::<f64>())
-            .collect();
-        let b: Vec<f64> = (0..30000)
-            .map(|_| rand::thread_rng().gen::<f64>() + 0.1)
-            .collect();
+        let mut rng = seeded_rng();
+        let a: Vec<f64> = (0..15000).map(|_| rng.gen::<f64>()).collect();
+        let b: Vec<f64> = (0..30000).map(|_| rng.gen::<f64>() + 0.1).collect();
         assert!(mann_whitney_u(&a, &b, -1.96));
     }
 
     #[test]
     fn test_mann_whitney_u_random_300000_samples_with_difference_var() {
-        let a: Vec<f64> = (0..300000)
-            .map(|_| rand::thread_rng().gen::<f64>() * 2.0)
-            .collect();
+        let mut rng = seeded_rng();
+        let a: Vec<f64> = (0..300000).map(|_| rng.gen::<f64>() * 2.0).collect();
         let b: Vec<f64> = (0..300000)
-            .map(|_| rand::thread_rng().gen::<f64>() + rand::thread_rng().gen::<f64>())
+            .map(|_| rng.gen::<f64>() + rng.gen::<f64>())
             .collect();
         assert!(!mann_whitney_u(&a, &b, -1.96));
     }
 
     #[test]
     fn test_mann_whitney_u_random_300000_samples_with_difference_bias_and_var() {
-        let a: Vec<f64> = (0..300000)
-            .map(|_| rand::thread_rng().gen::<f64>() * 2.0)
-            .collect();
+        let mut rng = seeded_rng();
+        let a: Vec<f64> = (0..300000).map(|_| rng.gen::<f64>() * 2.0).collect();
         let b: Vec<f64> = (0..300000)
-            .map(|_| rand::thread_rng().gen::<f64>() + rand::thread_rng().gen::<f64>() + 0.1)
+            .map(|_| rng.gen::<f64>() + rng.gen::<f64>() + 0.1)
             .collect();
         assert!(mann_whitney_u(&a, &b, -1.96));
     }
