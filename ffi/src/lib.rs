@@ -5,7 +5,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use dashmap::DashMap;
 use reinforcex::agents::{BaseAgent, DQN, PPO, SAC};
-use reinforcex::curiousity::{BaseCuriousity, RND};
+use reinforcex::curiosity::{Basecuriosity, RND};
 use reinforcex::explorers::EpsilonGreedy;
 use reinforcex::memory::{Experience, ReplayBuffer};
 use reinforcex::models::{

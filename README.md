@@ -209,7 +209,7 @@ optimizer must be built from the predictor variable store after the model has
 registered its layers.
 
 ```rust
-use reinforcex::curiousity::RND;
+use reinforcex::curiosity::RND;
 use reinforcex::models::FCRNDModel;
 use tch::{nn, nn::OptimizerConfig, Device};
 
@@ -240,7 +240,7 @@ let mut curiosity = RND::new(
 `RND::calc_reward` evaluates predictor error without gradients.
 `RND::observe` buffers the state and updates the predictor whenever
 `update_interval` observations have accumulated. Both methods are provided by
-the `BaseCuriousity` trait. RND checkpoints contain `rnd_predictor.ot` and
+the `Basecuriosity` trait. RND checkpoints contain `rnd_predictor.ot` and
 `rnd_target.ot` in the configured directory.
 
 # Sample experiments

@@ -1,6 +1,6 @@
 use rayon::prelude::*;
 use reinforcex::agents::{BaseAgent, PPO};
-use reinforcex::curiousity::{BaseCuriousity, RND};
+use reinforcex::curiosity::{Basecuriosity, RND};
 use reinforcex::memory::Experience;
 use reinforcex::models::{FCRNDModel, FCSoftmaxPolicyWithValue};
 use reqwest::blocking::Client;

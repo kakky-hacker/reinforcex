@@ -1,13 +1,13 @@
-use super::base_curiousity::BaseCuriousity;
+use super::base_curiosity::Basecuriosity;
 use crate::memory::Experience;
 use crate::misc::batch_states::batch_states;
 use crate::misc::bounded_vec_deque::BoundedVecDeque;
-use crate::models::BaseCuriousityModel;
+use crate::models::BasecuriosityModel;
 use std::sync::Arc;
 use tch::{nn, no_grad, Kind, Tensor};
 
 pub struct RND {
-    model: Box<dyn BaseCuriousityModel + Send>,
+    model: Box<dyn BasecuriosityModel + Send>,
     optimizer: nn::Optimizer,
     experiences: BoundedVecDeque<Arc<Experience>>,
     update_interval: usize,
@@ -17,7 +17,7 @@ pub struct RND {
 
 impl RND {
     pub fn new(
-        model: Box<dyn BaseCuriousityModel + Send>,
+        model: Box<dyn BasecuriosityModel + Send>,
         optimizer: nn::Optimizer,
         update_interval: usize,
         save_path: Option<String>,
@@ -58,7 +58,7 @@ impl RND {
     }
 }
 
-impl BaseCuriousity for RND {
+impl Basecuriosity for RND {
     fn calc_reward(&self, experience: Arc<Experience>) -> Tensor {
         no_grad(|| {
             self.model

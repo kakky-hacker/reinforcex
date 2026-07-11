@@ -1,4 +1,4 @@
-use super::base_curiousity_model::BaseCuriousityModel;
+use super::base_curiosity_model::BasecuriosityModel;
 use crate::misc::weight_initializer::{he_init, xavier_init};
 use std::fs;
 use std::path::Path as StdPath;
@@ -137,7 +137,7 @@ impl FCRNDModel {
     }
 }
 
-impl BaseCuriousityModel for FCRNDModel {
+impl BasecuriosityModel for FCRNDModel {
     fn forward(&self, x: &Tensor) -> Tensor {
         let predictor_feature = self.predictor_forward(x);
         let target_feature = no_grad(|| self.target_forward(x)).detach();
