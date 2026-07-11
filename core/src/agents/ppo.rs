@@ -1,11 +1,12 @@
 use super::base_agent::{ensure_parent_dir, BaseAgent};
-use crate::memory::{Experience, OnPolicyBuffer, ReplayBuffer};
+use crate::memory::{Experience, ReplayBuffer};
 use crate::misc::batch_states::batch_states;
+use crate::misc::bounded_vec_deque::BoundedVecDeque;
 use crate::misc::cumsum::cumsum_rev;
 use crate::models::BasePolicy;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tch::{nn, no_grad, Device, Kind, Tensor};
 use ulid::Ulid;
 
@@ -15,7 +16,7 @@ pub struct PPO {
     agent_id: Ulid,
     model: Box<dyn BasePolicy>,
     optimizer: nn::Optimizer,
-    buffer: OnPolicyBuffer,
+    experiences_by_episode: HashMap<Ulid, BoundedVecDeque<Arc<Experience>>>,
     buffer_for_share_experience: Option<Arc<ReplayBuffer>>,
     gamma: f64,
     lambda: f64,
@@ -93,7 +94,7 @@ impl PPO {
             agent_id: Ulid::new(),
             model,
             optimizer,
-            buffer: OnPolicyBuffer::new(),
+            experiences_by_episode: HashMap::new(),
             buffer_for_share_experience,
             gamma,
             lambda,
@@ -115,7 +116,11 @@ impl PPO {
     }
 
     fn _update(&mut self) {
-        let experiences_per_episode: Vec<Vec<Arc<Experience>>> = self.buffer.flush();
+        let experiences_per_episode = self
+            .experiences_by_episode
+            .drain()
+            .map(|(_episode_id, experiences)| experiences.to_vec())
+            .collect::<Vec<Vec<Arc<Experience>>>>();
 
         let total_transitions = experiences_per_episode
             .iter()
@@ -320,7 +325,10 @@ impl BaseAgent for PPO {
             reward,
             false,
         ));
-        self.buffer.append(experience.clone());
+        self.experiences_by_episode
+            .entry(experience.episode_id)
+            .or_insert_with(|| BoundedVecDeque::new(1e9 as usize))
+            .push_back(experience.clone());
 
         if let Some(buffer_for_share_experience) = &self.buffer_for_share_experience {
             buffer_for_share_experience.append(experience, self.gamma);
@@ -344,7 +352,10 @@ impl BaseAgent for PPO {
             reward,
             true,
         ));
-        self.buffer.append(experience.clone());
+        self.experiences_by_episode
+            .entry(experience.episode_id)
+            .or_insert_with(|| BoundedVecDeque::new(1e9 as usize))
+            .push_back(experience.clone());
 
         if let Some(buffer_for_share_experience) = &self.buffer_for_share_experience {
             buffer_for_share_experience.append(experience, self.gamma);
@@ -448,8 +459,12 @@ mod tests {
 
         assert_eq!(buffer_for_share_experience.len(), 1);
         let experience = buffer_for_share_experience.sample(1, false).pop().unwrap();
-        let on_policy_experiences = ppo.buffer.flush();
-        assert!(Arc::ptr_eq(&on_policy_experiences[0][0], &experience));
+        let on_policy_experiences = ppo
+            .experiences_by_episode
+            .get(&experience.episode_id)
+            .unwrap()
+            .to_vec();
+        assert!(Arc::ptr_eq(&on_policy_experiences[0], &experience));
         assert_eq!(experience.state.size(), [1, 4]);
         assert!(experience.action.is_some());
         assert!(!experience.is_episode_terminal);
