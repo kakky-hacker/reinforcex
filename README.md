@@ -111,11 +111,11 @@ let target_update_interval = 100;
 let replay_buffer_capacity = 2_000;
 
 let explorer = EpsilonGreedy::new(0.5, 0.1, 50_000);
-let transition_buffer = Arc::new(ReplayBuffer::new(replay_buffer_capacity, n_steps));
+let replay_buffer = Arc::new(ReplayBuffer::new(replay_buffer_capacity, n_steps));
 
 let mut agent = DQN::new(
     model,
-    transition_buffer,
+    replay_buffer,
     optimizer,
     action_size as usize,
     batch_size,
