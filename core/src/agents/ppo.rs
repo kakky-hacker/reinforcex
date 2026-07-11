@@ -1,5 +1,5 @@
 use super::base_agent::{ensure_parent_dir, BaseAgent};
-use crate::memory::{Experience, OnPolicyBuffer};
+use crate::memory::{Experience, OnPolicyBuffer, ReplayBuffer};
 use crate::misc::batch_states::batch_states;
 use crate::misc::cumsum::cumsum_rev;
 use crate::models::BasePolicy;
@@ -16,6 +16,7 @@ pub struct PPO {
     model: Box<dyn BasePolicy>,
     optimizer: nn::Optimizer,
     buffer: OnPolicyBuffer,
+    buffer_for_share_experience: Option<Arc<ReplayBuffer>>,
     gamma: f64,
     lambda: f64,
     update_interval: usize,
@@ -51,12 +52,49 @@ impl PPO {
         save_path: Option<String>,
         load_path: Option<String>,
     ) -> Self {
+        Self::new_with_buffer_for_share_experience(
+            model,
+            optimizer,
+            gamma,
+            lambda,
+            update_interval,
+            epoch,
+            minibatch_size,
+            policy_clip_epsilon,
+            value_clip_range,
+            value_coef,
+            entropy_coef,
+            gae_std,
+            None,
+            save_path,
+            load_path,
+        )
+    }
+
+    pub fn new_with_buffer_for_share_experience(
+        model: Box<dyn BasePolicy>,
+        optimizer: nn::Optimizer,
+        gamma: f64,
+        lambda: f64,
+        update_interval: usize,
+        epoch: usize,
+        minibatch_size: usize,
+        policy_clip_epsilon: f64,
+        value_clip_range: f64,
+        value_coef: f64,
+        entropy_coef: f64,
+        gae_std: bool,
+        buffer_for_share_experience: Option<Arc<ReplayBuffer>>,
+        save_path: Option<String>,
+        load_path: Option<String>,
+    ) -> Self {
         assert!(minibatch_size <= update_interval);
         let mut agent = PPO {
             agent_id: Ulid::new(),
             model,
             optimizer,
             buffer: OnPolicyBuffer::new(),
+            buffer_for_share_experience,
             gamma,
             lambda,
             update_interval,
@@ -276,12 +314,25 @@ impl BaseAgent for PPO {
         self.buffer.append(
             self.agent_id,
             self.current_episode_id,
-            state,
+            state.shallow_clone(),
             Some(action.shallow_clone()),
             Some(action_distrib),
             reward,
             false,
         );
+
+        if let Some(buffer_for_share_experience) = &self.buffer_for_share_experience {
+            buffer_for_share_experience.append(
+                self.agent_id,
+                self.current_episode_id,
+                state,
+                Some(action.shallow_clone()),
+                None,
+                reward,
+                false,
+                self.gamma,
+            );
+        }
 
         if self.t % self.update_interval == 0 {
             self._update();
@@ -295,12 +346,25 @@ impl BaseAgent for PPO {
         self.buffer.append(
             self.agent_id,
             self.current_episode_id,
-            state,
+            state.shallow_clone(),
             None,
             None,
             reward,
             true,
         );
+
+        if let Some(buffer_for_share_experience) = &self.buffer_for_share_experience {
+            buffer_for_share_experience.append(
+                self.agent_id,
+                self.current_episode_id,
+                state,
+                None,
+                None,
+                reward,
+                true,
+                self.gamma,
+            );
+        }
         self.current_episode_id = Ulid::new();
     }
 
@@ -335,7 +399,9 @@ impl BaseAgent for PPO {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::ReplayBuffer;
     use crate::models::FCSoftmaxPolicyWithValue;
+    use std::sync::Arc;
     use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
     #[test]
@@ -365,6 +431,57 @@ mod tests {
         assert_eq!(ppo.epoch, 8);
         assert_eq!(ppo.gamma, 0.99);
         assert_eq!(ppo.t, 0);
+        assert!(ppo.buffer_for_share_experience.is_none());
+    }
+
+    #[test]
+    fn test_ppo_shares_experience_with_replay_buffer() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+        let model = FCSoftmaxPolicyWithValue::new(vs, 4, 2, 2, 64, 0.0);
+        let buffer_for_share_experience = Arc::new(ReplayBuffer::new(100, 1));
+        let mut ppo = PPO::new_with_buffer_for_share_experience(
+            Box::new(model),
+            optimizer,
+            0.99,
+            0.99,
+            100,
+            8,
+            16,
+            0.1,
+            0.2,
+            1.0,
+            1.0,
+            false,
+            Some(buffer_for_share_experience.clone()),
+            None,
+            None,
+        );
+
+        let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
+        let _ = ppo.act_and_train(&obs, 0.0);
+        ppo.stop_episode_and_train(&obs, 1.0);
+
+        assert_eq!(buffer_for_share_experience.len(), 1);
+        let experience = buffer_for_share_experience.sample(1, false).pop().unwrap();
+        assert_eq!(experience.state.size(), [1, 4]);
+        assert!(experience.action.is_some());
+        assert!(!experience.is_episode_terminal);
+        assert_eq!(experience.reward, 0.0);
+        assert_eq!(
+            experience
+                .n_step_after_experience
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .is_episode_terminal,
+            true
+        );
+        assert_eq!(
+            *experience.n_step_discounted_reward.lock().unwrap(),
+            Some(1.0)
+        );
     }
 
     #[test]
