@@ -1099,7 +1099,9 @@ fn rnd_calc_reward_impl(
         Err(status) => return status,
     };
     let experience = curiosity_experience(state, is_episode_terminal != 0);
-    let reward = guard.rnd.calc_reward(Arc::clone(&experience));
+    let reward = guard
+        .rnd
+        .calc_internal_reward(std::slice::from_ref(&experience));
     let reward = reward
         .to_device(Device::Cpu)
         .mean(Kind::Float)

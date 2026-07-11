@@ -1,6 +1,5 @@
 use super::train_lunar_lander_with_ppo_rnd::{build_curiosity, run_agent_on_env};
 use rayon::prelude::*;
-use reinforcex::curiosity::Basecuriosity;
 use std::sync::{Arc, Mutex};
 use tch::Device;
 
@@ -28,9 +27,6 @@ pub fn train_lunar_lander_with_ppo_shared_rnd(
             super::path_for_agent(&save_path, i),
             super::path_for_agent(&load_path, i),
             Arc::clone(&curiosity),
-            i == 0,
         )
     });
-
-    curiosity.lock().unwrap().save();
 }

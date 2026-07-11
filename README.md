@@ -237,7 +237,8 @@ let mut curiosity = RND::new(
 );
 ```
 
-`RND::calc_reward` evaluates predictor error without gradients.
+`RND::calc_internal_reward` evaluates predictor error for a batch of
+experiences without gradients.
 `RND::observe` buffers the state and updates the predictor whenever
 `update_interval` observations have accumulated. Both methods are provided by
 the `Basecuriosity` trait. RND checkpoints contain `rnd_predictor.ot` and

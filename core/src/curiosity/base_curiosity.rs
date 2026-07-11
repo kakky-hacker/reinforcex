@@ -1,10 +1,46 @@
 use crate::memory::Experience;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tch::Tensor;
 
 pub trait Basecuriosity {
-    fn calc_reward(&self, experience: Arc<Experience>) -> Tensor;
+    fn calc_internal_reward(&self, experiences: &[Arc<Experience>]) -> Tensor;
     fn observe(&mut self, experience: Arc<Experience>);
     fn save(&self);
     fn load(&mut self);
+}
+
+impl<T: Basecuriosity + ?Sized> Basecuriosity for Box<T> {
+    fn calc_internal_reward(&self, experiences: &[Arc<Experience>]) -> Tensor {
+        (**self).calc_internal_reward(experiences)
+    }
+
+    fn observe(&mut self, experience: Arc<Experience>) {
+        (**self).observe(experience)
+    }
+
+    fn save(&self) {
+        (**self).save()
+    }
+
+    fn load(&mut self) {
+        (**self).load()
+    }
+}
+
+impl<T: Basecuriosity + ?Sized> Basecuriosity for Arc<Mutex<T>> {
+    fn calc_internal_reward(&self, experiences: &[Arc<Experience>]) -> Tensor {
+        self.lock().unwrap().calc_internal_reward(experiences)
+    }
+
+    fn observe(&mut self, experience: Arc<Experience>) {
+        self.lock().unwrap().observe(experience)
+    }
+
+    fn save(&self) {
+        self.lock().unwrap().save()
+    }
+
+    fn load(&mut self) {
+        self.lock().unwrap().load()
+    }
 }

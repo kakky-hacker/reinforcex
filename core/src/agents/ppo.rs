@@ -1,4 +1,5 @@
 use super::base_agent::{ensure_parent_dir, BaseAgent};
+use crate::curiosity::Basecuriosity;
 use crate::memory::{Experience, ReplayBuffer};
 use crate::misc::batch_states::batch_states;
 use crate::misc::bounded_vec_deque::BoundedVecDeque;
@@ -18,6 +19,8 @@ pub struct PPO {
     optimizer: nn::Optimizer,
     experiences_by_episode: HashMap<Ulid, BoundedVecDeque<Arc<Experience>>>,
     buffer_for_share_experience: Option<Arc<ReplayBuffer>>,
+    curiosity: Option<Box<dyn Basecuriosity>>,
+    curiosity_reward_coef: f64,
     gamma: f64,
     lambda: f64,
     update_interval: usize,
@@ -53,49 +56,15 @@ impl PPO {
         save_path: Option<String>,
         load_path: Option<String>,
     ) -> Self {
-        Self::new_with_buffer_for_share_experience(
-            model,
-            optimizer,
-            gamma,
-            lambda,
-            update_interval,
-            epoch,
-            minibatch_size,
-            policy_clip_epsilon,
-            value_clip_range,
-            value_coef,
-            entropy_coef,
-            gae_std,
-            None,
-            save_path,
-            load_path,
-        )
-    }
-
-    pub fn new_with_buffer_for_share_experience(
-        model: Box<dyn BasePolicy>,
-        optimizer: nn::Optimizer,
-        gamma: f64,
-        lambda: f64,
-        update_interval: usize,
-        epoch: usize,
-        minibatch_size: usize,
-        policy_clip_epsilon: f64,
-        value_clip_range: f64,
-        value_coef: f64,
-        entropy_coef: f64,
-        gae_std: bool,
-        buffer_for_share_experience: Option<Arc<ReplayBuffer>>,
-        save_path: Option<String>,
-        load_path: Option<String>,
-    ) -> Self {
         assert!(minibatch_size <= update_interval);
         let mut agent = PPO {
             agent_id: Ulid::new(),
             model,
             optimizer,
             experiences_by_episode: HashMap::new(),
-            buffer_for_share_experience,
+            buffer_for_share_experience: None,
+            curiosity: None,
+            curiosity_reward_coef: 0.0,
             gamma,
             lambda,
             update_interval,
@@ -113,6 +82,54 @@ impl PPO {
         };
         agent.load();
         agent
+    }
+
+    pub fn add_replay_buffer_for_share_experience(
+        &mut self,
+        buffer_for_share_experience: Arc<ReplayBuffer>,
+    ) {
+        self.buffer_for_share_experience = Some(buffer_for_share_experience);
+    }
+
+    pub fn add_curiosity<C: Basecuriosity + 'static>(
+        &mut self,
+        curiosity: C,
+        curiosity_reward_coef: f64,
+    ) {
+        assert!(curiosity_reward_coef.is_finite());
+        self.curiosity = Some(Box::new(curiosity));
+        self.curiosity_reward_coef = curiosity_reward_coef;
+    }
+
+    fn _compute_rewards(&mut self, experiences: &[Arc<Experience>]) -> Tensor {
+        let device = self.model.device();
+        let extrinsic_rewards = Tensor::from_slice(
+            &experiences
+                .iter()
+                .map(|experience| experience.reward)
+                .collect::<Vec<f64>>(),
+        )
+        .to_device(device);
+
+        if experiences.is_empty() {
+            return extrinsic_rewards;
+        }
+
+        let Some(curiosity) = self.curiosity.as_mut() else {
+            return extrinsic_rewards;
+        };
+
+        let intrinsic_rewards = curiosity
+            .calc_internal_reward(experiences)
+            .to_device(device)
+            .view([-1]);
+        assert_eq!(intrinsic_rewards.numel(), experiences.len());
+
+        for experience in experiences {
+            curiosity.observe(Arc::clone(experience));
+        }
+
+        extrinsic_rewards + self.curiosity_reward_coef * intrinsic_rewards
     }
 
     fn _update(&mut self) {
@@ -178,9 +195,7 @@ impl PPO {
             self.model.device(),
         );
         let action = _action.view([total_transitions as i64, *_action.size().last().unwrap()]);
-        let reward =
-            Tensor::from_slice(&_skip_first.iter().map(|e| e.reward).collect::<Vec<f64>>())
-                .to_device(self.model.device());
+        let reward = self._compute_rewards(&_skip_first);
 
         let (old_action_distrib, old_value) = self.model.forward(&state);
         let old_value = old_value.unwrap().flatten(0, 1).detach();
@@ -373,11 +388,13 @@ impl BaseAgent for PPO {
 
     fn save(&self) {
         if let Some(path) = &self.save_path {
-            if path.is_empty() {
-                return;
+            if !path.is_empty() {
+                ensure_parent_dir(path);
+                self.model.save(path);
             }
-            ensure_parent_dir(path);
-            self.model.save(path);
+        }
+        if let Some(curiosity) = &self.curiosity {
+            curiosity.save();
         }
     }
 
@@ -396,8 +413,36 @@ mod tests {
     use super::*;
     use crate::memory::ReplayBuffer;
     use crate::models::FCSoftmaxPolicyWithValue;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
     use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
+
+    struct ConstantCuriosity {
+        reward: f64,
+        calc_count: Arc<AtomicUsize>,
+        observe_count: Arc<AtomicUsize>,
+    }
+
+    impl Basecuriosity for ConstantCuriosity {
+        fn calc_internal_reward(&self, experiences: &[Arc<Experience>]) -> Tensor {
+            self.calc_count.fetch_add(1, Ordering::Relaxed);
+            Tensor::full(
+                [experiences.len() as i64],
+                self.reward,
+                (Kind::Double, Device::Cpu),
+            )
+        }
+
+        fn observe(&mut self, _experience: Arc<Experience>) {
+            self.observe_count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn save(&self) {}
+
+        fn load(&mut self) {}
+    }
 
     #[test]
     fn test_ppo_new() {
@@ -427,6 +472,7 @@ mod tests {
         assert_eq!(ppo.gamma, 0.99);
         assert_eq!(ppo.t, 0);
         assert!(ppo.buffer_for_share_experience.is_none());
+        assert!(ppo.curiosity.is_none());
     }
 
     #[test]
@@ -435,7 +481,7 @@ mod tests {
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCSoftmaxPolicyWithValue::new(vs, 4, 2, 2, 64, 0.0);
         let buffer_for_share_experience = Arc::new(ReplayBuffer::new(100, 1));
-        let mut ppo = PPO::new_with_buffer_for_share_experience(
+        let mut ppo = PPO::new(
             Box::new(model),
             optimizer,
             0.99,
@@ -448,10 +494,10 @@ mod tests {
             1.0,
             1.0,
             false,
-            Some(buffer_for_share_experience.clone()),
             None,
             None,
         );
+        ppo.add_replay_buffer_for_share_experience(buffer_for_share_experience.clone());
 
         let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
         let _ = ppo.act_and_train(&obs, 0.0);
@@ -483,6 +529,65 @@ mod tests {
             *experience.n_step_discounted_reward.lock().unwrap(),
             Some(1.0)
         );
+    }
+
+    #[test]
+    fn test_ppo_adds_curiosity_reward_and_observes_experience() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+        let model = FCSoftmaxPolicyWithValue::new(vs, 4, 2, 2, 64, 0.0);
+        let calc_count = Arc::new(AtomicUsize::new(0));
+        let observe_count = Arc::new(AtomicUsize::new(0));
+        let mut ppo = PPO::new(
+            Box::new(model),
+            optimizer,
+            0.99,
+            0.99,
+            100,
+            8,
+            16,
+            0.1,
+            0.2,
+            1.0,
+            1.0,
+            false,
+            None,
+            None,
+        );
+        ppo.add_curiosity(
+            Box::new(ConstantCuriosity {
+                reward: 4.0,
+                calc_count: calc_count.clone(),
+                observe_count: observe_count.clone(),
+            }),
+            0.25,
+        );
+        let experience1 = Arc::new(Experience::new(
+            Ulid::new(),
+            Ulid::new(),
+            Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]),
+            None,
+            None,
+            2.0,
+            false,
+        ));
+        let experience2 = Arc::new(Experience::new(
+            Ulid::new(),
+            Ulid::new(),
+            Tensor::from_slice(&[4.0, 3.0, 2.0, 1.0]),
+            None,
+            None,
+            3.0,
+            false,
+        ));
+
+        let reward = ppo._compute_rewards(&[experience1, experience2]);
+
+        assert_eq!(reward.double_value(&[0]), 3.0);
+        assert_eq!(reward.double_value(&[1]), 4.0);
+        assert_eq!(calc_count.load(Ordering::Relaxed), 1);
+        assert_eq!(observe_count.load(Ordering::Relaxed), 2);
+        assert_eq!(ppo.curiosity_reward_coef, 0.25);
     }
 
     #[test]
