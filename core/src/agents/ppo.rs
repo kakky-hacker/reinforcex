@@ -101,7 +101,7 @@ impl PPO {
         self.curiosity_reward_coef = curiosity_reward_coef;
     }
 
-    fn _compute_rewards(&mut self, experiences: &[Arc<Experience>]) -> Tensor {
+    fn _compute_rewards(&self, experiences: &[Arc<Experience>]) -> Tensor {
         let device = self.model.device();
         let extrinsic_rewards = Tensor::from_slice(
             &experiences
@@ -115,7 +115,7 @@ impl PPO {
             return extrinsic_rewards;
         }
 
-        let Some(curiosity) = self.curiosity.as_mut() else {
+        let Some(curiosity) = self.curiosity.as_ref() else {
             return extrinsic_rewards;
         };
 
@@ -124,10 +124,6 @@ impl PPO {
             .to_device(device)
             .view([-1]);
         assert_eq!(intrinsic_rewards.numel(), experiences.len());
-
-        for experience in experiences {
-            curiosity.observe(Arc::clone(experience));
-        }
 
         extrinsic_rewards + self.curiosity_reward_coef * intrinsic_rewards
     }
@@ -196,6 +192,9 @@ impl PPO {
         );
         let action = _action.view([total_transitions as i64, *_action.size().last().unwrap()]);
         let reward = self._compute_rewards(&_skip_first);
+        if let Some(curiosity) = self.curiosity.as_mut() {
+            curiosity.update(&_skip_first);
+        }
 
         let (old_action_distrib, old_value) = self.model.forward(&state);
         let old_value = old_value.unwrap().flatten(0, 1).detach();
@@ -422,7 +421,8 @@ mod tests {
     struct ConstantCuriosity {
         reward: f64,
         calc_count: Arc<AtomicUsize>,
-        observe_count: Arc<AtomicUsize>,
+        update_count: Arc<AtomicUsize>,
+        updated_experience_count: Arc<AtomicUsize>,
     }
 
     impl Basecuriosity for ConstantCuriosity {
@@ -435,8 +435,10 @@ mod tests {
             )
         }
 
-        fn observe(&mut self, _experience: Arc<Experience>) {
-            self.observe_count.fetch_add(1, Ordering::Relaxed);
+        fn update(&mut self, experiences: &[Arc<Experience>]) {
+            self.update_count.fetch_add(1, Ordering::Relaxed);
+            self.updated_experience_count
+                .fetch_add(experiences.len(), Ordering::Relaxed);
         }
 
         fn save(&self) {}
@@ -532,12 +534,13 @@ mod tests {
     }
 
     #[test]
-    fn test_ppo_adds_curiosity_reward_and_observes_experience() {
+    fn test_ppo_adds_curiosity_reward_without_updating() {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
         let model = FCSoftmaxPolicyWithValue::new(vs, 4, 2, 2, 64, 0.0);
         let calc_count = Arc::new(AtomicUsize::new(0));
-        let observe_count = Arc::new(AtomicUsize::new(0));
+        let update_count = Arc::new(AtomicUsize::new(0));
+        let updated_experience_count = Arc::new(AtomicUsize::new(0));
         let mut ppo = PPO::new(
             Box::new(model),
             optimizer,
@@ -558,7 +561,8 @@ mod tests {
             Box::new(ConstantCuriosity {
                 reward: 4.0,
                 calc_count: calc_count.clone(),
-                observe_count: observe_count.clone(),
+                update_count: update_count.clone(),
+                updated_experience_count: updated_experience_count.clone(),
             }),
             0.25,
         );
@@ -586,8 +590,87 @@ mod tests {
         assert_eq!(reward.double_value(&[0]), 3.0);
         assert_eq!(reward.double_value(&[1]), 4.0);
         assert_eq!(calc_count.load(Ordering::Relaxed), 1);
-        assert_eq!(observe_count.load(Ordering::Relaxed), 2);
+        assert_eq!(update_count.load(Ordering::Relaxed), 0);
+        assert_eq!(updated_experience_count.load(Ordering::Relaxed), 0);
         assert_eq!(ppo.curiosity_reward_coef, 0.25);
+    }
+
+    #[test]
+    fn test_ppo_update_updates_curiosity_with_rollout_batch() {
+        let calc_count = Arc::new(AtomicUsize::new(0));
+        let update_count = Arc::new(AtomicUsize::new(0));
+        let updated_experience_count = Arc::new(AtomicUsize::new(0));
+        let mut ppo = test_ppo_with_update_interval(2);
+        ppo.add_curiosity(
+            ConstantCuriosity {
+                reward: 1.0,
+                calc_count: Arc::clone(&calc_count),
+                update_count: Arc::clone(&update_count),
+                updated_experience_count: Arc::clone(&updated_experience_count),
+            },
+            0.5,
+        );
+        let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
+
+        let _ = ppo.act_and_train(&obs, 0.0);
+        let _ = ppo.act_and_train(&obs, 1.0);
+
+        assert_eq!(calc_count.load(Ordering::Relaxed), 1);
+        assert_eq!(update_count.load(Ordering::Relaxed), 1);
+        assert_eq!(updated_experience_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_parallel_ppo_agents_share_curiosity() {
+        let calc_count = Arc::new(AtomicUsize::new(0));
+        let update_count = Arc::new(AtomicUsize::new(0));
+        let updated_experience_count = Arc::new(AtomicUsize::new(0));
+        let shared_curiosity = Arc::new(std::sync::Mutex::new(ConstantCuriosity {
+            reward: 1.0,
+            calc_count: Arc::clone(&calc_count),
+            update_count: Arc::clone(&update_count),
+            updated_experience_count: Arc::clone(&updated_experience_count),
+        }));
+        let mut ppo1 = test_ppo_with_update_interval(2);
+        let mut ppo2 = test_ppo_with_update_interval(2);
+        ppo1.add_curiosity(Arc::clone(&shared_curiosity), 0.5);
+        ppo2.add_curiosity(Arc::clone(&shared_curiosity), 0.5);
+
+        std::thread::scope(|scope| {
+            for ppo in [&mut ppo1, &mut ppo2] {
+                scope.spawn(move || {
+                    let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
+                    let _ = ppo.act_and_train(&obs, 0.0);
+                    let _ = ppo.act_and_train(&obs, 1.0);
+                });
+            }
+        });
+
+        assert_eq!(calc_count.load(Ordering::Relaxed), 2);
+        assert_eq!(update_count.load(Ordering::Relaxed), 2);
+        assert_eq!(updated_experience_count.load(Ordering::Relaxed), 2);
+    }
+
+    fn test_ppo_with_update_interval(update_interval: usize) -> PPO {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+        let model = FCSoftmaxPolicyWithValue::new(vs, 4, 2, 1, 8, 0.0);
+        PPO::new(
+            Box::new(model),
+            optimizer,
+            0.99,
+            0.95,
+            update_interval,
+            1,
+            1,
+            0.2,
+            0.2,
+            0.5,
+            0.01,
+            false,
+            None,
+            None,
+        )
     }
 
     #[test]

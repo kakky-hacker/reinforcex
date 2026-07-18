@@ -1,7 +1,6 @@
 use super::base_curiosity::Basecuriosity;
 use crate::memory::Experience;
 use crate::misc::batch_states::batch_states;
-use crate::misc::bounded_vec_deque::BoundedVecDeque;
 use crate::models::BasecuriosityModel;
 use std::sync::Arc;
 use tch::{nn, no_grad, Kind, Tensor};
@@ -9,8 +8,7 @@ use tch::{nn, no_grad, Kind, Tensor};
 pub struct RND {
     model: Box<dyn BasecuriosityModel + Send>,
     optimizer: nn::Optimizer,
-    experiences: BoundedVecDeque<Arc<Experience>>,
-    update_interval: usize,
+    minibatch_size: usize,
     save_path: Option<String>,
     load_path: Option<String>,
 }
@@ -19,42 +17,21 @@ impl RND {
     pub fn new(
         model: Box<dyn BasecuriosityModel + Send>,
         optimizer: nn::Optimizer,
-        update_interval: usize,
+        minibatch_size: usize,
         save_path: Option<String>,
         load_path: Option<String>,
     ) -> Self {
-        assert!(update_interval > 0);
+        assert!(minibatch_size > 0);
 
         let mut rnd = RND {
             model,
             optimizer,
-            experiences: BoundedVecDeque::new(update_interval),
-            update_interval,
+            minibatch_size,
             save_path,
             load_path,
         };
         rnd.load();
         rnd
-    }
-
-    fn _update(&mut self) {
-        if self.experiences.is_empty() {
-            return;
-        }
-
-        let states = self
-            .experiences
-            .to_vec()
-            .iter()
-            .map(|experience| experience.state.shallow_clone())
-            .collect::<Vec<Tensor>>();
-        let states = batch_states(&states, self.model.device());
-
-        let loss = self.model.forward(&states).mean(Kind::Float);
-        self.optimizer.zero_grad();
-        loss.backward();
-        self.optimizer.step();
-        self.experiences.empty();
     }
 }
 
@@ -72,10 +49,18 @@ impl Basecuriosity for RND {
         no_grad(|| self.model.forward(&states)).detach()
     }
 
-    fn observe(&mut self, experience: Arc<Experience>) {
-        self.experiences.push_back(experience.clone());
-        if self.update_interval <= self.experiences.len() {
-            self._update();
+    fn update(&mut self, experiences: &[Arc<Experience>]) {
+        for minibatch in experiences.chunks(self.minibatch_size) {
+            let states = minibatch
+                .iter()
+                .map(|experience| experience.state.shallow_clone())
+                .collect::<Vec<Tensor>>();
+            let states = batch_states(&states, self.model.device());
+
+            let loss = self.model.forward(&states).mean(Kind::Float);
+            self.optimizer.zero_grad();
+            loss.backward();
+            self.optimizer.step();
         }
     }
 
@@ -104,6 +89,38 @@ mod tests {
     use crate::models::FCRNDModel;
     use tch::{nn, nn::OptimizerConfig, Device, Kind};
     use ulid::Ulid;
+
+    struct ScalarErrorModel {
+        var_store: nn::VarStore,
+        predictor: Tensor,
+    }
+
+    impl ScalarErrorModel {
+        fn new() -> Self {
+            let var_store = nn::VarStore::new(Device::Cpu);
+            let predictor = var_store.root().var("predictor", &[], nn::Init::Const(1.0));
+            Self {
+                var_store,
+                predictor,
+            }
+        }
+    }
+
+    impl BasecuriosityModel for ScalarErrorModel {
+        fn forward(&self, x: &Tensor) -> Tensor {
+            (x.view([-1, 1]) * &self.predictor)
+                .square()
+                .mean_dim(&[1i64][..], false, Kind::Float)
+        }
+
+        fn device(&self) -> Device {
+            self.var_store.device()
+        }
+
+        fn save(&self, _path: &str) {}
+
+        fn load(&mut self, _path: &str) {}
+    }
 
     fn experience(state: Tensor) -> Arc<Experience> {
         Arc::new(Experience::new(
@@ -137,26 +154,28 @@ mod tests {
     }
 
     #[test]
-    fn test_rnd_observe_updates_periodically() {
-        let predictor_vs = nn::VarStore::new(Device::Cpu);
-        let target_vs = nn::VarStore::new(Device::Cpu);
-        let model = FCRNDModel::new(predictor_vs, target_vs, 4, 8, 1, 16);
-        let optimizer = nn::Adam::default()
-            .build(model.predictor_var_store(), 1e-3)
-            .unwrap();
+    fn test_rnd_update_reduces_prediction_error() {
+        let model = ScalarErrorModel::new();
+        let optimizer = nn::Sgd::default().build(&model.var_store, 0.1).unwrap();
         let mut rnd = RND::new(Box::new(model), optimizer, 2, None, None);
+        let experiences = (0..4)
+            .map(|_| experience(Tensor::ones([1, 1], (Kind::Float, Device::Cpu))))
+            .collect::<Vec<_>>();
+        let reward_before = rnd
+            .calc_internal_reward(&experiences)
+            .mean(Kind::Float)
+            .double_value(&[]);
 
-        rnd.observe(experience(Tensor::randn(
-            [1, 4],
-            (Kind::Float, Device::Cpu),
-        )));
-        assert_eq!(rnd.experiences.len(), 1);
+        rnd.update(&experiences);
 
-        rnd.observe(experience(Tensor::randn(
-            [1, 4],
-            (Kind::Float, Device::Cpu),
-        )));
-        assert_eq!(rnd.experiences.len(), 0);
+        let reward_after = rnd
+            .calc_internal_reward(&experiences)
+            .mean(Kind::Float)
+            .double_value(&[]);
+        assert!(
+            reward_after < reward_before,
+            "RND update should reduce predictor error: before={reward_before}, after={reward_after}"
+        );
     }
 
     #[test]

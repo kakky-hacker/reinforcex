@@ -71,8 +71,8 @@ Core building blocks:
   `GaussianDistribution`.
 - Memory: `ReplayBuffer` with n-step transitions, `OnPolicyBuffer`.
 - Exploration and selection: `EpsilonGreedy`, `RewardBasedSelector`.
-- Curiosity: `RND` computes intrinsic rewards and periodically trains its
-  predictor from buffered observations.
+- Curiosity: `RND` computes intrinsic rewards and trains its predictor from
+  PPO rollout batches.
 - FFI: DQN, PPO, and SAC can be created and trained through a C-compatible API.
 
 # API
@@ -231,18 +231,18 @@ let rnd_optimizer = nn::Adam::default()
 let mut curiosity = RND::new(
     Box::new(rnd_model),
     rnd_optimizer,
-    128, // observations per predictor update
+    128, // maximum predictor minibatch size
     Some("models/lunar_rnd".to_string()),
     None,
 );
 ```
 
 `RND::calc_internal_reward` evaluates predictor error for a batch of
-experiences without gradients.
-`RND::observe` buffers the state and updates the predictor whenever
-`update_interval` observations have accumulated. Both methods are provided by
-the `Basecuriosity` trait. RND checkpoints contain `rnd_predictor.ot` and
-`rnd_target.ot` in the configured directory.
+experiences without gradients. During each PPO update, PPO calculates these
+rewards first and then passes the same rollout batch to `Basecuriosity::update`.
+RND splits that batch into predictor minibatches of at most the configured
+size. RND checkpoints contain `rnd_predictor.ot` and `rnd_target.ot` in the
+configured directory.
 
 # Sample experiments
 The sample experiments call Gymnasium environments through FastAPI servers.
@@ -427,13 +427,13 @@ library extension, for example `reinforcex.dll`, `libreinforcex.so`, or
 
 - All long-lived objects are owned by the Rust library and referenced through a
   non-zero `uint64_t` handle.
-- DQN, PPO, SAC, replay buffers, replay writers, and RND modules each have their
-  own create/destroy lifecycle.
+- DQN, PPO, SAC, shared replay buffers, and RND modules each have their own
+  create/destroy lifecycle.
 - PPO and SAC support `RX_ACTION_DISCRETE` and `RX_ACTION_CONTINUOUS`.
 - Public functions catch Rust panics and return `RX_ERROR_PANIC` instead of
   unwinding across the ABI.
-- Calls for one agent, replay writer, or RND handle are serialized internally.
-  Different handles may be used from different host threads.
+- Calls for one agent or RND handle are serialized internally. Different
+  handles may be used from different host threads.
 - The caller owns input and output buffer allocation.
 - Observation buffers must contain exactly `obs_size` finite `float` values.
 - Discrete agents write one action value. Continuous agents write `action_size`
@@ -555,12 +555,6 @@ typedef struct RxReplayBufferConfig {
     uint64_t n_steps;
 } RxReplayBufferConfig;
 
-typedef struct RxReplayWriterConfig {
-    uint64_t obs_size;
-    uint64_t action_len;
-    double gamma;
-} RxReplayWriterConfig;
-
 typedef struct RxRndConfig {
     uint64_t obs_size;
     uint64_t feature_size;
@@ -583,12 +577,11 @@ Notes:
   `RX_ACTION_DISCRETE` or `RX_ACTION_CONTINUOUS`.
 - For continuous PPO, `min_action`, `max_action`, and `min_variance` configure
   the Gaussian policy. They are ignored for discrete PPO.
+- `RxRndConfig.update_interval` is retained as the ABI field name and configures
+  the maximum RND predictor minibatch size.
 - Continuous SAC uses a diagonal Gaussian policy. If `squash_action` is `1`, the
   action is tanh-squashed to `[-1, 1]`. `min_variance` is ignored for discrete
   SAC.
-- `RxReplayWriterConfig.action_len` is the action tensor length written into a
-  replay buffer. Use `1` for discrete actions and the action dimension for
-  continuous actions.
 - `RxStatistic.name` is null-terminated when shorter than `RX_STAT_NAME_LEN`.
   Longer names are truncated to fit.
 
@@ -617,11 +610,6 @@ int32_t rx_replay_buffer_config_default(
     RxReplayBufferConfig *out_config,
     uint64_t capacity,
     uint64_t n_steps);
-
-int32_t rx_replay_writer_config_default(
-    RxReplayWriterConfig *out_config,
-    uint64_t obs_size,
-    uint64_t action_len);
 
 int32_t rx_rnd_config_default(
     RxRndConfig *out_config,
@@ -757,70 +745,16 @@ int32_t rx_replay_buffer_create(
     const RxReplayBufferConfig *config,
     uint64_t *out_id);
 
-int32_t rx_replay_buffer_len(uint64_t id, uint64_t *out_len);
-int32_t rx_replay_buffer_clear(uint64_t id);
 int32_t rx_replay_buffer_destroy(uint64_t id);
 ```
 
 | Function | Purpose |
 |---|---|
-| `rx_replay_buffer_create` | Creates a replay buffer handle that can be shared by SAC agents or replay writers. |
-| `rx_replay_buffer_len` | Reads the number of fully linkable experiences currently stored. |
-| `rx_replay_buffer_clear` | Clears stored experiences and per-episode n-step state. |
-| `rx_replay_buffer_destroy` | Removes the replay buffer handle from the registry. Existing agents/writers keep their `Arc` reference alive. |
+| `rx_replay_buffer_create` | Creates a replay buffer handle that can be shared by SAC agents. |
+| `rx_replay_buffer_destroy` | Removes the replay buffer handle from the registry. Existing agents keep their `Arc` reference alive. |
 
-Use shared replay buffers for multi-agent SAC training or for feeding
-experiences collected by another policy into SAC.
-
-## Replay writer APIs
-
-Replay writers let an external policy, such as a Python-managed PPO agent, write
-experience into a shared replay buffer. This is the intended bridge for
-experiments where PPO explores while SAC learns from a shared replay buffer.
-
-```c
-int32_t rx_replay_writer_create(
-    uint64_t replay_id,
-    const RxReplayWriterConfig *config,
-    uint64_t *out_id);
-
-int32_t rx_replay_writer_append(
-    uint64_t id,
-    const float *obs,
-    uint64_t obs_len,
-    const float *action,
-    uint64_t action_len,
-    float reward);
-
-int32_t rx_replay_writer_stop_episode(
-    uint64_t id,
-    const float *obs,
-    uint64_t obs_len,
-    float reward);
-
-int32_t rx_replay_writer_destroy(uint64_t id);
-```
-
-| Function | Purpose |
-|---|---|
-| `rx_replay_writer_create` | Creates a writer attached to an existing replay buffer. |
-| `rx_replay_writer_append` | Appends a non-terminal decision point: observation, action, and reward. |
-| `rx_replay_writer_stop_episode` | Appends the terminal observation/reward and starts a new episode for that writer. |
-| `rx_replay_writer_destroy` | Releases the writer handle. |
-
-The writer follows the same reward convention as `rx_agent_act_and_train`: pass
-the reward received after the previously selected action. A common host loop is:
-
-1. Choose an action for the initial observation.
-2. Call `rx_replay_writer_append(..., initial_obs, action, 0.0)`.
-3. Step the environment.
-4. Choose the next action and call `rx_replay_writer_append(..., next_obs,
-   next_action, reward_from_previous_step)`.
-5. On terminal, call `rx_replay_writer_stop_episode(..., final_obs,
-   final_reward)`.
-
-For discrete actions, write one float containing the action index. For continuous
-actions, write one float per action dimension.
+Use shared replay buffers for multi-agent SAC training. Experience collection
+and replay insertion remain inside each SAC agent.
 
 ## RND APIs
 
@@ -839,19 +773,6 @@ int32_t rx_rnd_calc_reward(
     uint64_t obs_len,
     double *out_reward);
 
-int32_t rx_rnd_calc_reward_and_observe(
-    uint64_t id,
-    const float *obs,
-    uint64_t obs_len,
-    uint32_t is_episode_terminal,
-    double *out_reward);
-
-int32_t rx_rnd_observe(
-    uint64_t id,
-    const float *obs,
-    uint64_t obs_len,
-    uint32_t is_episode_terminal);
-
 int32_t rx_rnd_save(uint64_t id);
 int32_t rx_rnd_load(uint64_t id);
 int32_t rx_rnd_destroy(uint64_t id);
@@ -862,17 +783,13 @@ int32_t rx_rnd_destroy(uint64_t id);
 | `rx_rnd_create` | Creates an RND curiosity module. |
 | `rx_rnd_create_with_paths` | Creates an RND module with optional save/load paths. |
 | `rx_rnd_calc_reward` | Computes intrinsic reward for an observation without training RND. |
-| `rx_rnd_calc_reward_and_observe` | Computes intrinsic reward and then observes the same state for periodic RND updates. |
-| `rx_rnd_observe` | Observes a state for periodic RND updates without returning reward. |
 | `rx_rnd_save` | Saves RND using the `save_path` supplied at creation. No-ops if no path was supplied. |
 | `rx_rnd_load` | Loads RND using the `load_path` supplied at creation. No-ops if no path was supplied. |
 | `rx_rnd_destroy` | Releases the RND handle. |
 
-`is_episode_terminal` must be `0` or `1`. To share RND across multiple PPO
-workers, create one RND handle and call it from each worker. To use independent
-RND modules, create one RND handle per worker. Per-worker curiosity masks can be
-applied in the host runtime by scaling or dropping the returned intrinsic reward
-before adding it to the PPO reward.
+The FFI RND surface is limited to intrinsic-reward inference and checkpoint
+lifecycle. Predictor updates are performed through the Rust-side PPO curiosity
+integration instead of a public FFI update function.
 
 # Contributing
 ReinforceX is a good place to contribute if you are interested in Rust,

@@ -29,8 +29,6 @@ pub const RX_ACTION_CONTINUOUS: u32 = 1;
 static AGENTS: LazyLock<DashMap<u64, Arc<Mutex<AgentWrapper>>>> = LazyLock::new(DashMap::new);
 static REPLAY_BUFFERS: LazyLock<DashMap<u64, Arc<ReplayBufferWrapper>>> =
     LazyLock::new(DashMap::new);
-static REPLAY_WRITERS: LazyLock<DashMap<u64, Arc<Mutex<ReplayWriterWrapper>>>> =
-    LazyLock::new(DashMap::new);
 static RNDS: LazyLock<DashMap<u64, Arc<Mutex<RndWrapper>>>> = LazyLock::new(DashMap::new);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -108,14 +106,6 @@ pub struct RxReplayBufferConfig {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct RxReplayWriterConfig {
-    pub obs_size: u64,
-    pub action_len: u64,
-    pub gamma: f64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
 pub struct RxRndConfig {
     pub obs_size: u64,
     pub feature_size: u64,
@@ -145,16 +135,6 @@ struct ReplayBufferWrapper {
     buffer: Arc<ReplayBuffer>,
     capacity: usize,
     n_steps: usize,
-}
-
-struct ReplayWriterWrapper {
-    buffer: Arc<ReplayBuffer>,
-    agent_id: Ulid,
-    current_episode_id: Ulid,
-    device: Device,
-    obs_size: usize,
-    action_len: usize,
-    gamma: f64,
 }
 
 struct RndWrapper {
@@ -229,14 +209,6 @@ fn default_sac_config(obs_size: u64, action_size: u64) -> RxSacConfig {
 
 fn default_replay_buffer_config(capacity: u64, n_steps: u64) -> RxReplayBufferConfig {
     RxReplayBufferConfig { capacity, n_steps }
-}
-
-fn default_replay_writer_config(obs_size: u64, action_len: u64) -> RxReplayWriterConfig {
-    RxReplayWriterConfig {
-        obs_size,
-        action_len,
-        gamma: 0.99,
-    }
 }
 
 fn default_rnd_config(obs_size: u64) -> RxRndConfig {
@@ -369,18 +341,6 @@ fn validate_replay_buffer(config: &RxReplayBufferConfig) -> Result<(), i32> {
         || config.n_steps == 0
         || to_usize(config.capacity).is_err()
         || to_usize(config.n_steps).is_err()
-    {
-        return Err(RX_ERROR_INVALID_ARGUMENT);
-    }
-    Ok(())
-}
-
-fn validate_replay_writer(config: &RxReplayWriterConfig) -> Result<(), i32> {
-    if config.obs_size == 0
-        || config.action_len == 0
-        || to_i64(config.obs_size).is_err()
-        || to_i64(config.action_len).is_err()
-        || !is_probability(config.gamma)
     {
         return Err(RX_ERROR_INVALID_ARGUMENT);
     }
@@ -730,12 +690,6 @@ fn insert_replay_buffer(wrapper: ReplayBufferWrapper) -> Result<u64, i32> {
     Ok(id)
 }
 
-fn insert_replay_writer(wrapper: ReplayWriterWrapper) -> Result<u64, i32> {
-    let id = next_id()?;
-    REPLAY_WRITERS.insert(id, Arc::new(Mutex::new(wrapper)));
-    Ok(id)
-}
-
 fn insert_rnd(wrapper: RndWrapper) -> Result<u64, i32> {
     let id = next_id()?;
     RNDS.insert(id, Arc::new(Mutex::new(wrapper)));
@@ -757,16 +711,6 @@ fn get_replay_buffer(id: u64) -> Result<Arc<ReplayBufferWrapper>, i32> {
         return Err(RX_ERROR_INVALID_ARGUMENT);
     }
     REPLAY_BUFFERS
-        .get(&id)
-        .map(|entry| Arc::clone(entry.value()))
-        .ok_or(RX_ERROR_NOT_FOUND)
-}
-
-fn get_replay_writer(id: u64) -> Result<Arc<Mutex<ReplayWriterWrapper>>, i32> {
-    if id == 0 {
-        return Err(RX_ERROR_INVALID_ARGUMENT);
-    }
-    REPLAY_WRITERS
         .get(&id)
         .map(|entry| Arc::clone(entry.value()))
         .ok_or(RX_ERROR_NOT_FOUND)
@@ -869,29 +813,7 @@ fn make_observation(
         .to_device(device))
 }
 
-fn make_action(
-    action: *const f32,
-    action_len: u64,
-    expected_len: usize,
-    device: Device,
-) -> Result<Tensor, i32> {
-    if action.is_null() {
-        return Err(RX_ERROR_NULL_POINTER);
-    }
-    let action_len = to_usize(action_len)?;
-    if action_len != expected_len {
-        return Err(RX_ERROR_INVALID_ARGUMENT);
-    }
-    let action = unsafe { std::slice::from_raw_parts(action, action_len) };
-    if !action.iter().all(|value| value.is_finite()) {
-        return Err(RX_ERROR_INVALID_ARGUMENT);
-    }
-    Ok(Tensor::from_slice(action)
-        .to_kind(Kind::Float)
-        .to_device(device))
-}
-
-fn curiosity_experience(state: Tensor, is_episode_terminal: bool) -> Arc<Experience> {
+fn curiosity_experience(state: Tensor) -> Arc<Experience> {
     Arc::new(Experience::new(
         Ulid::new(),
         Ulid::new(),
@@ -899,7 +821,7 @@ fn curiosity_experience(state: Tensor, is_episode_terminal: bool) -> Arc<Experie
         None,
         None,
         0.0,
-        is_episode_terminal,
+        false,
     ))
 }
 
@@ -1002,87 +924,7 @@ fn stop_episode_impl(id: u64, obs: *const f32, obs_len: u64, reward: f32) -> i32
     RX_OK
 }
 
-fn replay_writer_append_impl(
-    id: u64,
-    obs: *const f32,
-    obs_len: u64,
-    action: *const f32,
-    action_len: u64,
-    reward: f32,
-) -> i32 {
-    if !reward.is_finite() {
-        return RX_ERROR_INVALID_ARGUMENT;
-    }
-    let writer = match get_replay_writer(id) {
-        Ok(writer) => writer,
-        Err(status) => return status,
-    };
-    let guard = match writer.lock() {
-        Ok(guard) => guard,
-        Err(_) => return RX_ERROR_INTERNAL,
-    };
-    let state = match make_observation(obs, obs_len, guard.obs_size, guard.device) {
-        Ok(obs) => obs,
-        Err(status) => return status,
-    };
-    let action = match make_action(action, action_len, guard.action_len, guard.device) {
-        Ok(action) => action,
-        Err(status) => return status,
-    };
-    let experience = Arc::new(Experience::new(
-        guard.agent_id,
-        guard.current_episode_id,
-        state,
-        Some(action),
-        None,
-        f64::from(reward),
-        false,
-    ));
-    guard.buffer.append(experience, guard.gamma);
-    RX_OK
-}
-
-fn replay_writer_stop_episode_impl(id: u64, obs: *const f32, obs_len: u64, reward: f32) -> i32 {
-    if !reward.is_finite() {
-        return RX_ERROR_INVALID_ARGUMENT;
-    }
-    let writer = match get_replay_writer(id) {
-        Ok(writer) => writer,
-        Err(status) => return status,
-    };
-    let mut guard = match writer.lock() {
-        Ok(guard) => guard,
-        Err(_) => return RX_ERROR_INTERNAL,
-    };
-    let state = match make_observation(obs, obs_len, guard.obs_size, guard.device) {
-        Ok(obs) => obs,
-        Err(status) => return status,
-    };
-    let experience = Arc::new(Experience::new(
-        guard.agent_id,
-        guard.current_episode_id,
-        state,
-        None,
-        None,
-        f64::from(reward),
-        true,
-    ));
-    guard.buffer.append(experience, guard.gamma);
-    guard.current_episode_id = Ulid::new();
-    RX_OK
-}
-
-fn rnd_calc_reward_impl(
-    id: u64,
-    obs: *const f32,
-    obs_len: u64,
-    is_episode_terminal: u32,
-    observe: bool,
-    out_reward: *mut f64,
-) -> i32 {
-    if !valid_flag(is_episode_terminal) {
-        return RX_ERROR_INVALID_ARGUMENT;
-    }
+fn rnd_calc_reward_impl(id: u64, obs: *const f32, obs_len: u64, out_reward: *mut f64) -> i32 {
     if out_reward.is_null() {
         return RX_ERROR_NULL_POINTER;
     }
@@ -1090,7 +932,7 @@ fn rnd_calc_reward_impl(
         Ok(rnd) => rnd,
         Err(status) => return status,
     };
-    let mut guard = match rnd.lock() {
+    let guard = match rnd.lock() {
         Ok(guard) => guard,
         Err(_) => return RX_ERROR_INTERNAL,
     };
@@ -1098,7 +940,7 @@ fn rnd_calc_reward_impl(
         Ok(obs) => obs,
         Err(status) => return status,
     };
-    let experience = curiosity_experience(state, is_episode_terminal != 0);
+    let experience = curiosity_experience(state);
     let reward = guard
         .rnd
         .calc_internal_reward(std::slice::from_ref(&experience));
@@ -1106,34 +948,9 @@ fn rnd_calc_reward_impl(
         .to_device(Device::Cpu)
         .mean(Kind::Float)
         .double_value(&[]);
-    if observe {
-        guard.rnd.observe(experience);
-    }
     unsafe {
         *out_reward = reward;
     }
-    RX_OK
-}
-
-fn rnd_observe_impl(id: u64, obs: *const f32, obs_len: u64, is_episode_terminal: u32) -> i32 {
-    if !valid_flag(is_episode_terminal) {
-        return RX_ERROR_INVALID_ARGUMENT;
-    }
-    let rnd = match get_rnd(id) {
-        Ok(rnd) => rnd,
-        Err(status) => return status,
-    };
-    let mut guard = match rnd.lock() {
-        Ok(guard) => guard,
-        Err(_) => return RX_ERROR_INTERNAL,
-    };
-    let state = match make_observation(obs, obs_len, guard.obs_size, guard.device) {
-        Ok(obs) => obs,
-        Err(status) => return status,
-    };
-    guard
-        .rnd
-        .observe(curiosity_experience(state, is_episode_terminal != 0));
     RX_OK
 }
 
@@ -1181,21 +998,6 @@ pub extern "C" fn rx_replay_buffer_config_default(
 ) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         write_default(out_config, default_replay_buffer_config(capacity, n_steps))
-    }))
-    .unwrap_or(RX_ERROR_PANIC)
-}
-
-#[no_mangle]
-pub extern "C" fn rx_replay_writer_config_default(
-    out_config: *mut RxReplayWriterConfig,
-    obs_size: u64,
-    action_len: u64,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        write_default(
-            out_config,
-            default_replay_writer_config(obs_size, action_len),
-        )
     }))
     .unwrap_or(RX_ERROR_PANIC)
 }
@@ -1411,55 +1213,6 @@ pub extern "C" fn rx_sac_create_with_replay_and_paths(
 }
 
 #[no_mangle]
-pub extern "C" fn rx_replay_writer_create(
-    replay_id: u64,
-    config: *const RxReplayWriterConfig,
-    out_id: *mut u64,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if config.is_null() || out_id.is_null() {
-            return RX_ERROR_NULL_POINTER;
-        }
-        unsafe {
-            *out_id = 0;
-        }
-        let config = unsafe { *config };
-        if let Err(status) = validate_replay_writer(&config) {
-            return status;
-        }
-        let replay = match get_replay_buffer(replay_id) {
-            Ok(replay) => replay,
-            Err(status) => return status,
-        };
-        let wrapper = ReplayWriterWrapper {
-            buffer: Arc::clone(&replay.buffer),
-            agent_id: Ulid::new(),
-            current_episode_id: Ulid::new(),
-            device: Device::cuda_if_available(),
-            obs_size: match to_usize(config.obs_size) {
-                Ok(value) => value,
-                Err(status) => return status,
-            },
-            action_len: match to_usize(config.action_len) {
-                Ok(value) => value,
-                Err(status) => return status,
-            },
-            gamma: config.gamma,
-        };
-        match insert_replay_writer(wrapper) {
-            Ok(id) => {
-                unsafe {
-                    *out_id = id;
-                }
-                RX_OK
-            }
-            Err(status) => status,
-        }
-    }))
-    .unwrap_or(RX_ERROR_PANIC)
-}
-
-#[no_mangle]
 pub extern "C" fn rx_rnd_create(config: *const RxRndConfig, out_id: *mut u64) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         rx_rnd_create_with_paths(config, std::ptr::null(), std::ptr::null(), out_id)
@@ -1643,90 +1396,12 @@ pub extern "C" fn rx_agent_load(id: u64) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn rx_replay_buffer_len(id: u64, out_len: *mut u64) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if out_len.is_null() {
-            return RX_ERROR_NULL_POINTER;
-        }
-        let replay = match get_replay_buffer(id) {
-            Ok(replay) => replay,
-            Err(status) => return status,
-        };
-        let len = match u64::try_from(replay.buffer.len()) {
-            Ok(len) => len,
-            Err(_) => return RX_ERROR_INTERNAL,
-        };
-        unsafe {
-            *out_len = len;
-        }
-        RX_OK
-    }))
-    .unwrap_or(RX_ERROR_PANIC)
-}
-
-#[no_mangle]
-pub extern "C" fn rx_replay_buffer_clear(id: u64) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        let replay = match get_replay_buffer(id) {
-            Ok(replay) => replay,
-            Err(status) => return status,
-        };
-        replay.buffer.clear();
-        RX_OK
-    }))
-    .unwrap_or(RX_ERROR_PANIC)
-}
-
-#[no_mangle]
 pub extern "C" fn rx_replay_buffer_destroy(id: u64) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         if id == 0 {
             return RX_ERROR_INVALID_ARGUMENT;
         }
         if REPLAY_BUFFERS.remove(&id).is_some() {
-            RX_OK
-        } else {
-            RX_ERROR_NOT_FOUND
-        }
-    }))
-    .unwrap_or(RX_ERROR_PANIC)
-}
-
-#[no_mangle]
-pub extern "C" fn rx_replay_writer_append(
-    id: u64,
-    obs: *const f32,
-    obs_len: u64,
-    action: *const f32,
-    action_len: u64,
-    reward: f32,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        replay_writer_append_impl(id, obs, obs_len, action, action_len, reward)
-    }))
-    .unwrap_or(RX_ERROR_PANIC)
-}
-
-#[no_mangle]
-pub extern "C" fn rx_replay_writer_stop_episode(
-    id: u64,
-    obs: *const f32,
-    obs_len: u64,
-    reward: f32,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        replay_writer_stop_episode_impl(id, obs, obs_len, reward)
-    }))
-    .unwrap_or(RX_ERROR_PANIC)
-}
-
-#[no_mangle]
-pub extern "C" fn rx_replay_writer_destroy(id: u64) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if id == 0 {
-            return RX_ERROR_INVALID_ARGUMENT;
-        }
-        if REPLAY_WRITERS.remove(&id).is_some() {
             RX_OK
         } else {
             RX_ERROR_NOT_FOUND
@@ -1743,34 +1418,7 @@ pub extern "C" fn rx_rnd_calc_reward(
     out_reward: *mut f64,
 ) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
-        rnd_calc_reward_impl(id, obs, obs_len, 0, false, out_reward)
-    }))
-    .unwrap_or(RX_ERROR_PANIC)
-}
-
-#[no_mangle]
-pub extern "C" fn rx_rnd_calc_reward_and_observe(
-    id: u64,
-    obs: *const f32,
-    obs_len: u64,
-    is_episode_terminal: u32,
-    out_reward: *mut f64,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        rnd_calc_reward_impl(id, obs, obs_len, is_episode_terminal, true, out_reward)
-    }))
-    .unwrap_or(RX_ERROR_PANIC)
-}
-
-#[no_mangle]
-pub extern "C" fn rx_rnd_observe(
-    id: u64,
-    obs: *const f32,
-    obs_len: u64,
-    is_episode_terminal: u32,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        rnd_observe_impl(id, obs, obs_len, is_episode_terminal)
+        rnd_calc_reward_impl(id, obs, obs_len, out_reward)
     }))
     .unwrap_or(RX_ERROR_PANIC)
 }
@@ -2005,10 +1653,6 @@ mod tests {
             );
         }
 
-        let mut replay_len = 0;
-        assert_eq!(rx_replay_buffer_len(replay_id, &mut replay_len), RX_OK);
-        assert!(replay_len >= 2);
-
         let mut stats_len = 0;
         assert_eq!(rx_agent_statistics_len(agent1, &mut stats_len), RX_OK);
         assert!(stats_len >= 4);
@@ -2024,9 +1668,12 @@ mod tests {
             rx_agent_statistics(agent1, stats.as_mut_ptr(), stats.len() as u64),
             stats_len as i64
         );
-        assert!(stats
+        let replay_len = stats
             .iter()
-            .any(|stat| stat_name(stat) == "replay_buffer_len" && stat.value >= replay_len as f64));
+            .find(|stat| stat_name(stat) == "replay_buffer_len")
+            .map(|stat| stat.value)
+            .unwrap();
+        assert!(replay_len >= 2.0);
 
         assert_eq!(rx_agent_destroy(agent1), RX_OK);
         assert_eq!(rx_agent_destroy(agent2), RX_OK);
@@ -2034,65 +1681,7 @@ mod tests {
     }
 
     #[test]
-    fn replay_writer_feeds_external_policy_experience() {
-        let replay_config = default_replay_buffer_config(16, 1);
-        let mut replay_id = 0;
-        assert_eq!(
-            rx_replay_buffer_create(&replay_config, &mut replay_id),
-            RX_OK
-        );
-
-        let writer_config = default_replay_writer_config(4, 2);
-        let mut writer_id = 0;
-        assert_eq!(
-            rx_replay_writer_create(replay_id, &writer_config, &mut writer_id),
-            RX_OK
-        );
-        assert_ne!(writer_id, 0);
-
-        let obs = [0.1f32, 0.2, 0.3, 0.4];
-        let action = [0.5f32, -0.5];
-        assert_eq!(
-            rx_replay_writer_append(
-                writer_id,
-                obs.as_ptr(),
-                obs.len() as u64,
-                action.as_ptr(),
-                action.len() as u64,
-                0.0,
-            ),
-            RX_OK
-        );
-        assert_eq!(
-            rx_replay_writer_append(
-                writer_id,
-                obs.as_ptr(),
-                obs.len() as u64,
-                action.as_ptr(),
-                action.len() as u64,
-                1.0,
-            ),
-            RX_OK
-        );
-        assert_eq!(
-            rx_replay_writer_stop_episode(writer_id, obs.as_ptr(), obs.len() as u64, 2.0),
-            RX_OK
-        );
-
-        let mut replay_len = 0;
-        assert_eq!(rx_replay_buffer_len(replay_id, &mut replay_len), RX_OK);
-        assert!(replay_len >= 2);
-
-        assert_eq!(rx_replay_buffer_clear(replay_id), RX_OK);
-        assert_eq!(rx_replay_buffer_len(replay_id, &mut replay_len), RX_OK);
-        assert_eq!(replay_len, 0);
-
-        assert_eq!(rx_replay_writer_destroy(writer_id), RX_OK);
-        assert_eq!(rx_replay_buffer_destroy(replay_id), RX_OK);
-    }
-
-    #[test]
-    fn rnd_lifecycle_reward_observe_and_validation() {
+    fn rnd_lifecycle_reward_and_validation() {
         let mut config = default_rnd_config(4);
         config.feature_size = 8;
         config.hidden_layers = 1;
@@ -2111,19 +1700,6 @@ mod tests {
         );
         assert!(reward.is_finite());
 
-        assert_eq!(
-            rx_rnd_observe(rnd_id, obs.as_ptr(), obs.len() as u64, 0),
-            RX_OK
-        );
-        assert_eq!(
-            rx_rnd_calc_reward_and_observe(rnd_id, obs.as_ptr(), obs.len() as u64, 1, &mut reward),
-            RX_OK
-        );
-        assert!(reward.is_finite());
-        assert_eq!(
-            rx_rnd_calc_reward_and_observe(rnd_id, obs.as_ptr(), obs.len() as u64, 2, &mut reward),
-            RX_ERROR_INVALID_ARGUMENT
-        );
         assert_eq!(rx_rnd_save(rnd_id), RX_OK);
         assert_eq!(rx_rnd_load(rnd_id), RX_OK);
         assert_eq!(rx_rnd_destroy(rnd_id), RX_OK);
