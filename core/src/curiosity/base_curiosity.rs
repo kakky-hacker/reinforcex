@@ -4,7 +4,7 @@ use tch::Tensor;
 
 pub trait Basecuriosity {
     fn calc_internal_reward(&self, experiences: &[Arc<Experience>]) -> Tensor;
-    fn observe(&mut self, experience: Arc<Experience>);
+    fn update(&mut self, experiences: &[Arc<Experience>]);
     fn save(&self);
     fn load(&mut self);
 }
@@ -14,8 +14,8 @@ impl<T: Basecuriosity + ?Sized> Basecuriosity for Box<T> {
         (**self).calc_internal_reward(experiences)
     }
 
-    fn observe(&mut self, experience: Arc<Experience>) {
-        (**self).observe(experience)
+    fn update(&mut self, experiences: &[Arc<Experience>]) {
+        (**self).update(experiences)
     }
 
     fn save(&self) {
@@ -32,8 +32,8 @@ impl<T: Basecuriosity + ?Sized> Basecuriosity for Arc<Mutex<T>> {
         self.lock().unwrap().calc_internal_reward(experiences)
     }
 
-    fn observe(&mut self, experience: Arc<Experience>) {
-        self.lock().unwrap().observe(experience)
+    fn update(&mut self, experiences: &[Arc<Experience>]) {
+        self.lock().unwrap().update(experiences)
     }
 
     fn save(&self) {

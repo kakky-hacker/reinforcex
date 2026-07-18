@@ -87,12 +87,6 @@ typedef struct RxReplayBufferConfig {
     uint64_t n_steps;
 } RxReplayBufferConfig;
 
-typedef struct RxReplayWriterConfig {
-    uint64_t obs_size;
-    uint64_t action_len;
-    double gamma;
-} RxReplayWriterConfig;
-
 typedef struct RxRndConfig {
     uint64_t obs_size;
     uint64_t feature_size;
@@ -126,11 +120,6 @@ int32_t rx_replay_buffer_config_default(
     RxReplayBufferConfig *out_config,
     uint64_t capacity,
     uint64_t n_steps);
-
-int32_t rx_replay_writer_config_default(
-    RxReplayWriterConfig *out_config,
-    uint64_t obs_size,
-    uint64_t action_len);
 
 int32_t rx_rnd_config_default(
     RxRndConfig *out_config,
@@ -172,11 +161,6 @@ int32_t rx_sac_create_with_replay_and_paths(
     uint64_t replay_id,
     const char *save_path,
     const char *load_path,
-    uint64_t *out_id);
-
-int32_t rx_replay_writer_create(
-    uint64_t replay_id,
-    const RxReplayWriterConfig *config,
     uint64_t *out_id);
 
 int32_t rx_rnd_create(const RxRndConfig *config, uint64_t *out_id);
@@ -221,44 +205,13 @@ int64_t rx_agent_statistics(
 int32_t rx_agent_save(uint64_t id);
 int32_t rx_agent_load(uint64_t id);
 
-int32_t rx_replay_buffer_len(uint64_t id, uint64_t *out_len);
-int32_t rx_replay_buffer_clear(uint64_t id);
 int32_t rx_replay_buffer_destroy(uint64_t id);
-
-int32_t rx_replay_writer_append(
-    uint64_t id,
-    const float *obs,
-    uint64_t obs_len,
-    const float *action,
-    uint64_t action_len,
-    float reward);
-
-int32_t rx_replay_writer_stop_episode(
-    uint64_t id,
-    const float *obs,
-    uint64_t obs_len,
-    float reward);
-
-int32_t rx_replay_writer_destroy(uint64_t id);
 
 int32_t rx_rnd_calc_reward(
     uint64_t id,
     const float *obs,
     uint64_t obs_len,
     double *out_reward);
-
-int32_t rx_rnd_calc_reward_and_observe(
-    uint64_t id,
-    const float *obs,
-    uint64_t obs_len,
-    uint32_t is_episode_terminal,
-    double *out_reward);
-
-int32_t rx_rnd_observe(
-    uint64_t id,
-    const float *obs,
-    uint64_t obs_len,
-    uint32_t is_episode_terminal);
 
 int32_t rx_rnd_save(uint64_t id);
 int32_t rx_rnd_load(uint64_t id);
