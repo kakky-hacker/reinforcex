@@ -135,8 +135,34 @@ int32_t rx_dqn_create_with_paths(
     const char *load_path,
     uint64_t *out_id);
 
+int32_t rx_dqn_create_with_replay(
+    const RxDqnConfig *config,
+    uint64_t replay_id,
+    uint64_t *out_id);
+
+int32_t rx_dqn_create_with_replay_and_paths(
+    const RxDqnConfig *config,
+    uint64_t replay_id,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
 int32_t rx_ppo_create_with_paths(
     const RxPpoConfig *config,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
+int32_t rx_ppo_create_with_rnd(
+    const RxPpoConfig *config,
+    uint64_t rnd_id,
+    double curiosity_reward_coefficient,
+    uint64_t *out_id);
+
+int32_t rx_ppo_create_with_rnd_and_paths(
+    const RxPpoConfig *config,
+    uint64_t rnd_id,
+    double curiosity_reward_coefficient,
     const char *save_path,
     const char *load_path,
     uint64_t *out_id);
@@ -206,12 +232,6 @@ int32_t rx_agent_save(uint64_t id);
 int32_t rx_agent_load(uint64_t id);
 
 int32_t rx_replay_buffer_destroy(uint64_t id);
-
-int32_t rx_rnd_calc_reward(
-    uint64_t id,
-    const float *obs,
-    uint64_t obs_len,
-    double *out_reward);
 
 int32_t rx_rnd_save(uint64_t id);
 int32_t rx_rnd_load(uint64_t id);
