@@ -13,7 +13,6 @@ use reinforcex::models::{
     FCSoftmaxPolicy, FCSoftmaxPolicyWithValue,
 };
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
-use ulid::Ulid;
 
 pub const RX_OK: i32 = 0;
 pub const RX_ERROR_NULL_POINTER: i32 = -1;
@@ -139,8 +138,37 @@ struct ReplayBufferWrapper {
 
 struct RndWrapper {
     rnd: RND,
-    device: Device,
     obs_size: usize,
+}
+
+struct SharedRnd {
+    rnd: Arc<Mutex<RndWrapper>>,
+}
+
+impl Basecuriosity for SharedRnd {
+    fn calc_internal_reward(&self, experiences: &[Arc<Experience>]) -> Tensor {
+        self.rnd
+            .lock()
+            .expect("RND mutex poisoned")
+            .rnd
+            .calc_internal_reward(experiences)
+    }
+
+    fn update(&mut self, experiences: &[Arc<Experience>]) {
+        self.rnd
+            .lock()
+            .expect("RND mutex poisoned")
+            .rnd
+            .update(experiences);
+    }
+
+    fn save(&self) {
+        self.rnd.lock().expect("RND mutex poisoned").rnd.save();
+    }
+
+    fn load(&mut self) {
+        self.rnd.lock().expect("RND mutex poisoned").rnd.load();
+    }
 }
 
 fn default_agent_config(obs_size: u64, action_size: u64, hidden_size: u64) -> RxAgentConfig {
@@ -377,8 +405,9 @@ fn optional_c_string(ptr: *const c_char) -> Result<Option<String>, i32> {
     }
 }
 
-fn create_dqn_with_paths(
+fn create_dqn_with_replay_and_paths(
     config: &RxDqnConfig,
+    replay: Arc<ReplayBuffer>,
     save_path: Option<String>,
     load_path: Option<String>,
 ) -> Result<AgentWrapper, i32> {
@@ -395,10 +424,6 @@ fn create_dqn_with_paths(
         to_usize(config.agent.hidden_layers)?,
         to_i64(config.agent.hidden_size)?,
     );
-    let replay = Arc::new(ReplayBuffer::new(
-        to_usize(config.replay_capacity)?,
-        to_usize(config.replay_n_steps)?,
-    ));
     let explorer = EpsilonGreedy::new(
         config.epsilon_start,
         config.epsilon_end,
@@ -427,14 +452,28 @@ fn create_dqn_with_paths(
     })
 }
 
+fn create_dqn_with_paths(
+    config: &RxDqnConfig,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) -> Result<AgentWrapper, i32> {
+    validate_dqn(config)?;
+    let replay = Arc::new(ReplayBuffer::new(
+        to_usize(config.replay_capacity)?,
+        to_usize(config.replay_n_steps)?,
+    ));
+    create_dqn_with_replay_and_paths(config, replay, save_path, load_path)
+}
+
 fn create_dqn(config: &RxDqnConfig) -> Result<AgentWrapper, i32> {
     create_dqn_with_paths(config, None, None)
 }
 
-fn create_ppo_with_paths(
+fn create_ppo_with_paths_and_curiosity(
     config: &RxPpoConfig,
     save_path: Option<String>,
     load_path: Option<String>,
+    curiosity: Option<(SharedRnd, f64)>,
 ) -> Result<AgentWrapper, i32> {
     validate_ppo(config)?;
     let device = Device::cuda_if_available();
@@ -470,7 +509,7 @@ fn create_ppo_with_paths(
         )),
         _ => return Err(RX_ERROR_INVALID_ARGUMENT),
     };
-    let agent = PPO::new(
+    let mut agent = PPO::new(
         model,
         optimizer,
         config.agent.gamma,
@@ -486,6 +525,9 @@ fn create_ppo_with_paths(
         save_path,
         load_path,
     );
+    if let Some((curiosity, curiosity_reward_coefficient)) = curiosity {
+        agent.add_curiosity(curiosity, curiosity_reward_coefficient);
+    }
 
     Ok(AgentWrapper {
         agent: Box::new(agent),
@@ -497,6 +539,37 @@ fn create_ppo_with_paths(
             to_usize(config.agent.action_size)?
         },
     })
+}
+
+fn create_ppo_with_paths(
+    config: &RxPpoConfig,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) -> Result<AgentWrapper, i32> {
+    create_ppo_with_paths_and_curiosity(config, save_path, load_path, None)
+}
+
+fn create_ppo_with_rnd_and_paths(
+    config: &RxPpoConfig,
+    rnd: Arc<Mutex<RndWrapper>>,
+    curiosity_reward_coefficient: f64,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) -> Result<AgentWrapper, i32> {
+    if !curiosity_reward_coefficient.is_finite() {
+        return Err(RX_ERROR_INVALID_ARGUMENT);
+    }
+    let rnd_obs_size = rnd.lock().map_err(|_| RX_ERROR_INTERNAL)?.obs_size;
+    if to_usize(config.agent.obs_size)? != rnd_obs_size {
+        return Err(RX_ERROR_INVALID_ARGUMENT);
+    }
+
+    create_ppo_with_paths_and_curiosity(
+        config,
+        save_path,
+        load_path,
+        Some((SharedRnd { rnd }, curiosity_reward_coefficient)),
+    )
 }
 
 fn create_ppo(config: &RxPpoConfig) -> Result<AgentWrapper, i32> {
@@ -665,7 +738,6 @@ fn create_rnd_with_paths(
 
     Ok(RndWrapper {
         rnd,
-        device,
         obs_size: to_usize(config.obs_size)?,
     })
 }
@@ -813,18 +885,6 @@ fn make_observation(
         .to_device(device))
 }
 
-fn curiosity_experience(state: Tensor) -> Arc<Experience> {
-    Arc::new(Experience::new(
-        Ulid::new(),
-        Ulid::new(),
-        state,
-        None,
-        None,
-        0.0,
-        false,
-    ))
-}
-
 fn write_action(action: Tensor, expected_len: usize, out: *mut f32, out_len: u64) -> i64 {
     if out.is_null() {
         return i64::from(RX_ERROR_NULL_POINTER);
@@ -921,36 +981,6 @@ fn stop_episode_impl(id: u64, obs: *const f32, obs_len: u64, reward: f32) -> i32
         Err(status) => return status,
     };
     guard.agent.stop_episode_and_train(&obs, f64::from(reward));
-    RX_OK
-}
-
-fn rnd_calc_reward_impl(id: u64, obs: *const f32, obs_len: u64, out_reward: *mut f64) -> i32 {
-    if out_reward.is_null() {
-        return RX_ERROR_NULL_POINTER;
-    }
-    let rnd = match get_rnd(id) {
-        Ok(rnd) => rnd,
-        Err(status) => return status,
-    };
-    let guard = match rnd.lock() {
-        Ok(guard) => guard,
-        Err(_) => return RX_ERROR_INTERNAL,
-    };
-    let state = match make_observation(obs, obs_len, guard.obs_size, guard.device) {
-        Ok(obs) => obs,
-        Err(status) => return status,
-    };
-    let experience = curiosity_experience(state);
-    let reward = guard
-        .rnd
-        .calc_internal_reward(std::slice::from_ref(&experience));
-    let reward = reward
-        .to_device(Device::Cpu)
-        .mean(Kind::Float)
-        .double_value(&[]);
-    unsafe {
-        *out_reward = reward;
-    }
     RX_OK
 }
 
@@ -1054,6 +1084,84 @@ pub extern "C" fn rx_dqn_create_with_paths(
 }
 
 #[no_mangle]
+pub extern "C" fn rx_dqn_create_with_replay(
+    config: *const RxDqnConfig,
+    replay_id: u64,
+    out_id: *mut u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        rx_dqn_create_with_replay_and_paths(
+            config,
+            replay_id,
+            std::ptr::null(),
+            std::ptr::null(),
+            out_id,
+        )
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+#[no_mangle]
+pub extern "C" fn rx_dqn_create_with_replay_and_paths(
+    config: *const RxDqnConfig,
+    replay_id: u64,
+    save_path: *const c_char,
+    load_path: *const c_char,
+    out_id: *mut u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if config.is_null() || out_id.is_null() {
+            return RX_ERROR_NULL_POINTER;
+        }
+        unsafe {
+            *out_id = 0;
+        }
+        let config = unsafe { *config };
+        if let Err(status) = validate_dqn(&config) {
+            return status;
+        }
+        let replay = match get_replay_buffer(replay_id) {
+            Ok(replay) => replay,
+            Err(status) => return status,
+        };
+        let replay_n_steps = match to_usize(config.replay_n_steps) {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        if replay.n_steps != replay_n_steps
+            || replay.capacity < to_usize(config.batch_size).unwrap_or(usize::MAX)
+        {
+            return RX_ERROR_INVALID_ARGUMENT;
+        }
+        let save_path = match optional_c_string(save_path) {
+            Ok(path) => path,
+            Err(status) => return status,
+        };
+        let load_path = match optional_c_string(load_path) {
+            Ok(path) => path,
+            Err(status) => return status,
+        };
+        match create_dqn_with_replay_and_paths(
+            &config,
+            Arc::clone(&replay.buffer),
+            save_path,
+            load_path,
+        )
+        .and_then(insert_agent)
+        {
+            Ok(id) => {
+                unsafe {
+                    *out_id = id;
+                }
+                RX_OK
+            }
+            Err(status) => status,
+        }
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+#[no_mangle]
 pub extern "C" fn rx_ppo_create_with_paths(
     config: *const RxPpoConfig,
     save_path: *const c_char,
@@ -1068,6 +1176,82 @@ pub extern "C" fn rx_ppo_create_with_paths(
             out_id,
             |config, save, load| create_ppo_with_paths(config, save, load),
         )
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+#[no_mangle]
+pub extern "C" fn rx_ppo_create_with_rnd(
+    config: *const RxPpoConfig,
+    rnd_id: u64,
+    curiosity_reward_coefficient: f64,
+    out_id: *mut u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        rx_ppo_create_with_rnd_and_paths(
+            config,
+            rnd_id,
+            curiosity_reward_coefficient,
+            std::ptr::null(),
+            std::ptr::null(),
+            out_id,
+        )
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+#[no_mangle]
+pub extern "C" fn rx_ppo_create_with_rnd_and_paths(
+    config: *const RxPpoConfig,
+    rnd_id: u64,
+    curiosity_reward_coefficient: f64,
+    save_path: *const c_char,
+    load_path: *const c_char,
+    out_id: *mut u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if config.is_null() || out_id.is_null() {
+            return RX_ERROR_NULL_POINTER;
+        }
+        unsafe {
+            *out_id = 0;
+        }
+        let config = unsafe { *config };
+        if let Err(status) = validate_ppo(&config) {
+            return status;
+        }
+        if !curiosity_reward_coefficient.is_finite() {
+            return RX_ERROR_INVALID_ARGUMENT;
+        }
+        let rnd = match get_rnd(rnd_id) {
+            Ok(rnd) => rnd,
+            Err(status) => return status,
+        };
+        let save_path = match optional_c_string(save_path) {
+            Ok(path) => path,
+            Err(status) => return status,
+        };
+        let load_path = match optional_c_string(load_path) {
+            Ok(path) => path,
+            Err(status) => return status,
+        };
+        match create_ppo_with_rnd_and_paths(
+            &config,
+            rnd,
+            curiosity_reward_coefficient,
+            save_path,
+            load_path,
+        )
+        .and_then(insert_agent)
+        {
+            Ok(id) => {
+                unsafe {
+                    *out_id = id;
+                }
+                RX_OK
+            }
+            Err(status) => status,
+        }
     }))
     .unwrap_or(RX_ERROR_PANIC)
 }
@@ -1411,19 +1595,6 @@ pub extern "C" fn rx_replay_buffer_destroy(id: u64) -> i32 {
 }
 
 #[no_mangle]
-pub extern "C" fn rx_rnd_calc_reward(
-    id: u64,
-    obs: *const f32,
-    obs_len: u64,
-    out_reward: *mut f64,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        rnd_calc_reward_impl(id, obs, obs_len, out_reward)
-    }))
-    .unwrap_or(RX_ERROR_PANIC)
-}
-
-#[no_mangle]
 pub extern "C" fn rx_rnd_save(id: u64) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         let rnd = match get_rnd(id) {
@@ -1491,6 +1662,7 @@ pub extern "C" fn rx_agent_destroy(id: u64) -> i32 {
 mod tests {
     use super::*;
     use std::ffi::CString;
+    use ulid::Ulid;
 
     fn stat_name(stat: &RxStatistic) -> String {
         let bytes = stat
@@ -1681,7 +1853,48 @@ mod tests {
     }
 
     #[test]
-    fn rnd_lifecycle_reward_and_validation() {
+    fn dqn_agents_can_share_replay_buffer() {
+        let replay_config = default_replay_buffer_config(64, 1);
+        let mut replay_id = 0;
+        assert_eq!(
+            rx_replay_buffer_create(&replay_config, &mut replay_id),
+            RX_OK
+        );
+
+        let mut config = default_dqn_config(4, 2);
+        config.batch_size = 4;
+        config.replay_capacity = replay_config.capacity;
+        config.replay_n_steps = replay_config.n_steps;
+        let mut agent1 = 0;
+        let mut agent2 = 0;
+        assert_eq!(
+            rx_dqn_create_with_replay(&config, replay_id, &mut agent1),
+            RX_OK
+        );
+        assert_eq!(
+            rx_dqn_create_with_replay(&config, replay_id, &mut agent2),
+            RX_OK
+        );
+        assert_ne!(agent1, agent2);
+
+        let obs = [0.1f32; 4];
+        let mut out = [0.0f32; 1];
+        assert_eq!(
+            rx_agent_act_and_train(agent1, obs.as_ptr(), 4, 1.0, out.as_mut_ptr(), 1),
+            1
+        );
+        assert_eq!(
+            rx_agent_act_and_train(agent2, obs.as_ptr(), 4, 1.0, out.as_mut_ptr(), 1),
+            1
+        );
+
+        assert_eq!(rx_agent_destroy(agent1), RX_OK);
+        assert_eq!(rx_agent_destroy(agent2), RX_OK);
+        assert_eq!(rx_replay_buffer_destroy(replay_id), RX_OK);
+    }
+
+    #[test]
+    fn ppo_can_train_with_an_attached_rnd_after_rnd_handle_is_destroyed() {
         let mut config = default_rnd_config(4);
         config.feature_size = 8;
         config.hidden_layers = 1;
@@ -1692,18 +1905,48 @@ mod tests {
         assert_eq!(rx_rnd_create(&config, &mut rnd_id), RX_OK);
         assert_ne!(rnd_id, 0);
 
-        let obs = [0.1f32, 0.2, 0.3, 0.4];
-        let mut reward = 0.0;
+        let mut ppo_config = default_ppo_config(4, 2);
+        ppo_config.action_space = RX_ACTION_DISCRETE;
+        ppo_config.update_interval = 2;
+        ppo_config.minibatch_size = 1;
+        let mut ppo_id = 0;
         assert_eq!(
-            rx_rnd_calc_reward(rnd_id, obs.as_ptr(), obs.len() as u64, &mut reward),
+            rx_ppo_create_with_rnd(&ppo_config, rnd_id, 1.0, &mut ppo_id),
             RX_OK
         );
-        assert!(reward.is_finite());
+        assert_ne!(ppo_id, 0);
 
-        assert_eq!(rx_rnd_save(rnd_id), RX_OK);
-        assert_eq!(rx_rnd_load(rnd_id), RX_OK);
+        // PPO retains a shared RND reference after its public handle is released.
         assert_eq!(rx_rnd_destroy(rnd_id), RX_OK);
-        assert_eq!(rx_rnd_destroy(rnd_id), RX_ERROR_NOT_FOUND);
+        let obs = [0.1f32, 0.2, 0.3, 0.4];
+        let mut action = [0.0f32; 1];
+        assert_eq!(
+            rx_agent_act_and_train(
+                ppo_id,
+                obs.as_ptr(),
+                obs.len() as u64,
+                0.0,
+                action.as_mut_ptr(),
+                1
+            ),
+            1
+        );
+        assert_eq!(
+            rx_agent_act_and_train(
+                ppo_id,
+                obs.as_ptr(),
+                obs.len() as u64,
+                1.0,
+                action.as_mut_ptr(),
+                1
+            ),
+            1
+        );
+        assert_eq!(
+            rx_agent_stop_episode(ppo_id, obs.as_ptr(), obs.len() as u64, 1.0),
+            RX_OK
+        );
+        assert_eq!(rx_agent_destroy(ppo_id), RX_OK);
     }
 
     #[test]

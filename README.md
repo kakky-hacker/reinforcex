@@ -244,155 +244,49 @@ RND splits that batch into predictor minibatches of at most the configured
 size. RND checkpoints contain `rnd_predictor.ot` and `rnd_target.ot` in the
 configured directory.
 
-# Sample experiments
-The sample experiments call Gymnasium environments through FastAPI servers.
-Docker Compose starts ten environment servers on ports `8001` to `8010`.
+# Python sample experiments
+
+The runnable examples use Gymnasium directly and call ReinforceX exclusively
+through its C FFI. Build the dynamic library and install the Python runtime
+dependencies first:
 
 ```sh
-docker compose -f sample_env/docker-compose.yml up -d --build
+cargo build -p reinforcex_ffi --release
+python -m pip install numpy "gymnasium[classic-control,box2d,mujoco]"
 ```
 
-Run CartPole with DQN using four parallel environments and one shared replay
-buffer:
+Each former Rust experiment has a Python counterpart in [`examples`](examples):
+
+| Environment | Algorithm | Command |
+| --- | --- | --- |
+| CartPole | DQN | `python examples/train_cartpole_dqn_ffi.py` |
+| CartPole | PPO | `python examples/train_cartpole_ppo_ffi.py` |
+| CartPole | discrete SAC | `python examples/train_cartpole_sac_ffi.py` |
+| Ant | continuous PPO | `python examples/train_ant_ppo_ffi.py` |
+| LunarLander | DQN | `python examples/train_lunar_lander_dqn_ffi.py` |
+| LunarLander | PPO + RND | `python examples/train_lunar_lander_ppo_rnd_ffi.py` |
+| LunarLander | PPO + shared RND | `python examples/train_lunar_lander_ppo_shared_rnd_ffi.py` |
+| LunarLanderContinuous | SAC | `python examples/train_lunar_lander_sac_ffi.py` |
+
+The scripts accept `--episodes`, `--max-steps`, `--seed`, `--log-interval`, and
+`--parallel`. DQN and SAC workers share one FFI replay buffer. PPO workers own
+independent agents; the shared-RND variant additionally uses one RND handle
+whose calls are serialized inside the library.
+
+Use `--save-path` and `--load-path` for checkpoints. In a parallel run,
+`{agent_id}` is replaced with the worker index:
 
 ```sh
-cargo run -p reinforcex --features cpu -- --env cartpole --algo dqn --parallel 4
-```
-
-Run CartPole with four independent PPO workers:
-
-```sh
-cargo run -p reinforcex --features cpu -- --env cartpole --algo ppo --parallel 4
-```
-
-Run CartPole with discrete SAC using four parallel environment servers:
-
-```sh
-cargo run -p reinforcex --features cpu -- --env cartpole --algo sac --parallel 4
-```
-
-Run LunarLanderContinuous with continuous SAC:
-
-```sh
-cargo run -p reinforcex --features cpu -- --env lunar --algo sac --parallel 4
-```
-
-Run discrete LunarLander with DQN using four parallel environments and one
-shared replay buffer:
-
-```sh
-cargo run -p reinforcex --features cpu -- --env lunar --algo dqn --parallel 4
-```
-
-Run discrete LunarLander with PPO and RND curiosity using four parallel
-environment servers:
-
-```sh
-cargo run -p reinforcex --features cpu -- \
-  --env lunar \
-  --algo ppo-rnd \
+python examples/train_cartpole_dqn_ffi.py \
   --parallel 4 \
-  --save-path "models/lunar_ppo_rnd_{agent_id}.ot"
-```
-
-Each worker owns an independent PPO agent and RND predictor. Port `8001` is
-used by agent 0, `8002` by agent 1, and so on. Make sure the corresponding
-environment servers are running before increasing `--parallel`.
-
-To share one RND predictor across all PPO workers, use `ppo-shared-rnd`:
-
-```sh
-cargo run -p reinforcex --features cpu -- \
-  --env lunar \
-  --algo ppo-shared-rnd \
-  --parallel 4 \
-  --save-path "models/lunar_ppo_shared_rnd_{agent_id}.ot"
-```
-
-The PPO agents remain independent, while intrinsic-reward calculation and RND
-predictor updates use one `Arc<Mutex<RND>>`. This lets observations from every
-environment train the same predictor. RND access is serialized by the mutex;
-environment stepping and PPO updates still run in parallel.
-
-Run Ant with four independent PPO workers:
-
-```sh
-cargo run -p reinforcex --features cpu -- --env ant --algo ppo --parallel 4
-```
-
-Use `--save-path` and `--load-path` to persist models. Multi-agent samples can
-include `{agent_id}` in the path.
-
-```sh
-cargo run -p reinforcex --features cpu -- \
-  --env cartpole \
-  --algo dqn \
   --save-path "models/cartpole_dqn_{agent_id}.ot" \
   --load-path "models/cartpole_dqn_{agent_id}.ot"
 ```
 
-For SAC, a single save path expands into component checkpoints such as actor,
-critic1, critic2, and temperature files.
-
-For PPO+RND, the PPO model uses the configured agent path. Its RND checkpoint is
-stored beside it using the same path with `.rnd` appended. For example,
-`models/lunar_ppo_rnd_0.ot` is paired with the directory
-`models/lunar_ppo_rnd_0.ot.rnd`. Pass the same base path through `--load-path`
-to restore both components.
-
-The shared-RND example replaces `{agent_id}` with `shared` for the RND
-checkpoint. With the command above, PPO checkpoints use agent-specific paths
-and the shared predictor is stored in
-`models/lunar_ppo_shared_rnd_shared.ot.rnd`.
-
-Run the hybrid discrete LunarLander example with four PPO explorers and two
-SAC learners/actors:
-
-```sh
-cargo run -p reinforcex --features cpu -- \
-  --env lunar \
-  --algo ppo-sac-rnd \
-  --ppo-agents 4 \
-  --sac-agents 2 \
-  --save-path "models/lunar_hybrid_{role}_{agent_id}.ot"
-```
-
-This starts one environment per agent: PPO uses ports `8001` through `8004`
-and SAC uses `8005` and `8006`. All workers write extrinsic-reward transitions
-to one `Arc<ReplayBuffer>`, and every SAC instance samples from it. PPO alone
-adds RND intrinsic reward to its on-policy update; intrinsic rewards are never
-stored in the SAC replay buffer. The PPO workers share one `Arc<Mutex<RND>>`,
-but each has a deterministic random binary mask over the 128 RND error
-features. This gives each explorer a different novelty projection while all of
-them continue training the same predictor. Use at most ten total agents with
-the supplied Docker Compose file.
-
-`{role}` expands to `ppo`, `sac`, or `rnd`; `{agent_id}` expands to the worker
-index. If the placeholders are omitted, role and agent suffixes are added
-automatically to avoid checkpoint collisions.
-
-The same hybrid topology is available for continuous `Ant-v5`. PPO and SAC
-both use its eight-dimensional `[-1, 1]` action space; SAC applies the tanh
-transform internally:
-
-```sh
-cargo run -p reinforcex --features cpu -- \
-  --env ant \
-  --algo ppo-sac-rnd \
-  --ppo-agents 4 \
-  --sac-agents 2 \
-  --save-path "models/ant_hybrid_{role}_{agent_id}.ot"
-```
-
-As in the LunarLander example, PPO workers share one RND model but use distinct
-fixed random feature masks. Only raw Ant environment rewards enter the shared
-SAC replay buffer; masked intrinsic rewards affect PPO updates only.
-
-Stop the sample environment servers:
-
-```sh
-docker compose -f sample_env/docker-compose.yml down
-```
+PPO+RND stores each predictor beside its PPO checkpoint with `.rnd` appended.
+The shared-RND script replaces `{agent_id}` with `shared` for that predictor.
+Set `REINFORCEX_LIB` when the dynamic library is not in `target/release` or the
+platform library search path.
 
 <img width="597" alt="CartPole training sample" src="https://github.com/user-attachments/assets/b8c0606b-ec11-4b5a-b7fc-3070ad327d72" />
 
@@ -404,8 +298,8 @@ cargo test --workspace
 ```
 
 The core unit tests exercise agents, models, curiosity modules, probability
-distributions, memory buffers, selectors, and the FFI wrapper. The Docker-based
-Gymnasium server is only required for the sample experiments above.
+distributions, memory buffers, selectors, and the FFI wrapper. Gymnasium is
+only required when running the Python sample experiments.
 
 # FFI
 ReinforceX provides a C-compatible API for embedding DQN, PPO, SAC, shared replay
@@ -643,8 +537,34 @@ int32_t rx_dqn_create_with_paths(
     const char *load_path,
     uint64_t *out_id);
 
+int32_t rx_dqn_create_with_replay(
+    const RxDqnConfig *config,
+    uint64_t replay_id,
+    uint64_t *out_id);
+
+int32_t rx_dqn_create_with_replay_and_paths(
+    const RxDqnConfig *config,
+    uint64_t replay_id,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
 int32_t rx_ppo_create_with_paths(
     const RxPpoConfig *config,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
+int32_t rx_ppo_create_with_rnd(
+    const RxPpoConfig *config,
+    uint64_t rnd_id,
+    double curiosity_reward_coefficient,
+    uint64_t *out_id);
+
+int32_t rx_ppo_create_with_rnd_and_paths(
+    const RxPpoConfig *config,
+    uint64_t rnd_id,
+    double curiosity_reward_coefficient,
     const char *save_path,
     const char *load_path,
     uint64_t *out_id);
@@ -674,13 +594,22 @@ int32_t rx_sac_create_with_replay_and_paths(
 | `rx_ppo_create` | Creates a PPO agent with its own on-policy buffer. |
 | `rx_sac_create` | Creates a SAC agent with its own replay buffer. |
 | `rx_*_create_with_paths` | Creates an agent with optional save/load checkpoint paths. |
+| `rx_ppo_create_with_rnd` | Creates a PPO agent with an existing RND curiosity module. |
+| `rx_ppo_create_with_rnd_and_paths` | Same as above, with optional PPO save/load paths. |
+| `rx_dqn_create_with_replay` | Creates a DQN agent that uses an existing shared replay buffer. |
+| `rx_dqn_create_with_replay_and_paths` | Same as above, with optional save/load checkpoint paths. |
 | `rx_sac_create_with_replay` | Creates a SAC agent that uses an existing shared replay buffer. |
 | `rx_sac_create_with_replay_and_paths` | Same as above, with optional save/load checkpoint paths. |
 
 On success, create functions return `RX_OK` and write a non-zero handle to
-`out_id`. On failure, `out_id` is set to zero. Shared SAC replay creation checks
-that the shared replay buffer has the same `n_steps` as the SAC config and is
-large enough for `batch_size` and `replay_start_size`.
+`out_id`. On failure, `out_id` is set to zero. Shared DQN and SAC replay
+creation checks that the replay buffer has the same `n_steps` as the agent
+config and is large enough for its batches. SAC also checks
+`replay_start_size`.
+
+`rx_ppo_create_with_rnd*` requires the RND and PPO observation sizes to match.
+The PPO agent retains the RND internally, calculates intrinsic rewards, updates
+the RND predictor during PPO updates, and saves it together with the PPO agent.
 
 ## Agent action, training, statistics, and lifecycle APIs
 
@@ -750,11 +679,11 @@ int32_t rx_replay_buffer_destroy(uint64_t id);
 
 | Function | Purpose |
 |---|---|
-| `rx_replay_buffer_create` | Creates a replay buffer handle that can be shared by SAC agents. |
+| `rx_replay_buffer_create` | Creates a replay buffer handle that can be shared by DQN or SAC agents. |
 | `rx_replay_buffer_destroy` | Removes the replay buffer handle from the registry. Existing agents keep their `Arc` reference alive. |
 
-Use shared replay buffers for multi-agent SAC training. Experience collection
-and replay insertion remain inside each SAC agent.
+Use shared replay buffers for multi-agent DQN or SAC training. Experience
+collection and replay insertion remain inside each agent.
 
 ## RND APIs
 
@@ -767,12 +696,6 @@ int32_t rx_rnd_create_with_paths(
     const char *load_path,
     uint64_t *out_id);
 
-int32_t rx_rnd_calc_reward(
-    uint64_t id,
-    const float *obs,
-    uint64_t obs_len,
-    double *out_reward);
-
 int32_t rx_rnd_save(uint64_t id);
 int32_t rx_rnd_load(uint64_t id);
 int32_t rx_rnd_destroy(uint64_t id);
@@ -782,14 +705,13 @@ int32_t rx_rnd_destroy(uint64_t id);
 |---|---|
 | `rx_rnd_create` | Creates an RND curiosity module. |
 | `rx_rnd_create_with_paths` | Creates an RND module with optional save/load paths. |
-| `rx_rnd_calc_reward` | Computes intrinsic reward for an observation without training RND. |
 | `rx_rnd_save` | Saves RND using the `save_path` supplied at creation. No-ops if no path was supplied. |
 | `rx_rnd_load` | Loads RND using the `load_path` supplied at creation. No-ops if no path was supplied. |
 | `rx_rnd_destroy` | Releases the RND handle. |
 
-The FFI RND surface is limited to intrinsic-reward inference and checkpoint
-lifecycle. Predictor updates are performed through the Rust-side PPO curiosity
-integration instead of a public FFI update function.
+Attach an RND to PPO through `rx_ppo_create_with_rnd*`; the host does not
+calculate intrinsic reward or train the RND directly. A shared RND handle can
+be attached to multiple PPO agents. Its access is serialized internally.
 
 # Contributing
 ReinforceX is a good place to contribute if you are interested in Rust,

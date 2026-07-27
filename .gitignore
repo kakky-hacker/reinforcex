@@ -22,3 +22,7 @@ target/
 
 .env
 *.ot
+
+# Python examples
+__pycache__/
+*.py[cod]
