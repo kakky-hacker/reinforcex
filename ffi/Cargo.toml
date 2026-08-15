@@ -11,7 +11,12 @@ name = "reinforcex"
 crate-type = ["cdylib"]
 
 [dependencies]
-reinforcex = { path = "../core" }
+reinforcex = { path = "../core", default-features = false }
 tch = { workspace = true }
 dashmap = "6.1.0"
 ulid = "1"
+
+[features]
+default = ["cpu"]
+cpu = ["reinforcex/cpu"]
+cuda = ["reinforcex/cuda"]

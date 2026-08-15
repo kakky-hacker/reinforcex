@@ -139,7 +139,7 @@ impl FCSoftmaxPolicy {
 impl BasePolicy for FCSoftmaxPolicy {
     fn forward(&self, x: &Tensor) -> (Box<dyn BaseDistribution>, Option<Tensor>) {
         let h = self.compute_medium_layer(x);
-        (self.compute_distribution(&h, 1.0, true), None)
+        (self.compute_distribution(&h, 1.0, false), None)
     }
 
     fn device(&self) -> Device {
@@ -219,7 +219,7 @@ impl BasePolicy for FCSoftmaxPolicyWithValue {
         let h = self.base_policy.compute_medium_layer(x);
         let value = self.value_layer.forward(&h);
         (
-            self.base_policy.compute_distribution(&h, 0.1, false),
+            self.base_policy.compute_distribution(&h, 1.0, false),
             Some(value),
         )
     }
@@ -247,7 +247,50 @@ impl BasePolicy for FCSoftmaxPolicyWithValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tch::{nn, Device, Kind, Tensor};
+    use tch::{nn, no_grad, Device, Kind, Tensor};
+
+    #[test]
+    fn test_policy_uses_unclipped_logits() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let mut policy = FCSoftmaxPolicy::new(vs, 1, 2, 0, 4, 0.0);
+        no_grad(|| {
+            let _ = policy.logits_layer.ws.zero_();
+            policy
+                .logits_layer
+                .bs
+                .as_mut()
+                .unwrap()
+                .copy_(&Tensor::from_slice(&[-1.0f32, 1.0]));
+        });
+
+        let (distribution, _) = policy.forward(&Tensor::zeros([1, 1], (Kind::Float, Device::Cpu)));
+        let probabilities = distribution.all_prob();
+
+        assert!((probabilities.double_value(&[0, 0]) - 0.11920292).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_policy_with_value_uses_unit_temperature() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let mut policy = FCSoftmaxPolicyWithValue::new(vs, 1, 2, 0, 4, 0.0);
+        no_grad(|| {
+            let _ = policy.base_policy.logits_layer.ws.zero_();
+            policy
+                .base_policy
+                .logits_layer
+                .bs
+                .as_mut()
+                .unwrap()
+                .copy_(&Tensor::from_slice(&[-1.0f32, 1.0]));
+        });
+
+        let (distribution, value) =
+            policy.forward(&Tensor::zeros([1, 1], (Kind::Float, Device::Cpu)));
+        let probabilities = distribution.all_prob();
+
+        assert!((probabilities.double_value(&[0, 0]) - 0.11920292).abs() < 1e-6);
+        assert_eq!(value.unwrap().size(), vec![1, 1]);
+    }
 
     #[test]
     fn test_multi_softmax_policy_forward() {

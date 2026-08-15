@@ -55,6 +55,7 @@ def train(args) -> None:
                 episodes=args.episodes,
                 max_steps=args.max_steps,
                 log_interval=args.log_interval,
+                solved_return=200.0,
             ),
         )
     finally:
@@ -64,7 +65,7 @@ def train(args) -> None:
 
 
 def main() -> None:
-    parser = training_parser(__doc__, episodes=3_000, max_steps=100_000, log_interval=10)
+    parser = training_parser(__doc__, episodes=1_000, max_steps=1_000, log_interval=25)
     train(parser.parse_args())
 
 

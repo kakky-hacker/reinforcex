@@ -4,7 +4,10 @@ use crate::misc::weight_initializer::{he_init, xavier_init};
 use crate::prob_distributions::BaseDistribution;
 use crate::prob_distributions::GaussianDistribution;
 use tch::nn::{linear, Init, Linear, LinearConfig, Module, VarStore};
-use tch::{Device, Tensor};
+use tch::{no_grad, Device, Tensor};
+
+const MAX_PPO_ACTION_VARIANCE: f64 = 0.1;
+const PPO_ACTION_MEAN_INIT_STD: f64 = 0.01;
 
 pub struct FCGaussianPolicy {
     vs: VarStore,
@@ -140,7 +143,13 @@ impl BasePolicy for FCGaussianPolicy {
     fn forward(&self, x: &Tensor) -> (Box<dyn BaseDistribution>, Option<Tensor>) {
         let h = self.compute_medium_layer(x);
         let (mean, var) = self.compute_mean_and_var(&h);
-        (Box::new(GaussianDistribution::new(mean, var)), None)
+        let distribution = match (self.min_action, self.max_action) {
+            (Some(min_action), Some(max_action)) => {
+                GaussianDistribution::new_bounded(mean, var, min_action, max_action)
+            }
+            _ => GaussianDistribution::new(mean, var),
+        };
+        (Box::new(distribution), None)
     }
 
     fn device(&self) -> Device {
@@ -185,7 +194,7 @@ impl FCGaussianPolicyWithValue {
             },
         );
 
-        let base_policy = FCGaussianPolicy::new(
+        let mut base_policy = FCGaussianPolicy::new(
             vs,
             n_input_channels,
             action_size,
@@ -197,6 +206,15 @@ impl FCGaussianPolicyWithValue {
             var_type,
             min_var,
         );
+        no_grad(|| {
+            let _ = base_policy
+                .mean_layer
+                .ws
+                .normal_(0.0, PPO_ACTION_MEAN_INIT_STD);
+            if let Some(bias) = base_policy.mean_layer.bs.as_mut() {
+                let _ = bias.zero_();
+            }
+        });
 
         FCGaussianPolicyWithValue {
             base_policy,
@@ -212,9 +230,20 @@ impl FCGaussianPolicyWithValue {
 impl BasePolicy for FCGaussianPolicyWithValue {
     fn forward(&self, x: &Tensor) -> (Box<dyn BaseDistribution>, Option<Tensor>) {
         let h = self.base_policy.compute_medium_layer(x);
-        let (mean, var) = self.base_policy.compute_mean_and_var(&h);
+        let (mean, _) = self.base_policy.compute_mean_and_var(&h);
+        let max_var = MAX_PPO_ACTION_VARIANCE.max(self.base_policy.min_var);
+        let var = (self.base_policy.var_layer.forward(&h).sigmoid()
+            * (max_var - self.base_policy.min_var)
+            + self.base_policy.min_var)
+            .expand(&mean.size(), false);
         let value = self.compute_value(&h);
-        (Box::new(GaussianDistribution::new(mean, var)), Some(value))
+        let distribution = match (self.base_policy.min_action, self.base_policy.max_action) {
+            (Some(min_action), Some(max_action)) => {
+                GaussianDistribution::new_bounded(mean, var, min_action, max_action)
+            }
+            _ => GaussianDistribution::new(mean, var),
+        };
+        (Box::new(distribution), Some(value))
     }
 
     fn device(&self) -> Device {
@@ -306,6 +335,64 @@ mod tests {
         assert_eq!(var.size()[0], 3);
         assert_eq!(var.size()[1], action_size);
         assert!(var.min().double_value(&[]) >= 1e-3);
+    }
+
+    #[test]
+    fn test_policy_with_value_caps_action_variance() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let mut policy = FCGaussianPolicyWithValue::new(
+            vs,
+            4,
+            2,
+            1,
+            16,
+            Some(-1.0),
+            Some(1.0),
+            true,
+            "spherical",
+            1e-3,
+        );
+        let _ = tch::no_grad(|| {
+            policy
+                .base_policy
+                .var_layer
+                .bs
+                .as_mut()
+                .unwrap()
+                .fill_(100.0)
+        });
+
+        let (distribution, _) =
+            policy.forward(&Tensor::zeros([3, 4], (tch::Kind::Float, Device::Cpu)));
+        let (_, variance) = distribution.params();
+        assert!(variance.le(MAX_PPO_ACTION_VARIANCE).all().int64_value(&[]) == 1);
+        assert!(variance.ge(1e-3).all().int64_value(&[]) == 1);
+    }
+
+    #[test]
+    fn test_policy_with_value_starts_with_small_action_means() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let policy = FCGaussianPolicyWithValue::new(
+            vs,
+            17,
+            6,
+            1,
+            256,
+            Some(-1.0),
+            Some(1.0),
+            true,
+            "diagonal",
+            1e-2,
+        );
+
+        let weight_std = policy
+            .base_policy
+            .mean_layer
+            .ws
+            .std(false)
+            .double_value(&[]);
+        assert!(weight_std > 0.005);
+        assert!(weight_std < 0.02);
     }
 
     #[test]

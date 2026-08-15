@@ -128,7 +128,7 @@ impl BaseQFunction for FCQNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tch::{nn, Device, Tensor};
+    use tch::{Device, Tensor};
 
     #[test]
     fn test_fcqnetwork_forward() {

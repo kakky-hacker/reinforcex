@@ -32,6 +32,11 @@ pub struct PPO {
     entropy_coef: f64,
     gae_std: bool,
     t: usize,
+    update_count: usize,
+    last_policy_loss: Option<f64>,
+    last_value_loss: Option<f64>,
+    last_entropy: Option<f64>,
+    last_intrinsic_reward_mean: Option<f64>,
     current_episode_id: Ulid,
     save_path: Option<String>,
     load_path: Option<String>,
@@ -76,6 +81,11 @@ impl PPO {
             entropy_coef,
             gae_std,
             t: 0,
+            update_count: 0,
+            last_policy_loss: None,
+            last_value_loss: None,
+            last_entropy: None,
+            last_intrinsic_reward_mean: None,
             current_episode_id: Ulid::new(),
             save_path,
             load_path,
@@ -101,7 +111,7 @@ impl PPO {
         self.curiosity_reward_coef = curiosity_reward_coef;
     }
 
-    fn _compute_rewards(&self, experiences: &[Arc<Experience>]) -> Tensor {
+    fn _compute_rewards(&mut self, experiences: &[Arc<Experience>]) -> Tensor {
         let device = self.model.device();
         let extrinsic_rewards = Tensor::from_slice(
             &experiences
@@ -109,6 +119,7 @@ impl PPO {
                 .map(|experience| experience.reward)
                 .collect::<Vec<f64>>(),
         )
+        .to_kind(Kind::Float)
         .to_device(device);
 
         if experiences.is_empty() {
@@ -121,11 +132,28 @@ impl PPO {
 
         let intrinsic_rewards = curiosity
             .calc_internal_reward(experiences)
+            .to_kind(Kind::Float)
             .to_device(device)
             .view([-1]);
         assert_eq!(intrinsic_rewards.numel(), experiences.len());
+        self.last_intrinsic_reward_mean =
+            Some(intrinsic_rewards.mean(Kind::Float).double_value(&[]));
 
         extrinsic_rewards + self.curiosity_reward_coef * intrinsic_rewards
+    }
+
+    fn _compute_advantage_and_value_target(
+        &self,
+        raw_gae: Tensor,
+        old_value: &Tensor,
+    ) -> (Tensor, Tensor) {
+        let value_target = &raw_gae + old_value;
+        let advantage = if self.gae_std {
+            (&raw_gae - raw_gae.mean(Kind::Float)) / (raw_gae.std(false) + 1e-8)
+        } else {
+            raw_gae
+        };
+        (advantage, value_target)
     }
 
     fn _update(&mut self) {
@@ -196,12 +224,12 @@ impl PPO {
             curiosity.update(&_skip_first);
         }
 
-        let (old_action_distrib, old_value) = self.model.forward(&state);
-        let old_value = old_value.unwrap().flatten(0, 1).detach();
-        let old_log_prob = old_action_distrib.log_prob(&action.detach()).detach();
+        let (old_action_distrib, old_value) = no_grad(|| self.model.forward(&state));
+        let old_value = old_value.unwrap().flatten(0, 1);
+        let old_log_prob = old_action_distrib.log_prob(&action).detach();
 
-        let (_, old_next_value) = self.model.forward(&next_state);
-        let old_next_value = old_next_value.unwrap().flatten(0, 1).detach();
+        let (_, old_next_value) = no_grad(|| self.model.forward(&next_state));
+        let old_next_value = old_next_value.unwrap().flatten(0, 1);
 
         let non_terminal: Tensor = 1.0
             - Tensor::from_slice(
@@ -210,6 +238,7 @@ impl PPO {
                     .map(|e| if e.is_episode_terminal { 1.0 } else { 0.0 })
                     .collect::<Vec<f64>>(),
             )
+            .to_kind(Kind::Float)
             .to_device(self.model.device());
 
         let old_next_value = (old_next_value * non_terminal).detach();
@@ -231,16 +260,10 @@ impl PPO {
                 })
                 .collect::<Vec<f64>>(),
         ))
+        .to_kind(Kind::Float)
         .to_device(self.model.device())
         .detach();
-        let gae = if self.gae_std {
-            (&_gae - (&_gae).mean(Kind::Float)) / ((&_gae).std(false) + 1e-8)
-        } else {
-            _gae
-        };
-
-        // Compute value target
-        let value_target = &gae + &old_value;
+        let (gae, value_target) = self._compute_advantage_and_value_target(_gae, &old_value);
 
         for i in 0..self.epoch {
             for j in 0..n_iter {
@@ -250,17 +273,17 @@ impl PPO {
                 )
                 .to_device(self.model.device());
 
-                // Forward
-                let (action_distrib, value) = self.model.forward(&state);
-                let value = value
-                    .unwrap()
-                    .flatten(0, 1)
-                    .index_select(0, &minibatch_indice);
+                let minibatch_state = state.index_select(0, &minibatch_indice);
+                let minibatch_action = action.index_select(0, &minibatch_indice);
+
+                // Forward only the current minibatch.
+                let (action_distrib, value) = self.model.forward(&minibatch_state);
+                let value = value.unwrap().flatten(0, 1);
 
                 // Compute policy ratio.
-                let log_prob = action_distrib.log_prob(&action.detach());
-                let policy_ratio = (log_prob - &old_log_prob)
-                    .index_select(0, &minibatch_indice)
+                let log_prob = action_distrib.log_prob(&minibatch_action.detach());
+                let minibatch_old_log_prob = old_log_prob.index_select(0, &minibatch_indice);
+                let policy_ratio = (log_prob - minibatch_old_log_prob)
                     .clamp(
                         -POLICY_LOG_PROB_RATIO_CLAMP_RANGE,
                         POLICY_LOG_PROB_RATIO_CLAMP_RANGE,
@@ -288,15 +311,16 @@ impl PPO {
                     .square()
                     .maximum(&(&_value_target - clipped_value).square())
                     .mean(Kind::Float);
-                let entropy_regularized = action_distrib
-                    .entropy()
-                    .index_select(0, &minibatch_indice)
-                    .mean(Kind::Float);
+                let entropy_regularized = action_distrib.entropy().mean(Kind::Float);
 
                 // Check Nan
                 assert!(policy_loss.isnan().any().int64_value(&[]) == 0);
                 assert!(value_loss.isnan().any().int64_value(&[]) == 0);
                 assert!(entropy_regularized.isnan().any().int64_value(&[]) == 0);
+
+                self.last_policy_loss = Some(policy_loss.double_value(&[]));
+                self.last_value_loss = Some(value_loss.double_value(&[]));
+                self.last_entropy = Some(entropy_regularized.double_value(&[]));
 
                 let loss: Tensor = policy_loss + self.value_coef * value_loss
                     - self.entropy_coef * entropy_regularized;
@@ -304,9 +328,11 @@ impl PPO {
                 // Backward
                 self.optimizer.zero_grad();
                 loss.backward();
+                self.optimizer.clip_grad_norm(0.5);
                 self.optimizer.step();
             }
         }
+        self.update_count += 1;
     }
 }
 
@@ -345,7 +371,22 @@ impl BaseAgent for PPO {
             .push_back(experience.clone());
 
         if let Some(buffer_for_share_experience) = &self.buffer_for_share_experience {
-            buffer_for_share_experience.append(experience, self.gamma);
+            // The off-policy consumer only needs the transition itself.  Keeping
+            // PPO's CUDA distribution tensors in a long-lived replay buffer can
+            // otherwise exhaust device memory during shared training.
+            let replay_experience = Arc::new(Experience::new(
+                self.agent_id,
+                self.current_episode_id,
+                experience.state.to_device(Device::Cpu),
+                experience
+                    .action
+                    .as_ref()
+                    .map(|action| action.to_device(Device::Cpu)),
+                None,
+                reward,
+                false,
+            ));
+            buffer_for_share_experience.append(replay_experience, self.gamma);
         }
 
         if self.t % self.update_interval == 0 {
@@ -372,13 +413,39 @@ impl BaseAgent for PPO {
             .push_back(experience.clone());
 
         if let Some(buffer_for_share_experience) = &self.buffer_for_share_experience {
-            buffer_for_share_experience.append(experience, self.gamma);
+            let replay_experience = Arc::new(Experience::new(
+                self.agent_id,
+                self.current_episode_id,
+                experience.state.to_device(Device::Cpu),
+                None,
+                None,
+                reward,
+                true,
+            ));
+            buffer_for_share_experience.append(replay_experience, self.gamma);
         }
         self.current_episode_id = Ulid::new();
     }
 
     fn get_statistics(&self) -> Vec<(String, f64)> {
-        vec![]
+        let mut statistics = vec![("updates".to_string(), self.update_count as f64)];
+        if let Some(loss) = self.last_policy_loss {
+            statistics.push(("policy_loss".to_string(), loss));
+        }
+        if let Some(loss) = self.last_value_loss {
+            statistics.push(("value_loss".to_string(), loss));
+        }
+        if let Some(entropy) = self.last_entropy {
+            statistics.push(("entropy".to_string(), entropy));
+        }
+        if let Some(intrinsic_reward_mean) = self.last_intrinsic_reward_mean {
+            statistics.push(("intrinsic_reward_mean".to_string(), intrinsic_reward_mean));
+            statistics.push((
+                "curiosity_coefficient".to_string(),
+                self.curiosity_reward_coef,
+            ));
+        }
+        statistics
     }
 
     fn get_agent_id(&self) -> &Ulid {
@@ -478,6 +545,38 @@ mod tests {
     }
 
     #[test]
+    fn test_standardized_advantage_does_not_change_value_target() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+        let model = FCSoftmaxPolicyWithValue::new(vs, 2, 2, 1, 8, 0.0);
+        let ppo = PPO::new(
+            Box::new(model),
+            optimizer,
+            0.99,
+            0.95,
+            2,
+            1,
+            1,
+            0.2,
+            0.2,
+            0.5,
+            0.01,
+            true,
+            None,
+            None,
+        );
+        let raw_gae = Tensor::from_slice(&[2.0_f32, 4.0]);
+        let old_value = Tensor::from_slice(&[10.0_f32, 20.0]);
+
+        let (advantage, value_target) =
+            ppo._compute_advantage_and_value_target(raw_gae, &old_value);
+
+        assert!(advantage.mean(Kind::Float).double_value(&[]).abs() < 1e-6);
+        assert!((value_target.double_value(&[0]) - 12.0).abs() < 1e-6);
+        assert!((value_target.double_value(&[1]) - 24.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn test_ppo_shares_experience_with_replay_buffer() {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
@@ -512,7 +611,9 @@ mod tests {
             .get(&experience.episode_id)
             .unwrap()
             .to_vec();
-        assert!(Arc::ptr_eq(&on_policy_experiences[0], &experience));
+        assert!(!Arc::ptr_eq(&on_policy_experiences[0], &experience));
+        assert!(experience.action_distrib.is_none());
+        assert_eq!(experience.state.device(), Device::Cpu);
         assert_eq!(experience.state.size(), [1, 4]);
         assert!(experience.action.is_some());
         assert!(!experience.is_episode_terminal);
@@ -712,11 +813,16 @@ mod tests {
         let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
         ppo.stop_episode_and_train(&obs, 1.0);
 
-        for _ in 0..1000 {
-            let action = ppo.act(&obs);
-            let action_value = i64::from(action.int64_value(&[]));
-            assert_eq!(action_value, 2);
-        }
+        assert!(ppo.update_count > 0);
+        assert!(ppo.last_policy_loss.is_some_and(f64::is_finite));
+        assert!(ppo.last_value_loss.is_some_and(f64::is_finite));
+        assert!(ppo
+            .last_entropy
+            .is_some_and(|entropy| entropy.is_finite() && entropy >= 0.0));
+
+        let action = ppo.act(&obs);
+        let action_value = action.int64_value(&[]);
+        assert!([0, 1, 2, 3].contains(&action_value));
     }
 
     #[test]

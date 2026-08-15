@@ -25,22 +25,22 @@ def train(args) -> None:
     ppo_config = RxPpoConfig()
     check(lib.rx_ppo_config_default(C.byref(ppo_config), 8, 4), "rx_ppo_config_default")
     ppo_config.action_space = RX_ACTION_DISCRETE
-    ppo_config.agent.hidden_size = 256
-    ppo_config.learning_rate = 2.5e-4
+    ppo_config.agent.hidden_size = 128
+    ppo_config.learning_rate = 3e-4
     ppo_config.gae_lambda = 0.95
-    ppo_config.update_interval = 2_048
-    ppo_config.epochs = 10
-    ppo_config.minibatch_size = 64
+    ppo_config.update_interval = 1_024
+    ppo_config.epochs = 6
+    ppo_config.minibatch_size = 128
     ppo_config.policy_clip_epsilon = 0.2
     ppo_config.value_clip_range = 0.2
     ppo_config.value_loss_coefficient = 0.5
-    ppo_config.entropy_coefficient = 0.01
+    ppo_config.entropy_coefficient = 0.005
 
     rnd_config = RxRndConfig()
     check(lib.rx_rnd_config_default(C.byref(rnd_config), 8), "rx_rnd_config_default")
-    rnd_config.feature_size = 128
-    rnd_config.hidden_layers = 2
-    rnd_config.hidden_size = 256
+    rnd_config.feature_size = 64
+    rnd_config.hidden_layers = 1
+    rnd_config.hidden_size = 128
     rnd_config.learning_rate = 1e-4
     rnd_config.update_interval = 128
 
@@ -77,6 +77,7 @@ def train(args) -> None:
                 episodes=args.episodes,
                 max_steps=args.max_steps,
                 log_interval=args.log_interval,
+                solved_return=200.0,
             ),
         )
     finally:
@@ -87,8 +88,8 @@ def train(args) -> None:
 
 
 def main() -> None:
-    parser = training_parser(__doc__, episodes=5_000, max_steps=1_000, log_interval=20)
-    parser.add_argument("--curiosity-coefficient", type=float, default=1.0)
+    parser = training_parser(__doc__, episodes=1_000, max_steps=1_000, log_interval=25)
+    parser.add_argument("--curiosity-coefficient", type=float, default=0.01)
     train(parser.parse_args())
 
 

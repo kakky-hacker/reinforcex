@@ -4,6 +4,8 @@ use tch::{Kind, Tensor};
 pub struct GaussianDistribution {
     mean: Tensor,
     var: Tensor,
+    min_action: Option<f64>,
+    max_action: Option<f64>,
 }
 
 unsafe impl Sync for GaussianDistribution {}
@@ -12,7 +14,29 @@ unsafe impl Send for GaussianDistribution {}
 impl GaussianDistribution {
     pub fn new(mean: Tensor, var: Tensor) -> Self {
         assert_eq!(mean.size(), var.size(), "mean and var must have same shape");
-        GaussianDistribution { mean, var }
+        GaussianDistribution {
+            mean,
+            var,
+            min_action: None,
+            max_action: None,
+        }
+    }
+
+    pub fn new_bounded(mean: Tensor, var: Tensor, min_action: f64, max_action: f64) -> Self {
+        assert!(min_action.is_finite());
+        assert!(max_action.is_finite());
+        assert!(min_action < max_action);
+        let mut distribution = Self::new(mean, var);
+        distribution.min_action = Some(min_action);
+        distribution.max_action = Some(max_action);
+        distribution
+    }
+
+    fn bound_action(&self, action: Tensor) -> Tensor {
+        match (self.min_action, self.max_action) {
+            (Some(min_action), Some(max_action)) => action.clamp(min_action, max_action),
+            _ => action,
+        }
     }
 }
 
@@ -47,7 +71,7 @@ impl BaseDistribution for GaussianDistribution {
     fn sample(&self) -> Tensor {
         let std = self.var.sqrt();
         let noise = Tensor::randn_like(&self.mean);
-        (&self.mean + &std * noise).detach()
+        self.bound_action(&self.mean + &std * noise).detach()
     }
 
     fn prob(&self, x: &Tensor) -> Tensor {
@@ -62,14 +86,17 @@ impl BaseDistribution for GaussianDistribution {
     }
 
     fn copy(&self) -> Box<dyn BaseDistribution> {
-        Box::new(Self::new(
+        let mut copy = Self::new(
             self.mean.shallow_clone().detach(),
             self.var.shallow_clone().detach(),
-        ))
+        );
+        copy.min_action = self.min_action;
+        copy.max_action = self.max_action;
+        Box::new(copy)
     }
 
     fn most_probable(&self) -> Tensor {
-        self.mean.shallow_clone()
+        self.bound_action(self.mean.shallow_clone())
     }
 
     fn detach(&mut self) {
@@ -134,6 +161,22 @@ mod tests {
 
         let sample = gaussian.sample();
         assert_eq!(sample.size(), vec![1, 2]);
+    }
+
+    #[test]
+    fn test_bounded_sample_and_mode_stay_in_action_space() {
+        let mean = Tensor::from_slice(&[-5.0, 5.0]).view([1, 2]);
+        let var = Tensor::from_slice(&[100.0, 100.0]).view([1, 2]);
+        let gaussian = GaussianDistribution::new_bounded(mean, var, -1.0, 1.0);
+
+        for _ in 0..100 {
+            let sample = gaussian.sample();
+            assert!(sample.ge(-1.0).all().int64_value(&[]) == 1);
+            assert!(sample.le(1.0).all().int64_value(&[]) == 1);
+        }
+        let mode = gaussian.most_probable();
+        assert_eq!(mode.double_value(&[0, 0]), -1.0);
+        assert_eq!(mode.double_value(&[0, 1]), 1.0);
     }
 
     #[test]

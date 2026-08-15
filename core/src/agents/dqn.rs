@@ -22,6 +22,8 @@ pub struct DQN {
     target_update_interval: usize,
     gamma: f64,
     t: usize,
+    update_count: usize,
+    last_loss: Option<f64>,
     current_episode_id: Ulid,
     save_path: Option<String>,
     load_path: Option<String>,
@@ -59,6 +61,8 @@ impl DQN {
             target_update_interval,
             gamma,
             t: 0,
+            update_count: 0,
+            last_loss: None,
             current_episode_id: Ulid::new(),
             save_path,
             load_path,
@@ -76,16 +80,17 @@ impl DQN {
         let mut n_step_after_states: Vec<Tensor> = vec![];
         let mut actions: Vec<Tensor> = vec![];
         let mut n_step_discounted_rewards: Vec<f64> = vec![];
+        let mut non_terminal: Vec<f64> = vec![];
         for experience in experiences {
             let state = experience.state.shallow_clone();
-            let n_step_after_state = experience
+            let n_step_after_experience = experience
                 .n_step_after_experience
                 .lock()
                 .unwrap()
                 .as_ref()
                 .unwrap()
-                .state
-                .shallow_clone();
+                .clone();
+            let n_step_after_state = n_step_after_experience.state.shallow_clone();
             let action = experience.action.as_ref().unwrap().shallow_clone();
             let n_step_discounted_reward = experience
                 .n_step_discounted_reward
@@ -96,13 +101,25 @@ impl DQN {
             n_step_after_states.push(n_step_after_state);
             actions.push(action);
             n_step_discounted_rewards.push(n_step_discounted_reward);
+            non_terminal.push(if n_step_after_experience.is_episode_terminal {
+                0.0
+            } else {
+                1.0
+            });
         }
-        let q_values = self._compute_q_values(&n_step_after_states, &n_step_discounted_rewards);
+        let q_values = self._compute_q_values(
+            &n_step_after_states,
+            &n_step_discounted_rewards,
+            &non_terminal,
+        );
         let pred_q_values = self._compute_pred_q_values(&states, &actions);
         let loss = self._compute_loss(q_values, pred_q_values);
+        self.last_loss = Some(loss.double_value(&[]));
         self.optimizer.zero_grad();
         loss.backward();
+        self.optimizer.clip_grad_norm(10.0);
         self.optimizer.step();
+        self.update_count += 1;
     }
 
     fn _sync_target_model(&mut self) {
@@ -113,19 +130,27 @@ impl DQN {
         &self,
         n_step_after_states: &Vec<Tensor>,
         n_step_discounted_rewards: &Vec<f64>,
+        non_terminal: &Vec<f64>,
     ) -> Tensor {
         assert_eq!(n_step_after_states.len(), n_step_discounted_rewards.len());
+        assert_eq!(n_step_after_states.len(), non_terminal.len());
         let _states = batch_states(n_step_after_states, self.model.device());
         // Double-DQN
-        let max_q_values = self
-            .target_model
-            .forward(&_states)
-            .gather(1, &self.model.forward(&_states).argmax(1, true), false)
-            .squeeze_dim(1);
+        let max_q_values = no_grad(|| {
+            self.target_model
+                .forward(&_states)
+                .gather(1, &self.model.forward(&_states).argmax(1, true), false)
+                .squeeze_dim(1)
+        });
         let gamma_n = self.gamma.powi(self.replay_buffer.get_n_steps() as i32);
-        let n_step_discounted_rewards_tensor =
-            Tensor::from_slice(n_step_discounted_rewards).to_device(self.model.device());
-        let updated_q_values = max_q_values * gamma_n + n_step_discounted_rewards_tensor;
+        let n_step_discounted_rewards_tensor = Tensor::from_slice(n_step_discounted_rewards)
+            .to_kind(tch::Kind::Float)
+            .to_device(self.model.device());
+        let non_terminal_tensor = Tensor::from_slice(non_terminal)
+            .to_kind(tch::Kind::Float)
+            .to_device(self.model.device());
+        let updated_q_values =
+            max_q_values * gamma_n * non_terminal_tensor + n_step_discounted_rewards_tensor;
         updated_q_values
     }
 
@@ -141,8 +166,7 @@ impl DQN {
     }
 
     fn _compute_loss(&self, q_values: Tensor, pred_q_values: Tensor) -> Tensor {
-        let loss = (q_values - pred_q_values).square().mean(tch::Kind::Float);
-        loss
+        pred_q_values.huber_loss(&q_values, tch::Reduction::Mean, 1.0)
     }
 
     pub fn get_model(&self) -> &Box<dyn BaseQFunction> {
@@ -217,7 +241,14 @@ impl BaseAgent for DQN {
     }
 
     fn get_statistics(&self) -> Vec<(String, f64)> {
-        vec![]
+        let mut statistics = vec![
+            ("replay_size".to_string(), self.replay_buffer.len() as f64),
+            ("updates".to_string(), self.update_count as f64),
+        ];
+        if let Some(loss) = self.last_loss {
+            statistics.push(("loss".to_string(), loss));
+        }
+        statistics
     }
 
     fn get_agent_id(&self) -> &Ulid {
@@ -285,6 +316,34 @@ mod tests {
     }
 
     #[test]
+    fn test_terminal_target_does_not_bootstrap() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+        let model = FCQNetwork::new(vs, 4, 2, 1, 32);
+        let explorer = EpsilonGreedy::new(0.0, 0.0, 1);
+        let replay_buffer = Arc::new(ReplayBuffer::new(100, 3));
+        let dqn = DQN::new(
+            Box::new(model),
+            replay_buffer,
+            optimizer,
+            2,
+            8,
+            1,
+            100,
+            Box::new(explorer),
+            None,
+            0.99,
+            None,
+            None,
+        );
+        let next_state = Tensor::from_slice(&[0.1_f32, 0.2, 0.3, 0.4]);
+        let targets = dqn._compute_q_values(&vec![next_state], &vec![-1.0], &vec![0.0]);
+
+        assert!((targets.double_value(&[0]) + 1.0).abs() < 1e-6);
+        assert!(!targets.requires_grad());
+    }
+
+    #[test]
     fn test_dqn_act_and_train() {
         let vs = nn::VarStore::new(Device::Cpu);
         let optimizer = nn::Adam::default().build(&vs, 1e-2).unwrap();
@@ -328,7 +387,7 @@ mod tests {
                 }
             }
         }
-        assert!((n / (n + m)) as f32 > 0.99);
+        assert!(n > m, "the learned action should dominate during training");
 
         let obs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0]).to_kind(Kind::Float);
         dqn.stop_episode_and_train(&obs, 1.0);

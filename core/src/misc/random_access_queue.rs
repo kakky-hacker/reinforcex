@@ -148,6 +148,6 @@ mod tests {
         for i in 1..=5 {
             queue.append(i);
         }
-        let samples = queue.sample_without_replacement(6);
+        queue.sample_without_replacement(6);
     }
 }

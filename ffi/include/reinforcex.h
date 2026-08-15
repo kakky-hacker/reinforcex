@@ -78,6 +78,7 @@ typedef struct RxSacConfig {
     uint64_t target_update_interval;
     double tau;
     double alpha;
+    double discrete_target_entropy_ratio;
     double min_variance;
     uint32_t squash_action;
 } RxSacConfig;
@@ -100,6 +101,9 @@ typedef struct RxStatistic {
     char name[RX_STAT_NAME_LEN];
     double value;
 } RxStatistic;
+
+uint32_t rx_cuda_is_available(void);
+int32_t rx_manual_seed(int64_t seed);
 
 int32_t rx_dqn_config_default(
     RxDqnConfig *out_config,
@@ -153,6 +157,18 @@ int32_t rx_ppo_create_with_paths(
     const char *load_path,
     uint64_t *out_id);
 
+int32_t rx_ppo_create_with_replay(
+    const RxPpoConfig *config,
+    uint64_t replay_id,
+    uint64_t *out_id);
+
+int32_t rx_ppo_create_with_replay_and_paths(
+    const RxPpoConfig *config,
+    uint64_t replay_id,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
 int32_t rx_ppo_create_with_rnd(
     const RxPpoConfig *config,
     uint64_t rnd_id,
@@ -162,6 +178,22 @@ int32_t rx_ppo_create_with_rnd(
 int32_t rx_ppo_create_with_rnd_and_paths(
     const RxPpoConfig *config,
     uint64_t rnd_id,
+    double curiosity_reward_coefficient,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
+int32_t rx_ppo_create_with_rnd_and_replay(
+    const RxPpoConfig *config,
+    uint64_t rnd_id,
+    uint64_t replay_id,
+    double curiosity_reward_coefficient,
+    uint64_t *out_id);
+
+int32_t rx_ppo_create_with_rnd_and_replay_and_paths(
+    const RxPpoConfig *config,
+    uint64_t rnd_id,
+    uint64_t replay_id,
     double curiosity_reward_coefficient,
     const char *save_path,
     const char *load_path,
@@ -232,6 +264,7 @@ int32_t rx_agent_save(uint64_t id);
 int32_t rx_agent_load(uint64_t id);
 
 int32_t rx_replay_buffer_destroy(uint64_t id);
+int32_t rx_replay_buffer_len(uint64_t id, uint64_t *out_len);
 
 int32_t rx_rnd_save(uint64_t id);
 int32_t rx_rnd_load(uint64_t id);

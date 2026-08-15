@@ -16,11 +16,11 @@ from reinforcex_ffi import (
 )
 
 
-def shaped_reward(_reward: float, step: int, done: bool, max_steps: int) -> float:
-    reward = 5.0 if step % 20 == 0 else 0.0
-    if done and max_steps - step + 1 > 10:
-        reward = -30.0
-    return reward
+def shaped_reward(reward: float, step: int, done: bool, max_steps: int) -> float:
+    """Keep targets small and make premature failure immediately distinguishable."""
+    if done and step < max_steps:
+        return -1.0
+    return 0.01 * reward
 
 
 def train(args) -> None:
@@ -28,17 +28,20 @@ def train(args) -> None:
     lib = load_reinforcex()
     config = RxDqnConfig()
     check(lib.rx_dqn_config_default(C.byref(config), 4, 2), "rx_dqn_config_default")
-    config.agent.hidden_size = 200
-    config.agent.gamma = 0.97
-    config.learning_rate = 3e-4
-    config.batch_size = 128
-    config.replay_capacity = 300_000
-    config.replay_n_steps = 5
-    config.update_interval = 16
-    config.target_update_interval = 100
-    config.epsilon_start = 0.5
-    config.epsilon_end = 0.0
-    config.epsilon_decay_steps = 20_000
+    # CartPole needs little model capacity. A smaller network and replay buffer
+    # reduce both update cost and the amount of stale experience retained.
+    config.agent.hidden_layers = 1
+    config.agent.hidden_size = 64
+    config.agent.gamma = 0.99
+    config.learning_rate = 5e-4
+    config.batch_size = 64
+    config.replay_capacity = 50_000
+    config.replay_n_steps = 3
+    config.update_interval = 4
+    config.target_update_interval = 250
+    config.epsilon_start = 1.0
+    config.epsilon_end = 0.05
+    config.epsilon_decay_steps = 10_000
 
     replay = create_replay_buffer(lib, config.replay_capacity, config.replay_n_steps)
     agents = []
@@ -64,6 +67,7 @@ def train(args) -> None:
                 max_steps=args.max_steps,
                 log_interval=args.log_interval,
                 reward_transform=shaped_reward,
+                solved_return=475.0,
             ),
         )
     finally:
@@ -73,7 +77,7 @@ def train(args) -> None:
 
 
 def main() -> None:
-    parser = training_parser(__doc__, episodes=10_000, max_steps=500, log_interval=100)
+    parser = training_parser(__doc__, episodes=500, max_steps=500, log_interval=25)
     train(parser.parse_args())
 
 
