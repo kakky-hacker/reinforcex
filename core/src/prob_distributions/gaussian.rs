@@ -22,6 +22,9 @@ impl GaussianDistribution {
         }
     }
 
+    /// A Gaussian with bounds for environment actions. Sampling, modes, entropy,
+    /// and likelihoods remain in the unbounded Gaussian policy space; call
+    /// `to_env_action` only for environment execution and off-policy replay.
     pub fn new_bounded(mean: Tensor, var: Tensor, min_action: f64, max_action: f64) -> Self {
         assert!(min_action.is_finite());
         assert!(max_action.is_finite());
@@ -71,7 +74,11 @@ impl BaseDistribution for GaussianDistribution {
     fn sample(&self) -> Tensor {
         let std = self.var.sqrt();
         let noise = Tensor::randn_like(&self.mean);
-        self.bound_action(&self.mean + &std * noise).detach()
+        (&self.mean + &std * noise).detach()
+    }
+
+    fn to_env_action(&self, action: &Tensor) -> Tensor {
+        self.bound_action(action.shallow_clone())
     }
 
     fn prob(&self, x: &Tensor) -> Tensor {
@@ -96,7 +103,7 @@ impl BaseDistribution for GaussianDistribution {
     }
 
     fn most_probable(&self) -> Tensor {
-        self.bound_action(self.mean.shallow_clone())
+        self.mean.shallow_clone()
     }
 
     fn detach(&mut self) {
@@ -164,19 +171,48 @@ mod tests {
     }
 
     #[test]
-    fn test_bounded_sample_and_mode_stay_in_action_space() {
+    fn test_environment_actions_are_bounded_without_clipping_policy_actions() {
         let mean = Tensor::from_slice(&[-5.0, 5.0]).view([1, 2]);
         let var = Tensor::from_slice(&[100.0, 100.0]).view([1, 2]);
         let gaussian = GaussianDistribution::new_bounded(mean, var, -1.0, 1.0);
 
         for _ in 0..100 {
-            let sample = gaussian.sample();
+            let raw_sample = gaussian.sample();
+            let sample = gaussian.to_env_action(&raw_sample);
             assert!(sample.ge(-1.0).all().int64_value(&[]) == 1);
             assert!(sample.le(1.0).all().int64_value(&[]) == 1);
         }
-        let mode = gaussian.most_probable();
+        let raw_mode = gaussian.most_probable();
+        assert_eq!(raw_mode.double_value(&[0, 0]), -5.0);
+        assert_eq!(raw_mode.double_value(&[0, 1]), 5.0);
+        let mode = gaussian.to_env_action(&raw_mode);
         assert_eq!(mode.double_value(&[0, 0]), -1.0);
         assert_eq!(mode.double_value(&[0, 1]), 1.0);
+        let copied = gaussian.copy();
+        assert_eq!(copied.to_env_action(&copied.most_probable()), mode);
+    }
+
+    #[test]
+    fn test_policy_ratio_uses_original_action_above_environment_bound() {
+        let old = GaussianDistribution::new_bounded(
+            Tensor::from_slice(&[0.8f32]).view([1, 1]),
+            Tensor::from_slice(&[0.1f32]).view([1, 1]),
+            -1.0,
+            1.0,
+        );
+        let new = GaussianDistribution::new_bounded(
+            Tensor::from_slice(&[0.9f32]).view([1, 1]),
+            Tensor::from_slice(&[0.1f32]).view([1, 1]),
+            -1.0,
+            1.0,
+        );
+        let raw_action = Tensor::from_slice(&[1.2f32]).view([1, 1]);
+        let env_action = old.to_env_action(&raw_action);
+        assert_eq!(env_action.double_value(&[0, 0]), 1.0);
+        let ratio = (new.log_prob(&raw_action) - old.log_prob(&raw_action)).exp();
+        // exp(((1.2-.8)^2 - (1.2-.9)^2)/(2*.1)) = exp(.35).
+        assert!((ratio.double_value(&[0]) - 0.35f64.exp()).abs() < 1e-6);
+        assert!(ratio.double_value(&[0]) > 1.2);
     }
 
     #[test]

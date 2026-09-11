@@ -83,9 +83,18 @@ class RxSacConfig(C.Structure):
         ("target_update_interval", C.c_uint64),
         ("tau", C.c_double),
         ("alpha", C.c_double),
-        ("discrete_target_entropy_ratio", C.c_double),
         ("min_variance", C.c_double),
         ("squash_action", C.c_uint32),
+    ]
+
+
+class RxSacConfigV2(C.Structure):
+    """Extended SAC settings; anonymous base preserves config.agent access."""
+
+    _anonymous_ = ("base",)
+    _fields_ = [
+        ("base", RxSacConfig),
+        ("discrete_target_entropy_ratio", C.c_double),
     ]
 
 
@@ -169,6 +178,7 @@ def configure_ffi(lib: C.CDLL) -> None:
     lib.rx_dqn_config_default.argtypes = [C.POINTER(RxDqnConfig), C.c_uint64, C.c_uint64]
     lib.rx_ppo_config_default.argtypes = [C.POINTER(RxPpoConfig), C.c_uint64, C.c_uint64]
     lib.rx_sac_config_default.argtypes = [C.POINTER(RxSacConfig), C.c_uint64, C.c_uint64]
+    lib.rx_sac_config_default_v2.argtypes = [C.POINTER(RxSacConfigV2), C.c_uint64, C.c_uint64]
     lib.rx_replay_buffer_config_default.argtypes = [
         C.POINTER(RxReplayBufferConfig),
         C.c_uint64,
@@ -179,6 +189,7 @@ def configure_ffi(lib: C.CDLL) -> None:
         "rx_dqn_config_default",
         "rx_ppo_config_default",
         "rx_sac_config_default",
+        "rx_sac_config_default_v2",
         "rx_replay_buffer_config_default",
         "rx_rnd_config_default",
     ):
@@ -239,6 +250,26 @@ def configure_ffi(lib: C.CDLL) -> None:
         char_pointer,
         uint64_pointer,
     ]
+    lib.rx_sac_create_with_paths_v2.argtypes = [
+        C.POINTER(RxSacConfigV2),
+        char_pointer,
+        char_pointer,
+        uint64_pointer,
+    ]
+    lib.rx_sac_create_with_replay_and_paths_v2.argtypes = [
+        C.POINTER(RxSacConfigV2),
+        C.c_uint64,
+        char_pointer,
+        char_pointer,
+        uint64_pointer,
+    ]
+    for suffix, config_type in (("", RxSacConfig), ("_v2", RxSacConfigV2)):
+        create = getattr(lib, "rx_sac_create" + suffix)
+        create.argtypes = [C.POINTER(config_type), uint64_pointer]
+        create.restype = C.c_int32
+        create_with_replay = getattr(lib, "rx_sac_create_with_replay" + suffix)
+        create_with_replay.argtypes = [C.POINTER(config_type), C.c_uint64, uint64_pointer]
+        create_with_replay.restype = C.c_int32
     lib.rx_replay_buffer_create.argtypes = [
         C.POINTER(RxReplayBufferConfig),
         uint64_pointer,
@@ -258,6 +289,8 @@ def configure_ffi(lib: C.CDLL) -> None:
         "rx_ppo_create_with_rnd_and_replay_and_paths",
         "rx_sac_create_with_paths",
         "rx_sac_create_with_replay_and_paths",
+        "rx_sac_create_with_paths_v2",
+        "rx_sac_create_with_replay_and_paths_v2",
         "rx_replay_buffer_create",
         "rx_rnd_create_with_paths",
     ):
@@ -587,26 +620,27 @@ def create_ppo(
 
 def create_sac(
     lib: C.CDLL,
-    config: RxSacConfig,
+    config: RxSacConfig | RxSacConfigV2,
     save_path: str | None,
     load_path: str | None,
     replay: ReplayBuffer | None = None,
 ) -> Agent:
     handle = C.c_uint64()
+    suffix = "_v2" if isinstance(config, RxSacConfigV2) else ""
     if replay is None:
-        status = lib.rx_sac_create_with_paths(
+        operation = "rx_sac_create_with_paths" + suffix
+        status = getattr(lib, operation)(
             C.byref(config), _path_bytes(save_path), _path_bytes(load_path), C.byref(handle)
         )
-        operation = "rx_sac_create_with_paths"
     else:
-        status = lib.rx_sac_create_with_replay_and_paths(
+        operation = "rx_sac_create_with_replay_and_paths" + suffix
+        status = getattr(lib, operation)(
             C.byref(config),
             replay.handle,
             _path_bytes(save_path),
             _path_bytes(load_path),
             C.byref(handle),
         )
-        operation = "rx_sac_create_with_replay_and_paths"
     check(status, operation)
     discrete = config.action_space == RX_ACTION_DISCRETE
     return Agent(lib, handle.value, 1 if discrete else config.agent.action_size, discrete)

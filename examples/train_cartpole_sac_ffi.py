@@ -4,7 +4,7 @@ import ctypes as C
 
 from reinforcex_ffi import (
     RX_ACTION_DISCRETE,
-    RxSacConfig,
+    RxSacConfigV2,
     check,
     create_replay_buffer,
     create_sac,
@@ -27,8 +27,8 @@ def shaped_reward(reward: float, step: int, done: bool, max_steps: int) -> float
 def train(args) -> None:
     validate_training_args(args)
     lib = load_reinforcex()
-    config = RxSacConfig()
-    check(lib.rx_sac_config_default(C.byref(config), 4, 2), "rx_sac_config_default")
+    config = RxSacConfigV2()
+    check(lib.rx_sac_config_default_v2(C.byref(config), 4, 2), "rx_sac_config_default_v2")
     config.action_space = RX_ACTION_DISCRETE
     # CartPole needs little model capacity. A shorter warm-up and compact replay
     # improve sample efficiency while avoiding stale early-policy experience.

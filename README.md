@@ -43,8 +43,10 @@ reinforcex = "0.0.5"
 ```
 
 For CUDA experiments, build with the `cuda` feature and make sure your local
-libtorch / CUDA runtime is visible to `tch`. On Windows, `load_cuda_dlls()` also
-checks `TORCH_CUDA_DLL` when the `cuda` feature is enabled.
+libtorch / CUDA runtime is visible to `tch`. On Windows, `try_load_cuda_dlls()`
+loads `TORCH_CUDA_DLL` when the `cuda` feature is enabled and returns a `Result`
+on missing/invalid configuration. The legacy `load_cuda_dlls()` remains a
+best-effort wrapper. Successful loads are reused; failed loads can be retried.
 
 # Algorithms
 Implemented agents and exploration modules:
@@ -426,6 +428,18 @@ The core unit tests exercise agents, models, curiosity modules, probability
 distributions, memory buffers, selectors, and the FFI wrapper. Gymnasium is
 only required when running the Python sample experiments.
 
+For DLL-level legacy ABI and process-safety regressions (Python standard library
+only), build the FFI library and run:
+
+```sh
+python ffi/tests/test_ffi_regressions.py --library target/debug/reinforcex.dll
+```
+
+Use the platform's `.so`/`.dylib` name on Linux/macOS. For a Windows CUDA-feature
+build, also pass `--expect-cuda-loader` and set `TORCH_CUDA_DLL` to an existing
+CUDA DLL. This checks missing/invalid paths and retries in isolated processes;
+it does not require an available GPU or measure GPU training performance.
+
 # FFI
 ReinforceX provides a C-compatible API for embedding DQN, PPO, SAC, shared replay
 buffers, and RND curiosity modules from C, C++, C#, Unity, Python `ctypes`/CFFI,
@@ -561,10 +575,14 @@ typedef struct RxSacConfig {
     uint64_t target_update_interval;
     double tau;
     double alpha;
-    double discrete_target_entropy_ratio;
     double min_variance;
     uint32_t squash_action;
 } RxSacConfig;
+
+typedef struct RxSacConfigV2 {
+    RxSacConfig base;
+    double discrete_target_entropy_ratio;
+} RxSacConfigV2;
 ```
 
 Replay, RND, and statistics structs:
@@ -596,7 +614,21 @@ Notes:
 - `RxPpoConfig.action_space` and `RxSacConfig.action_space` must be
   `RX_ACTION_DISCRETE` or `RX_ACTION_CONTINUOUS`.
 - For continuous PPO, `min_action`, `max_action`, and `min_variance` configure
-  the Gaussian policy. They are ignored for discrete PPO.
+  the Gaussian policy. They are ignored for discrete PPO. The policy retains
+  the sampled, unclipped action for PPO likelihood ratios and clips only the
+  action returned to the environment or exported to shared replay.
+- PPO variance defaults to `softplus(raw_variance) + min_variance`, without an
+  implicit upper bound. Rust callers can opt into a sigmoid-parameterized bound
+  with `FCGaussianPolicyWithValue::with_max_variance(max_variance)`; the upper
+  bound must be finite and strictly greater than `min_variance`. Loading a
+  stochastic-policy checkpoint requires the same variance parameterization as
+  training. Checkpoints trained with this branch's former implicit `0.1` cap
+  need `.with_max_variance(0.1)` to reproduce that variance (for minima `< 0.1`).
+  Deterministic evaluation still uses the unchanged action mean.
+- `GaussianDistribution::sample()` and `most_probable()` operate in Gaussian
+  policy space even for `new_bounded`. Direct distribution users should call
+  `to_env_action()` before sending these actions to the environment; do not
+  replace PPO's stored raw action with this mapped action.
 - `RxRndConfig.update_interval` is retained as the ABI field name and configures
   the maximum RND predictor minibatch size.
 - Continuous SAC uses a diagonal Gaussian policy. If `squash_action` is `1`, the
@@ -604,7 +636,10 @@ Notes:
   `alpha` toward target entropy `-action_size`. `min_variance` is ignored for
   discrete SAC.
 - Discrete SAC automatically tunes `alpha` toward
-  `log(action_size) * discrete_target_entropy_ratio`. Set `alpha` to `0` to
+  `log(action_size) * discrete_target_entropy_ratio`. Legacy `RxSacConfig` and
+  the original SAC creation functions retain their binary layout and use the
+  default ratio `0.98`. To customize it, use `RxSacConfigV2` with the `_v2`
+  default/creation functions. Set `alpha` to `0` to
   disable automatic entropy tuning for either action-space type. The ratio is
   ignored for continuous SAC.
 - `RxStatistic.name` is null-terminated when shorter than `RX_STAT_NAME_LEN`.
@@ -628,6 +663,11 @@ int32_t rx_ppo_config_default(
 
 int32_t rx_sac_config_default(
     RxSacConfig *out_config,
+    uint64_t obs_size,
+    uint64_t action_size);
+
+int32_t rx_sac_config_default_v2(
+    RxSacConfigV2 *out_config,
     uint64_t obs_size,
     uint64_t action_size);
 
@@ -736,6 +776,14 @@ int32_t rx_sac_create_with_replay_and_paths(
 | `rx_sac_create_with_replay` | Creates a SAC agent that uses an existing shared replay buffer. |
 | `rx_sac_create_with_replay_and_paths` | Same as above, with optional save/load checkpoint paths. |
 
+SAC also provides `rx_sac_create_v2`, `rx_sac_create_with_paths_v2`,
+`rx_sac_create_with_replay_v2`, and `rx_sac_create_with_replay_and_paths_v2`.
+They take `const RxSacConfigV2 *` and otherwise have the same arguments as their
+legacy counterparts. Initialize with `rx_sac_config_default_v2`, configure
+common fields through `config.base`, and set `config.discrete_target_entropy_ratio`.
+In the Python wrapper, `RxSacConfigV2` exposes common fields directly (for
+example, `config.agent`); `create_sac` dispatches to the matching API version.
+
 On success, create functions return `RX_OK` and write a non-zero handle to
 `out_id`. On failure, `out_id` is set to zero. Shared DQN and SAC replay
 creation checks that the replay buffer has the same `n_steps` as the agent
@@ -787,7 +835,9 @@ int32_t rx_agent_load(uint64_t id);
 int32_t rx_agent_destroy(uint64_t id);
 ```
 
-`rx_cuda_is_available` reports whether the loaded build can execute on CUDA.
+`rx_cuda_is_available` reports libtorch CUDA availability. On Windows CUDA
+builds, missing/invalid `TORCH_CUDA_DLL` returns `0` without terminating the host
+process. Correcting the environment allows a later call to retry initialization.
 Call `rx_manual_seed` before agent construction to make libtorch parameter
 initialization reproducible in controlled comparisons.
 

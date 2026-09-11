@@ -12,7 +12,7 @@ from reinforcex_ffi import (
     RX_ACTION_CONTINUOUS,
     RxPpoConfig,
     RxRndConfig,
-    RxSacConfig,
+    RxSacConfigV2,
     check,
     create_ppo,
     create_replay_buffer,
@@ -63,9 +63,9 @@ def configure_ppo(lib, args) -> RxPpoConfig:
     return config
 
 
-def configure_sac(lib, args, update_interval: int) -> RxSacConfig:
-    config = RxSacConfig()
-    check(lib.rx_sac_config_default(C.byref(config), OBS_SIZE, ACTION_SIZE), "rx_sac_config_default")
+def configure_sac(lib, args, update_interval: int) -> RxSacConfigV2:
+    config = RxSacConfigV2()
+    check(lib.rx_sac_config_default_v2(C.byref(config), OBS_SIZE, ACTION_SIZE), "rx_sac_config_default_v2")
     config.action_space = RX_ACTION_CONTINUOUS
     config.agent.hidden_layers = 1
     config.agent.hidden_size = 256

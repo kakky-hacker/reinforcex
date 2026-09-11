@@ -341,7 +341,9 @@ impl BaseAgent for PPO {
         no_grad(|| {
             let state = batch_states(&vec![obs.shallow_clone()], self.model.device());
             let (action_distrib, _) = self.model.forward(&state);
-            let action = action_distrib.most_probable().to_device(Device::Cpu);
+            let action = action_distrib
+                .to_env_action(&action_distrib.most_probable())
+                .to_device(Device::Cpu);
             action
         })
     }
@@ -354,13 +356,19 @@ impl BaseAgent for PPO {
             let (action_distrib, _) = self.model.forward(&state);
             action_distrib
         });
-        let action = action_distrib.sample().detach().to_device(Device::Cpu);
+        // PPO likelihoods are defined on the original policy-space action.
+        // Only the environment and off-policy replay receive the clipped action.
+        let policy_action = action_distrib.sample().detach();
+        let action = action_distrib
+            .to_env_action(&policy_action)
+            .detach()
+            .to_device(Device::Cpu);
 
         let experience = Arc::new(Experience::new(
             self.agent_id,
             self.current_episode_id,
             state,
-            Some(action.shallow_clone()),
+            Some(policy_action.to_device(Device::Cpu)),
             Some(action_distrib),
             reward,
             false,
@@ -378,10 +386,7 @@ impl BaseAgent for PPO {
                 self.agent_id,
                 self.current_episode_id,
                 experience.state.to_device(Device::Cpu),
-                experience
-                    .action
-                    .as_ref()
-                    .map(|action| action.to_device(Device::Cpu)),
+                Some(action.shallow_clone()),
                 None,
                 reward,
                 false,
@@ -479,6 +484,7 @@ mod tests {
     use super::*;
     use crate::memory::ReplayBuffer;
     use crate::models::FCSoftmaxPolicyWithValue;
+    use crate::prob_distributions::{BaseDistribution, GaussianDistribution};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -511,6 +517,29 @@ mod tests {
         fn save(&self) {}
 
         fn load(&mut self) {}
+    }
+
+    struct BoundaryGaussianPolicy;
+
+    impl BasePolicy for BoundaryGaussianPolicy {
+        fn forward(&self, _: &Tensor) -> (Box<dyn BaseDistribution>, Option<Tensor>) {
+            // Keep samples far outside both bounds so this exercises clipping,
+            // independent of the random seed used by other tests.
+            let mean = Tensor::from_slice(&[5.0_f32, -5.0]).view([1, 2]);
+            let var = Tensor::full([1, 2], 1e-12, (Kind::Float, Device::Cpu));
+            (
+                Box::new(GaussianDistribution::new_bounded(mean, var, -1.0, 1.0)),
+                None,
+            )
+        }
+
+        fn device(&self) -> Device {
+            Device::Cpu
+        }
+
+        fn save(&self, _: &str) {}
+
+        fn load(&mut self, _: &str) {}
     }
 
     #[test]
@@ -632,6 +661,52 @@ mod tests {
             *experience.n_step_discounted_reward.lock().unwrap(),
             Some(1.0)
         );
+    }
+
+    #[test]
+    fn test_ppo_retains_raw_action_but_shares_executed_action() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+        let replay = Arc::new(ReplayBuffer::new(100, 1));
+        let mut ppo = PPO::new(
+            Box::new(BoundaryGaussianPolicy),
+            optimizer,
+            0.99,
+            0.95,
+            100,
+            1,
+            1,
+            0.2,
+            0.2,
+            0.5,
+            0.01,
+            true,
+            None,
+            None,
+        );
+        ppo.add_replay_buffer_for_share_experience(replay.clone());
+        let obs = Tensor::zeros([4], (Kind::Float, Device::Cpu));
+        let executed_action = ppo.act_and_train(&obs, 0.0);
+        assert_eq!(executed_action.double_value(&[0, 0]), 1.0);
+        assert_eq!(executed_action.double_value(&[0, 1]), -1.0);
+        assert!(ppo.act(&obs).equal(&executed_action));
+        ppo.stop_episode_and_train(&obs, 2.0);
+
+        let shared = replay.sample(1, false).pop().unwrap();
+        let on_policy = ppo.experiences_by_episode[&shared.episode_id].to_vec();
+        let raw_action = on_policy[0].action.as_ref().unwrap();
+        assert!(raw_action.double_value(&[0, 0]) > 1.0);
+        assert!(raw_action.double_value(&[0, 1]) < -1.0);
+        let distribution = on_policy[0].action_distrib.as_ref().unwrap();
+        let raw_log_prob = distribution.log_prob(raw_action).double_value(&[0]);
+        let clipped_log_prob = distribution.log_prob(&executed_action).double_value(&[0]);
+        assert!(raw_log_prob.is_finite());
+        assert!(raw_log_prob > clipped_log_prob);
+
+        assert!(shared.action.as_ref().unwrap().equal(&executed_action));
+        assert_eq!(shared.action.as_ref().unwrap().device(), Device::Cpu);
+        assert!(shared.action_distrib.is_none());
+        assert_eq!(*shared.n_step_discounted_reward.lock().unwrap(), Some(2.0));
     }
 
     #[test]

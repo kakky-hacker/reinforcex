@@ -4,7 +4,7 @@ import ctypes as C
 
 from reinforcex_ffi import (
     RX_ACTION_CONTINUOUS,
-    RxSacConfig,
+    RxSacConfigV2,
     check,
     create_replay_buffer,
     create_sac,
@@ -33,8 +33,8 @@ def train(args) -> None:
         raise ValueError("--eval-only requires --load-path")
 
     lib = load_reinforcex()
-    config = RxSacConfig()
-    check(lib.rx_sac_config_default(C.byref(config), 11, 3), "rx_sac_config_default")
+    config = RxSacConfigV2()
+    check(lib.rx_sac_config_default_v2(C.byref(config), 11, 3), "rx_sac_config_default_v2")
     config.action_space = RX_ACTION_CONTINUOUS
     config.agent.gamma = 0.99
     config.actor_learning_rate = 3e-4

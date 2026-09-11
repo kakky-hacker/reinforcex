@@ -4,7 +4,7 @@ import ctypes as C
 
 from reinforcex_ffi import (
     RX_ACTION_CONTINUOUS,
-    RxSacConfig,
+    RxSacConfigV2,
     check,
     create_replay_buffer,
     create_sac,
@@ -20,8 +20,8 @@ from reinforcex_ffi import (
 def train(args) -> None:
     validate_training_args(args)
     lib = load_reinforcex()
-    config = RxSacConfig()
-    check(lib.rx_sac_config_default(C.byref(config), 8, 2), "rx_sac_config_default")
+    config = RxSacConfigV2()
+    check(lib.rx_sac_config_default_v2(C.byref(config), 8, 2), "rx_sac_config_default_v2")
     config.action_space = RX_ACTION_CONTINUOUS
     config.agent.hidden_size = 128
     config.actor_learning_rate = 3e-4

@@ -78,10 +78,16 @@ typedef struct RxSacConfig {
     uint64_t target_update_interval;
     double tau;
     double alpha;
-    double discrete_target_entropy_ratio;
     double min_variance;
     uint32_t squash_action;
 } RxSacConfig;
+
+/* Legacy RxSacConfig and rx_sac_* symbols retain the original ABI and use
+ * discrete_target_entropy_ratio = 0.98. Use the V2 symbols with this structure. */
+typedef struct RxSacConfigV2 {
+    RxSacConfig base;
+    double discrete_target_entropy_ratio;
+} RxSacConfigV2;
 
 typedef struct RxReplayBufferConfig {
     uint64_t capacity;
@@ -120,6 +126,11 @@ int32_t rx_sac_config_default(
     uint64_t obs_size,
     uint64_t action_size);
 
+int32_t rx_sac_config_default_v2(
+    RxSacConfigV2 *out_config,
+    uint64_t obs_size,
+    uint64_t action_size);
+
 int32_t rx_replay_buffer_config_default(
     RxReplayBufferConfig *out_config,
     uint64_t capacity,
@@ -132,6 +143,7 @@ int32_t rx_rnd_config_default(
 int32_t rx_dqn_create(const RxDqnConfig *config, uint64_t *out_id);
 int32_t rx_ppo_create(const RxPpoConfig *config, uint64_t *out_id);
 int32_t rx_sac_create(const RxSacConfig *config, uint64_t *out_id);
+int32_t rx_sac_create_v2(const RxSacConfigV2 *config, uint64_t *out_id);
 
 int32_t rx_dqn_create_with_paths(
     const RxDqnConfig *config,
@@ -216,6 +228,24 @@ int32_t rx_sac_create_with_replay(
 
 int32_t rx_sac_create_with_replay_and_paths(
     const RxSacConfig *config,
+    uint64_t replay_id,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
+int32_t rx_sac_create_with_paths_v2(
+    const RxSacConfigV2 *config,
+    const char *save_path,
+    const char *load_path,
+    uint64_t *out_id);
+
+int32_t rx_sac_create_with_replay_v2(
+    const RxSacConfigV2 *config,
+    uint64_t replay_id,
+    uint64_t *out_id);
+
+int32_t rx_sac_create_with_replay_and_paths_v2(
+    const RxSacConfigV2 *config,
     uint64_t replay_id,
     const char *save_path,
     const char *load_path,
