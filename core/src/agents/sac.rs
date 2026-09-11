@@ -12,6 +12,7 @@ use ulid::Ulid;
 const LOG_PROB_EPSILON: f64 = 1e-6;
 const DISCRETE_TARGET_ENTROPY_RATIO: f64 = 0.98;
 const DISCRETE_ALPHA_LR: f64 = 3e-4;
+const MAX_GRAD_NORM: f64 = 10.0;
 
 struct SACBatch {
     states: Tensor,
@@ -42,7 +43,10 @@ pub struct SAC {
     _log_alpha_vs: nn::VarStore,
     log_alpha: Tensor,
     alpha_optimizer: nn::Optimizer,
+    automatic_entropy_tuning: bool,
+    discrete_target_entropy_ratio: f64,
     discrete_target_entropy: Option<f64>,
+    is_discrete_policy: Option<bool>,
     squash_action: bool,
     t: usize,
     current_episode_id: Ulid,
@@ -115,6 +119,49 @@ impl SAC {
         save_path: Option<String>,
         load_path: Option<String>,
     ) -> Self {
+        Self::new_with_save_load_and_entropy_target(
+            actor,
+            actor_optimizer,
+            critic1,
+            critic1_optimizer,
+            critic2,
+            critic2_optimizer,
+            replay_buffer,
+            replay_start_size,
+            batch_size,
+            update_interval,
+            target_update_interval,
+            gamma,
+            tau,
+            alpha,
+            squash_action,
+            DISCRETE_TARGET_ENTROPY_RATIO,
+            save_path,
+            load_path,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_save_load_and_entropy_target(
+        actor: Box<dyn BasePolicy>,
+        actor_optimizer: nn::Optimizer,
+        critic1: Box<dyn BaseQFunction>,
+        critic1_optimizer: nn::Optimizer,
+        critic2: Box<dyn BaseQFunction>,
+        critic2_optimizer: nn::Optimizer,
+        replay_buffer: Arc<ReplayBuffer>,
+        replay_start_size: usize,
+        batch_size: usize,
+        update_interval: usize,
+        target_update_interval: usize,
+        gamma: f64,
+        tau: f64,
+        alpha: f64,
+        squash_action: bool,
+        discrete_target_entropy_ratio: f64,
+        save_path: Option<String>,
+        load_path: Option<String>,
+    ) -> Self {
         assert!(replay_start_size > 0);
         assert!(batch_size > 0);
         assert!(update_interval > 0);
@@ -122,6 +169,7 @@ impl SAC {
         assert!((0.0..=1.0).contains(&gamma));
         assert!((0.0..=1.0).contains(&tau));
         assert!(alpha >= 0.0);
+        assert!((0.0..=1.0).contains(&discrete_target_entropy_ratio));
         assert_eq!(actor.device(), critic1.device());
         assert_eq!(actor.device(), critic2.device());
 
@@ -158,7 +206,10 @@ impl SAC {
             _log_alpha_vs: log_alpha_vs,
             log_alpha,
             alpha_optimizer,
+            automatic_entropy_tuning: alpha > 0.0,
+            discrete_target_entropy_ratio,
             discrete_target_entropy: None,
+            is_discrete_policy: None,
             squash_action,
             t: 0,
             current_episode_id: Ulid::new(),
@@ -217,6 +268,7 @@ impl SAC {
         self.latest_critic1_loss = Some(critic1_loss.double_value(&[]));
         self.critic1_optimizer.zero_grad();
         critic1_loss.backward();
+        self.critic1_optimizer.clip_grad_norm(MAX_GRAD_NORM);
         self.critic1_optimizer.step();
 
         let pred_q2 = self.critic2.forward(&critic_inputs).view([-1]);
@@ -226,19 +278,34 @@ impl SAC {
         self.latest_critic2_loss = Some(critic2_loss.double_value(&[]));
         self.critic2_optimizer.zero_grad();
         critic2_loss.backward();
+        self.critic2_optimizer.clip_grad_norm(MAX_GRAD_NORM);
         self.critic2_optimizer.step();
 
         let (actions, log_prob) = self._sample_action_and_log_prob(&batch.states);
         let actor_inputs = self._critic_input(&batch.states, &actions);
         let q1 = self.critic1.forward(&actor_inputs).view([-1]);
         let q2 = self.critic2.forward(&actor_inputs).view([-1]);
-        let actor_loss = (self.alpha * log_prob - q1.minimum(&q2)).mean(Kind::Float);
+        let actor_loss = (self.alpha * &log_prob - q1.minimum(&q2)).mean(Kind::Float);
         assert!(actor_loss.isnan().any().int64_value(&[]) == 0);
 
         self.latest_actor_loss = Some(actor_loss.double_value(&[]));
         self.actor_optimizer.zero_grad();
         actor_loss.backward();
+        self.actor_optimizer.clip_grad_norm(MAX_GRAD_NORM);
         self.actor_optimizer.step();
+
+        if self.automatic_entropy_tuning {
+            let target_entropy = -(actions.size()[1] as f64);
+            let temperature_loss =
+                -(&self.log_alpha * (log_prob.detach() + target_entropy)).mean(Kind::Float);
+            assert!(temperature_loss.isnan().any().int64_value(&[]) == 0);
+
+            self.latest_temperature_loss = Some(temperature_loss.double_value(&[]));
+            self.alpha_optimizer.zero_grad();
+            temperature_loss.backward();
+            self.alpha_optimizer.step();
+            self.alpha = self.log_alpha.exp().double_value(&[0]);
+        }
     }
 
     fn _update_discrete(&mut self, batch: &SACBatch) {
@@ -272,23 +339,25 @@ impl SAC {
         let q1_values = self.critic1.forward(&batch.states).view([batch_size, -1]);
         Self::_assert_action_indices(&action_indices, q1_values.size()[1]);
         let pred_q1 = q1_values.gather(1, &action_indices, false).view([-1]);
-        let critic1_loss: Tensor = (&pred_q1 - &target_q).square().mean(Kind::Float);
+        let critic1_loss = pred_q1.huber_loss(&target_q, tch::Reduction::Mean, 1.0);
         assert!(critic1_loss.isnan().any().int64_value(&[]) == 0);
 
         self.latest_critic1_loss = Some(critic1_loss.double_value(&[]));
         self.critic1_optimizer.zero_grad();
         critic1_loss.backward();
+        self.critic1_optimizer.clip_grad_norm(MAX_GRAD_NORM);
         self.critic1_optimizer.step();
 
         let q2_values = self.critic2.forward(&batch.states).view([batch_size, -1]);
         Self::_assert_action_indices(&action_indices, q2_values.size()[1]);
         let pred_q2 = q2_values.gather(1, &action_indices, false).view([-1]);
-        let critic2_loss: Tensor = (&pred_q2 - &target_q).square().mean(Kind::Float);
+        let critic2_loss = pred_q2.huber_loss(&target_q, tch::Reduction::Mean, 1.0);
         assert!(critic2_loss.isnan().any().int64_value(&[]) == 0);
 
         self.latest_critic2_loss = Some(critic2_loss.double_value(&[]));
         self.critic2_optimizer.zero_grad();
         critic2_loss.backward();
+        self.critic2_optimizer.clip_grad_norm(MAX_GRAD_NORM);
         self.critic2_optimizer.step();
 
         let (action_distrib, _) = self.actor.forward(&batch.states);
@@ -311,25 +380,34 @@ impl SAC {
         self.latest_actor_loss = Some(actor_loss.double_value(&[]));
         self.actor_optimizer.zero_grad();
         actor_loss.backward();
+        self.actor_optimizer.clip_grad_norm(MAX_GRAD_NORM);
         self.actor_optimizer.step();
 
-        let target_entropy = self._discrete_target_entropy(&prob);
-        let temperature_loss =
-            -(&self.log_alpha * (target_entropy - entropies.detach())).mean(Kind::Float);
-        assert!(temperature_loss.isnan().any().int64_value(&[]) == 0);
+        if self.automatic_entropy_tuning {
+            let target_entropy = self._discrete_target_entropy(&prob);
+            let temperature_loss =
+                -(&self.log_alpha * (target_entropy - entropies.detach())).mean(Kind::Float);
+            assert!(temperature_loss.isnan().any().int64_value(&[]) == 0);
 
-        self.latest_temperature_loss = Some(temperature_loss.double_value(&[]));
-        self.alpha_optimizer.zero_grad();
-        temperature_loss.backward();
-        self.alpha_optimizer.step();
-        self.alpha = self.log_alpha.exp().double_value(&[0]);
+            self.latest_temperature_loss = Some(temperature_loss.double_value(&[]));
+            self.alpha_optimizer.zero_grad();
+            temperature_loss.backward();
+            self.alpha_optimizer.step();
+            self.alpha = self.log_alpha.exp().double_value(&[0]);
+        }
     }
 
-    fn _is_discrete_policy(&self, states: &Tensor) -> bool {
-        no_grad(|| {
+    fn _is_discrete_policy(&mut self, states: &Tensor) -> bool {
+        if let Some(is_discrete) = self.is_discrete_policy {
+            return is_discrete;
+        }
+
+        let is_discrete = no_grad(|| {
             let (action_distrib, _) = self.actor.forward(states);
             action_distrib.is_discrete()
-        })
+        });
+        self.is_discrete_policy = Some(is_discrete);
+        is_discrete
     }
 
     fn _assert_discrete_q_shape(name: &str, q: &Tensor, prob: &Tensor) {
@@ -344,7 +422,7 @@ impl SAC {
     fn _discrete_target_entropy(&mut self, prob: &Tensor) -> f64 {
         *self.discrete_target_entropy.get_or_insert_with(|| {
             let n_actions = prob.size()[1] as f64;
-            n_actions.ln() * DISCRETE_TARGET_ENTROPY_RATIO
+            n_actions.ln() * self.discrete_target_entropy_ratio
         })
     }
 
@@ -558,7 +636,7 @@ impl BaseAgent for SAC {
         let experience = Arc::new(Experience::new(
             self.agent_id,
             self.current_episode_id,
-            state,
+            state.to_device(Device::Cpu),
             Some(action.shallow_clone()),
             None,
             reward,
@@ -582,7 +660,7 @@ impl BaseAgent for SAC {
         let experience = Arc::new(Experience::new(
             self.agent_id,
             self.current_episode_id,
-            state,
+            state.to_device(Device::Cpu),
             None,
             None,
             reward,
@@ -666,7 +744,11 @@ impl BaseAgent for SAC {
                         checkpoints[3].1, e
                     )
                 });
-            self.alpha = self.log_alpha.exp().double_value(&[0]);
+            self.alpha = if self.automatic_entropy_tuning {
+                self.log_alpha.exp().double_value(&[0])
+            } else {
+                0.0
+            };
             self.target_critic1.copy_from(self.critic1.as_ref());
             self.target_critic2.copy_from(self.critic2.as_ref());
         }
@@ -987,6 +1069,11 @@ mod tests {
         assert!(sac.latest_actor_loss.is_some());
         assert!(sac.latest_critic1_loss.is_some());
         assert!(sac.latest_critic2_loss.is_some());
+        assert!(sac.latest_temperature_loss.is_some());
+        assert!(sac.alpha.is_finite());
+        assert!(sac.alpha > 0.0);
+        let alpha_from_parameter = sac.log_alpha.exp().double_value(&[0]);
+        assert!((sac.alpha - alpha_from_parameter).abs() < 1e-12);
     }
 
     #[test]
@@ -999,6 +1086,17 @@ mod tests {
         assert_eq!(action.size(), vec![1]);
         let action_id = action.int64_value(&[0]);
         assert!(0 <= action_id && action_id < 2);
+    }
+
+    #[test]
+    fn test_discrete_target_entropy_uses_configured_ratio() {
+        let mut sac = build_discrete_sac();
+        sac.discrete_target_entropy_ratio = 0.25;
+        let probabilities = Tensor::from_slice(&[0.5f32, 0.5]).view([1, 2]);
+
+        let target_entropy = sac._discrete_target_entropy(&probabilities);
+
+        assert!((target_entropy - 2.0f64.ln() * 0.25).abs() < 1e-12);
     }
 
     #[test]
@@ -1029,6 +1127,8 @@ mod tests {
         assert!(sac.latest_actor_loss.is_some());
         assert!(sac.latest_critic1_loss.is_some());
         assert!(sac.latest_critic2_loss.is_some());
+        assert_eq!(sac.alpha, 0.0);
+        assert!(sac.latest_temperature_loss.is_none());
 
         for _ in 0..1000 {
             let action = sac.act(&obs);

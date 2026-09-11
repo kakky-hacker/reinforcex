@@ -55,7 +55,11 @@ impl BaseDistribution for SoftmaxDistribution {
     }
 
     fn all_log_prob(&self) -> Tensor {
-        self.all_prob().log()
+        if self.min_prob == 0.0 {
+            (&self.logits * self.beta).log_softmax(-1, Kind::Float)
+        } else {
+            self.all_prob().log()
+        }
     }
 
     fn detach(&mut self) {
@@ -152,6 +156,19 @@ mod tests {
         let all_log_prob = dist.all_log_prob();
         let log_sum = all_log_prob.sum(Kind::Float).double_value(&[]);
         assert!(log_sum.is_finite());
+    }
+
+    #[test]
+    fn test_extreme_logits_have_finite_log_prob_and_entropy() {
+        let logits = Tensor::from_slice(&[1_000.0f32, -1_000.0]).reshape(&[1, 2]);
+        let dist = SoftmaxDistribution::new(logits, 1.0, 0.0);
+
+        let all_log_prob = dist.all_log_prob();
+        let entropy = dist.entropy();
+
+        assert_eq!(all_log_prob.isnan().any().int64_value(&[]), 0);
+        assert_eq!(all_log_prob.isinf().any().int64_value(&[]), 0);
+        assert_eq!(entropy.isnan().any().int64_value(&[]), 0);
     }
 
     #[test]

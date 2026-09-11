@@ -26,10 +26,12 @@ where
         res
     }
 
+    #[allow(dead_code)]
     pub fn empty(&mut self) {
         self.deque = VecDeque::new();
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.deque.is_empty()
     }
@@ -38,6 +40,7 @@ where
         self.deque.clone()
     }
 
+    #[allow(dead_code)]
     pub fn front_mut(&mut self) -> &mut T {
         self.deque.front_mut().unwrap()
     }

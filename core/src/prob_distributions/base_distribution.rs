@@ -6,6 +6,11 @@ pub trait BaseDistribution: Send + Sync {
     fn kl(&self, q: &Box<dyn BaseDistribution>) -> Tensor;
     fn entropy(&self) -> Tensor;
     fn sample(&self) -> Tensor;
+    /// Map a policy-space action to the environment without changing the value
+    /// used by `log_prob`. On-policy algorithms must retain the original action.
+    fn to_env_action(&self, action: &Tensor) -> Tensor {
+        action.shallow_clone()
+    }
     fn prob(&self, x: &Tensor) -> Tensor;
     fn log_prob(&self, x: &Tensor) -> Tensor;
     fn all_prob(&self) -> Tensor;

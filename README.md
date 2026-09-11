@@ -43,8 +43,10 @@ reinforcex = "0.0.5"
 ```
 
 For CUDA experiments, build with the `cuda` feature and make sure your local
-libtorch / CUDA runtime is visible to `tch`. On Windows, `load_cuda_dlls()` also
-checks `TORCH_CUDA_DLL` when the `cuda` feature is enabled.
+libtorch / CUDA runtime is visible to `tch`. On Windows, `try_load_cuda_dlls()`
+loads `TORCH_CUDA_DLL` when the `cuda` feature is enabled and returns a `Result`
+on missing/invalid configuration. The legacy `load_cuda_dlls()` remains a
+best-effort wrapper. Successful loads are reused; failed loads can be retried.
 
 # Algorithms
 Implemented agents and exploration modules:
@@ -263,6 +265,10 @@ Each former Rust experiment has a Python counterpart in [`examples`](examples):
 | CartPole | PPO | `python examples/train_cartpole_ppo_ffi.py` |
 | CartPole | discrete SAC | `python examples/train_cartpole_sac_ffi.py` |
 | Ant | continuous PPO | `python examples/train_ant_ppo_ffi.py` |
+| Ant | PPO + RND / PPO + SAC shared replay comparison | `python examples/train_ant_ppo_rnd_sac_shared_ffi.py` |
+| Hopper | continuous SAC | `python examples/train_hopper_sac_ffi.py` |
+| Walker2d | continuous PPO | `python examples/train_walker2d_ppo_ffi.py` |
+| HalfCheetah | PPO + SAC shared replay | `python examples/train_half_cheetah_hybrid_ffi.py` |
 | LunarLander | DQN | `python examples/train_lunar_lander_dqn_ffi.py` |
 | LunarLander | PPO + RND | `python examples/train_lunar_lander_ppo_rnd_ffi.py` |
 | LunarLander | PPO + shared RND | `python examples/train_lunar_lander_ppo_shared_rnd_ffi.py` |
@@ -288,6 +294,127 @@ The shared-RND script replaces `{agent_id}` with `shared` for that predictor.
 Set `REINFORCEX_LIB` when the dynamic library is not in `target/release` or the
 platform library search path.
 
+Training thresholds use a full 100-episode moving average. The Ant sample saves
+the checkpoint with the best full-window mean and can reload it for deterministic
+evaluation:
+
+```sh
+python examples/train_ant_ppo_ffi.py \
+  --save-path "models/ant_ppo_best.ot" \
+  --eval-episodes 20
+
+python examples/train_ant_ppo_ffi.py \
+  --eval-only \
+  --load-path "models/ant_ppo_best.ot" \
+  --eval-episodes 20
+```
+
+Pass `--preset baseline` to the Ant sample to reproduce its original
+hyperparameters and clipped reward for controlled comparisons; `tuned` is the
+default.
+
+The Hopper SAC sample removes the environment's constant healthy bonus only
+from the training target so the policy is rewarded for forward progress instead
+of learning to stand still. Raw Gymnasium returns are still used for logging,
+checkpoint selection, and evaluation:
+
+```sh
+python examples/train_hopper_sac_ffi.py \
+  --save-path "artifacts/hopper_sac_best.ot" \
+  --eval-episodes 20
+
+python examples/train_hopper_sac_ffi.py \
+  --eval-only \
+  --load-path "artifacts/hopper_sac_best.ot" \
+  --eval-episodes 20 \
+  --render
+```
+
+SAC checkpoints use the supplied path as a base name and store actor, two
+critics, and temperature in four component files.
+
+The Walker2d PPO sample supports CUDA detection, deterministic evaluation, and
+all rollout parameters used by the tuned curriculum. A saved model can be run
+with a MuJoCo window using:
+
+```sh
+py examples/train_walker2d_ppo_ffi.py \
+  --eval-only \
+  --load-path "artifacts/walker2d_ppo_best.ot" \
+  --eval-episodes 10 \
+  --render
+```
+
+The strongest run used three stages: short 512-step rollouts to bootstrap a
+gait, forward-only reward to increase speed, and 2048-step rollouts to stabilize
+the gait. The final long-rollout settings can be used to continue an existing
+checkpoint as follows:
+
+```sh
+py examples/train_walker2d_ppo_ffi.py \
+  --episodes 1000 \
+  --load-path "artifacts/walker2d_ppo_checkpoint.ot" \
+  --save-path "artifacts/walker2d_ppo_candidate.ot" \
+  --reward-mode survival \
+  --learning-rate 0.00005 \
+  --update-interval 2048 \
+  --minibatch-size 128 \
+  --entropy-coefficient 0.01 \
+  --min-variance 0.02
+```
+
+The HalfCheetah hybrid sample runs PPO and SAC workers concurrently on CUDA.
+Every PPO transition is copied into the same replay buffer used by SAC, so PPO
+also acts as an off-policy data collector. PPO keeps its own on-policy rollout
+data separately; shared transitions are stored on CPU without policy
+distribution tensors to keep long CUDA runs memory bounded. The best PPO and
+SAC candidates are selected by deterministic evaluation:
+
+```sh
+python examples/train_half_cheetah_hybrid_ffi.py \
+  --ppo-episodes 300 \
+  --sac-episodes 150 \
+  --ppo-workers 2 \
+  --sac-workers 1 \
+  --eval-episodes 30
+
+python examples/train_half_cheetah_hybrid_ffi.py \
+  --eval-only \
+  --eval-algorithm both \
+  --load-ppo-path "artifacts/half_cheetah_ppo_best.ot" \
+  --load-sac-path "artifacts/half_cheetah_sac_best.ot" \
+  --eval-episodes 10 \
+  --render
+```
+
+The Ant comparison sample runs three controlled conditions: PPO+RND with SAC
+and shared replay, PPO without RND with SAC and shared replay, and standalone
+SAC. Hybrid runs start PPO and SAC concurrently. All conditions use the same
+initialization and evaluation seeds; shared replay contains transformed
+extrinsic rewards only, so RND affects PPO exploration without changing SAC's
+reward target. The default 400/400 hybrid and 800-episode standalone budgets
+match the maximum number of collected transitions, while SAC update intervals
+approximately match the optimizer-update budget:
+
+```sh
+python examples/train_ant_ppo_rnd_sac_shared_ffi.py
+
+python examples/train_ant_ppo_rnd_sac_shared_ffi.py \
+  --eval-only \
+  --eval-condition rnd_shared \
+  --eval-algorithm ppo \
+  --load-path "artifacts/ant_rnd_shared_ppo_best.ot" \
+  --eval-episodes 10 \
+  --render
+```
+
+On Windows, build the CUDA FFI before training with:
+
+```powershell
+Get-Content .env | Invoke-Expression
+cargo build -p reinforcex_ffi --release --no-default-features --features cuda
+```
+
 <img width="597" alt="CartPole training sample" src="https://github.com/user-attachments/assets/b8c0606b-ec11-4b5a-b7fc-3070ad327d72" />
 
 # Unit test
@@ -300,6 +427,18 @@ cargo test --workspace
 The core unit tests exercise agents, models, curiosity modules, probability
 distributions, memory buffers, selectors, and the FFI wrapper. Gymnasium is
 only required when running the Python sample experiments.
+
+For DLL-level legacy ABI and process-safety regressions (Python standard library
+only), build the FFI library and run:
+
+```sh
+python ffi/tests/test_ffi_regressions.py --library target/debug/reinforcex.dll
+```
+
+Use the platform's `.so`/`.dylib` name on Linux/macOS. For a Windows CUDA-feature
+build, also pass `--expect-cuda-loader` and set `TORCH_CUDA_DLL` to an existing
+CUDA DLL. This checks missing/invalid paths and retries in isolated processes;
+it does not require an available GPU or measure GPU training performance.
 
 # FFI
 ReinforceX provides a C-compatible API for embedding DQN, PPO, SAC, shared replay
@@ -439,6 +578,11 @@ typedef struct RxSacConfig {
     double min_variance;
     uint32_t squash_action;
 } RxSacConfig;
+
+typedef struct RxSacConfigV2 {
+    RxSacConfig base;
+    double discrete_target_entropy_ratio;
+} RxSacConfigV2;
 ```
 
 Replay, RND, and statistics structs:
@@ -470,12 +614,34 @@ Notes:
 - `RxPpoConfig.action_space` and `RxSacConfig.action_space` must be
   `RX_ACTION_DISCRETE` or `RX_ACTION_CONTINUOUS`.
 - For continuous PPO, `min_action`, `max_action`, and `min_variance` configure
-  the Gaussian policy. They are ignored for discrete PPO.
+  the Gaussian policy. They are ignored for discrete PPO. The policy retains
+  the sampled, unclipped action for PPO likelihood ratios and clips only the
+  action returned to the environment or exported to shared replay.
+- PPO variance defaults to `softplus(raw_variance) + min_variance`, without an
+  implicit upper bound. Rust callers can opt into a sigmoid-parameterized bound
+  with `FCGaussianPolicyWithValue::with_max_variance(max_variance)`; the upper
+  bound must be finite and strictly greater than `min_variance`. Loading a
+  stochastic-policy checkpoint requires the same variance parameterization as
+  training. Checkpoints trained with this branch's former implicit `0.1` cap
+  need `.with_max_variance(0.1)` to reproduce that variance (for minima `< 0.1`).
+  Deterministic evaluation still uses the unchanged action mean.
+- `GaussianDistribution::sample()` and `most_probable()` operate in Gaussian
+  policy space even for `new_bounded`. Direct distribution users should call
+  `to_env_action()` before sending these actions to the environment; do not
+  replace PPO's stored raw action with this mapped action.
 - `RxRndConfig.update_interval` is retained as the ABI field name and configures
   the maximum RND predictor minibatch size.
 - Continuous SAC uses a diagonal Gaussian policy. If `squash_action` is `1`, the
-  action is tanh-squashed to `[-1, 1]`. `min_variance` is ignored for discrete
-  SAC.
+  action is tanh-squashed to `[-1, 1]`. Continuous SAC automatically tunes
+  `alpha` toward target entropy `-action_size`. `min_variance` is ignored for
+  discrete SAC.
+- Discrete SAC automatically tunes `alpha` toward
+  `log(action_size) * discrete_target_entropy_ratio`. Legacy `RxSacConfig` and
+  the original SAC creation functions retain their binary layout and use the
+  default ratio `0.98`. To customize it, use `RxSacConfigV2` with the `_v2`
+  default/creation functions. Set `alpha` to `0` to
+  disable automatic entropy tuning for either action-space type. The ratio is
+  ignored for continuous SAC.
 - `RxStatistic.name` is null-terminated when shorter than `RX_STAT_NAME_LEN`.
   Longer names are truncated to fit.
 
@@ -497,6 +663,11 @@ int32_t rx_ppo_config_default(
 
 int32_t rx_sac_config_default(
     RxSacConfig *out_config,
+    uint64_t obs_size,
+    uint64_t action_size);
+
+int32_t rx_sac_config_default_v2(
+    RxSacConfigV2 *out_config,
     uint64_t obs_size,
     uint64_t action_size);
 
@@ -596,10 +767,22 @@ int32_t rx_sac_create_with_replay_and_paths(
 | `rx_*_create_with_paths` | Creates an agent with optional save/load checkpoint paths. |
 | `rx_ppo_create_with_rnd` | Creates a PPO agent with an existing RND curiosity module. |
 | `rx_ppo_create_with_rnd_and_paths` | Same as above, with optional PPO save/load paths. |
+| `rx_ppo_create_with_rnd_and_replay` | Creates a PPO agent that uses RND and also exports transitions to shared replay. |
+| `rx_ppo_create_with_rnd_and_replay_and_paths` | Same as above, with optional PPO save/load paths. |
+| `rx_ppo_create_with_replay` | Creates a PPO agent that exports transitions to an existing shared replay buffer. |
+| `rx_ppo_create_with_replay_and_paths` | Same as above, with optional PPO save/load paths. |
 | `rx_dqn_create_with_replay` | Creates a DQN agent that uses an existing shared replay buffer. |
 | `rx_dqn_create_with_replay_and_paths` | Same as above, with optional save/load checkpoint paths. |
 | `rx_sac_create_with_replay` | Creates a SAC agent that uses an existing shared replay buffer. |
 | `rx_sac_create_with_replay_and_paths` | Same as above, with optional save/load checkpoint paths. |
+
+SAC also provides `rx_sac_create_v2`, `rx_sac_create_with_paths_v2`,
+`rx_sac_create_with_replay_v2`, and `rx_sac_create_with_replay_and_paths_v2`.
+They take `const RxSacConfigV2 *` and otherwise have the same arguments as their
+legacy counterparts. Initialize with `rx_sac_config_default_v2`, configure
+common fields through `config.base`, and set `config.discrete_target_entropy_ratio`.
+In the Python wrapper, `RxSacConfigV2` exposes common fields directly (for
+example, `config.agent`); `create_sac` dispatches to the matching API version.
 
 On success, create functions return `RX_OK` and write a non-zero handle to
 `out_id`. On failure, `out_id` is set to zero. Shared DQN and SAC replay
@@ -610,10 +793,15 @@ config and is large enough for its batches. SAC also checks
 `rx_ppo_create_with_rnd*` requires the RND and PPO observation sizes to match.
 The PPO agent retains the RND internally, calculates intrinsic rewards, updates
 the RND predictor during PPO updates, and saves it together with the PPO agent.
+The combined RND-and-replay constructors keep intrinsic rewards inside PPO;
+only the caller-supplied extrinsic rewards are exported to shared replay.
 
 ## Agent action, training, statistics, and lifecycle APIs
 
 ```c
+uint32_t rx_cuda_is_available(void);
+int32_t rx_manual_seed(int64_t seed);
+
 int64_t rx_agent_act(
     uint64_t id,
     const float *obs,
@@ -647,6 +835,12 @@ int32_t rx_agent_load(uint64_t id);
 int32_t rx_agent_destroy(uint64_t id);
 ```
 
+`rx_cuda_is_available` reports libtorch CUDA availability. On Windows CUDA
+builds, missing/invalid `TORCH_CUDA_DLL` returns `0` without terminating the host
+process. Correcting the environment allows a later call to retry initialization.
+Call `rx_manual_seed` before agent construction to make libtorch parameter
+initialization reproducible in controlled comparisons.
+
 | Function | Purpose |
 |---|---|
 | `rx_agent_act` | Selects an action without adding a transition or updating the agent. |
@@ -675,14 +869,17 @@ int32_t rx_replay_buffer_create(
     uint64_t *out_id);
 
 int32_t rx_replay_buffer_destroy(uint64_t id);
+int32_t rx_replay_buffer_len(uint64_t id, uint64_t *out_len);
 ```
 
 | Function | Purpose |
 |---|---|
-| `rx_replay_buffer_create` | Creates a replay buffer handle that can be shared by DQN or SAC agents. |
+| `rx_replay_buffer_create` | Creates a replay buffer handle that can be shared by DQN, PPO, or SAC agents. |
 | `rx_replay_buffer_destroy` | Removes the replay buffer handle from the registry. Existing agents keep their `Arc` reference alive. |
+| `rx_replay_buffer_len` | Returns the number of sampleable transitions currently stored. |
 
-Use shared replay buffers for multi-agent DQN or SAC training. Experience
+Use shared replay buffers for multi-agent DQN or SAC training, or attach PPO as
+an additional experience producer for an off-policy consumer. Experience
 collection and replay insertion remain inside each agent.
 
 ## RND APIs

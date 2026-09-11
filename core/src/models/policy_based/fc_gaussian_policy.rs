@@ -4,7 +4,9 @@ use crate::misc::weight_initializer::{he_init, xavier_init};
 use crate::prob_distributions::BaseDistribution;
 use crate::prob_distributions::GaussianDistribution;
 use tch::nn::{linear, Init, Linear, LinearConfig, Module, VarStore};
-use tch::{Device, Tensor};
+use tch::{no_grad, Device, Tensor};
+
+const PPO_ACTION_MEAN_INIT_STD: f64 = 0.01;
 
 pub struct FCGaussianPolicy {
     vs: VarStore,
@@ -21,6 +23,7 @@ pub struct FCGaussianPolicy {
 pub struct FCGaussianPolicyWithValue {
     base_policy: FCGaussianPolicy,
     value_layer: Linear,
+    max_variance: Option<f64>,
 }
 
 impl FCGaussianPolicy {
@@ -112,6 +115,14 @@ impl FCGaussianPolicy {
     }
 
     fn compute_mean_and_var(&self, x: &Tensor) -> (Tensor, Tensor) {
+        self.compute_mean_and_var_with_max_variance(x, None)
+    }
+
+    fn compute_mean_and_var_with_max_variance(
+        &self,
+        x: &Tensor,
+        max_variance: Option<f64>,
+    ) -> (Tensor, Tensor) {
         let mean = self.mean_layer.forward(&x);
         let mean = if self.bound_mean {
             self.bound_by_tanh(mean)
@@ -119,7 +130,11 @@ impl FCGaussianPolicy {
             mean
         };
 
-        let var = self.var_layer.forward(&x).softplus() + self.min_var;
+        let raw_var = self.var_layer.forward(&x);
+        let var = match max_variance {
+            Some(max_var) => raw_var.sigmoid() * (max_var - self.min_var) + self.min_var,
+            None => raw_var.softplus() + self.min_var,
+        };
         let var = var.expand(&mean.size(), false);
         (mean, var)
     }
@@ -140,7 +155,13 @@ impl BasePolicy for FCGaussianPolicy {
     fn forward(&self, x: &Tensor) -> (Box<dyn BaseDistribution>, Option<Tensor>) {
         let h = self.compute_medium_layer(x);
         let (mean, var) = self.compute_mean_and_var(&h);
-        (Box::new(GaussianDistribution::new(mean, var)), None)
+        let distribution = match (self.min_action, self.max_action) {
+            (Some(min_action), Some(max_action)) => {
+                GaussianDistribution::new_bounded(mean, var, min_action, max_action)
+            }
+            _ => GaussianDistribution::new(mean, var),
+        };
+        (Box::new(distribution), None)
     }
 
     fn device(&self) -> Device {
@@ -161,6 +182,8 @@ impl BasePolicy for FCGaussianPolicy {
 }
 
 impl FCGaussianPolicyWithValue {
+    /// Creates a policy with learnable variance and no upper variance bound.
+    /// Use [`Self::with_max_variance`] to opt into a bounded variance parameterization.
     pub fn new(
         vs: VarStore,
         n_input_channels: i64,
@@ -173,6 +196,10 @@ impl FCGaussianPolicyWithValue {
         var_type: &str,
         min_var: f64,
     ) -> Self {
+        assert!(
+            min_var.is_finite() && min_var >= 0.0,
+            "min_var must be finite and nonnegative"
+        );
         let root = (&vs).root();
         let value_layer = linear(
             &root,
@@ -185,7 +212,7 @@ impl FCGaussianPolicyWithValue {
             },
         );
 
-        let base_policy = FCGaussianPolicy::new(
+        let mut base_policy = FCGaussianPolicy::new(
             vs,
             n_input_channels,
             action_size,
@@ -197,11 +224,35 @@ impl FCGaussianPolicyWithValue {
             var_type,
             min_var,
         );
+        no_grad(|| {
+            let _ = base_policy
+                .mean_layer
+                .ws
+                .normal_(0.0, PPO_ACTION_MEAN_INIT_STD);
+            if let Some(bias) = base_policy.mean_layer.bs.as_mut() {
+                let _ = bias.zero_();
+            }
+        });
 
         FCGaussianPolicyWithValue {
             base_policy,
             value_layer,
+            max_variance: None,
         }
+    }
+
+    /// Bounds action variance between `min_var` and `max_variance` using a sigmoid.
+    ///
+    /// The upper bound must be finite and strictly greater than `min_var` so the
+    /// variance head remains trainable. This changes the interpretation of its
+    /// weights, so checkpoint loading must use the same bound as training.
+    pub fn with_max_variance(mut self, max_variance: f64) -> Self {
+        assert!(
+            max_variance.is_finite() && max_variance > self.base_policy.min_var,
+            "max_variance must be finite and greater than min_var"
+        );
+        self.max_variance = Some(max_variance);
+        self
     }
 
     fn compute_value(&self, x: &Tensor) -> Tensor {
@@ -212,9 +263,17 @@ impl FCGaussianPolicyWithValue {
 impl BasePolicy for FCGaussianPolicyWithValue {
     fn forward(&self, x: &Tensor) -> (Box<dyn BaseDistribution>, Option<Tensor>) {
         let h = self.base_policy.compute_medium_layer(x);
-        let (mean, var) = self.base_policy.compute_mean_and_var(&h);
+        let (mean, var) = self
+            .base_policy
+            .compute_mean_and_var_with_max_variance(&h, self.max_variance);
         let value = self.compute_value(&h);
-        (Box::new(GaussianDistribution::new(mean, var)), Some(value))
+        let distribution = match (self.base_policy.min_action, self.base_policy.max_action) {
+            (Some(min_action), Some(max_action)) => {
+                GaussianDistribution::new_bounded(mean, var, min_action, max_action)
+            }
+            _ => GaussianDistribution::new(mean, var),
+        };
+        (Box::new(distribution), Some(value))
     }
 
     fn device(&self) -> Device {
@@ -306,6 +365,137 @@ mod tests {
         assert_eq!(var.size()[0], 3);
         assert_eq!(var.size()[1], action_size);
         assert!(var.min().double_value(&[]) >= 1e-3);
+    }
+
+    #[test]
+    fn test_policy_with_value_caps_action_variance() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let max_variance = 0.1;
+        let mut policy = FCGaussianPolicyWithValue::new(
+            vs,
+            4,
+            2,
+            1,
+            16,
+            Some(-1.0),
+            Some(1.0),
+            true,
+            "spherical",
+            1e-3,
+        )
+        .with_max_variance(max_variance);
+        let _ = tch::no_grad(|| {
+            policy
+                .base_policy
+                .var_layer
+                .bs
+                .as_mut()
+                .unwrap()
+                .fill_(100.0)
+        });
+
+        let (distribution, _) =
+            policy.forward(&Tensor::zeros([3, 4], (tch::Kind::Float, Device::Cpu)));
+        let (_, variance) = distribution.params();
+        assert!(variance.le(max_variance).all().int64_value(&[]) == 1);
+        assert!(variance.ge(1e-3).all().int64_value(&[]) == 1);
+    }
+
+    fn policy_with_value(min_var: f64) -> FCGaussianPolicyWithValue {
+        FCGaussianPolicyWithValue::new(
+            nn::VarStore::new(Device::Cpu),
+            4,
+            2,
+            1,
+            16,
+            Some(-1.0),
+            Some(1.0),
+            true,
+            "spherical",
+            min_var,
+        )
+    }
+
+    fn assert_variance_entropy_gradient(policy: &FCGaussianPolicyWithValue) -> f64 {
+        // Zero inputs and zero-initialized biases give a deterministic variance
+        // head input, independently of the random weight initialization.
+        let (distribution, _) =
+            policy.forward(&Tensor::zeros([3, 4], (tch::Kind::Float, Device::Cpu)));
+        let (_, variance) = distribution.params();
+        let variance_value = variance.double_value(&[0, 0]);
+        assert!(variance.isfinite().all().int64_value(&[]) == 1);
+        distribution.entropy().mean(tch::Kind::Float).backward();
+        let gradient = policy.base_policy.var_layer.bs.as_ref().unwrap().grad();
+        assert!(gradient.defined());
+        assert!(gradient.isfinite().all().int64_value(&[]) == 1);
+        assert!(gradient.abs().min().double_value(&[]) > 0.0);
+        variance_value
+    }
+
+    #[test]
+    fn test_policy_with_value_default_variance_remains_trainable() {
+        // In particular, the FFI default minimum of 0.1 and larger minima must
+        // not collapse the variance interval and disconnect the variance head.
+        for min_variance in [0.01, 0.1, 0.2] {
+            let policy = policy_with_value(min_variance);
+            let variance = assert_variance_entropy_gradient(&policy);
+            assert!(variance > min_variance);
+            assert!(variance > 0.1);
+        }
+    }
+
+    #[test]
+    fn test_policy_with_value_explicit_variance_cap_remains_trainable() {
+        for min_variance in [0.01, 0.1, 0.2] {
+            let max_variance = min_variance + 0.1;
+            let policy = policy_with_value(min_variance).with_max_variance(max_variance);
+            let variance = assert_variance_entropy_gradient(&policy);
+            assert!(variance > min_variance);
+            assert!(variance < max_variance);
+        }
+    }
+
+    #[test]
+    fn test_policy_with_value_rejects_invalid_variance_caps() {
+        for max_variance in [0.0, 0.05, 0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(std::panic::catch_unwind(|| {
+                policy_with_value(0.1).with_max_variance(max_variance)
+            })
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn test_policy_with_value_rejects_invalid_variance_minima() {
+        for min_variance in [-0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(std::panic::catch_unwind(|| policy_with_value(min_variance)).is_err());
+        }
+    }
+
+    #[test]
+    fn test_policy_with_value_starts_with_small_action_means() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let policy = FCGaussianPolicyWithValue::new(
+            vs,
+            17,
+            6,
+            1,
+            256,
+            Some(-1.0),
+            Some(1.0),
+            true,
+            "diagonal",
+            1e-2,
+        );
+
+        let weight_std = policy
+            .base_policy
+            .mean_layer
+            .ws
+            .std(false)
+            .double_value(&[]);
+        assert!(weight_std > 0.005);
+        assert!(weight_std < 0.02);
     }
 
     #[test]

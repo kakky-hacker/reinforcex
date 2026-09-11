@@ -31,6 +31,27 @@ static REPLAY_BUFFERS: LazyLock<DashMap<u64, Arc<ReplayBufferWrapper>>> =
 static RNDS: LazyLock<DashMap<u64, Arc<Mutex<RndWrapper>>>> = LazyLock::new(DashMap::new);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Returns 1 when libtorch reports CUDA availability, otherwise 0.
+/// Missing/invalid Windows CUDA DLL configuration also returns 0 without panicking.
+#[no_mangle]
+pub extern "C" fn rx_cuda_is_available() -> u32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if reinforcex::try_load_cuda_dlls().is_err() {
+            return 0;
+        }
+        u32::from(tch::Cuda::is_available())
+    }))
+    .unwrap_or(0)
+}
+
+/// Seeds libtorch's random number generator for reproducible initialization.
+#[no_mangle]
+pub extern "C" fn rx_manual_seed(seed: i64) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| tch::manual_seed(seed)))
+        .map(|_| RX_OK)
+        .unwrap_or(RX_ERROR_PANIC)
+}
+
 /// Settings shared by every built-in agent.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -94,6 +115,31 @@ pub struct RxSacConfig {
     pub alpha: f64,
     pub min_variance: f64,
     pub squash_action: u32,
+}
+
+/// Versioned SAC configuration. The legacy structure and symbols retain their ABI.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RxSacConfigV2 {
+    pub base: RxSacConfig,
+    pub discrete_target_entropy_ratio: f64,
+}
+
+impl From<RxSacConfig> for RxSacConfigV2 {
+    fn from(base: RxSacConfig) -> Self {
+        Self {
+            base,
+            discrete_target_entropy_ratio: 0.98,
+        }
+    }
+}
+
+impl std::ops::Deref for RxSacConfigV2 {
+    type Target = RxSacConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
 }
 
 #[repr(C)]
@@ -364,6 +410,14 @@ fn validate_sac(config: &RxSacConfig) -> Result<(), i32> {
     Ok(())
 }
 
+fn validate_sac_v2(config: &RxSacConfigV2) -> Result<(), i32> {
+    validate_sac(&config.base)?;
+    if !is_probability(config.discrete_target_entropy_ratio) {
+        return Err(RX_ERROR_INVALID_ARGUMENT);
+    }
+    Ok(())
+}
+
 fn validate_replay_buffer(config: &RxReplayBufferConfig) -> Result<(), i32> {
     if config.capacity == 0
         || config.n_steps == 0
@@ -474,6 +528,7 @@ fn create_ppo_with_paths_and_curiosity(
     save_path: Option<String>,
     load_path: Option<String>,
     curiosity: Option<(SharedRnd, f64)>,
+    replay_for_sharing: Option<Arc<ReplayBuffer>>,
 ) -> Result<AgentWrapper, i32> {
     validate_ppo(config)?;
     let device = Device::cuda_if_available();
@@ -528,6 +583,9 @@ fn create_ppo_with_paths_and_curiosity(
     if let Some((curiosity, curiosity_reward_coefficient)) = curiosity {
         agent.add_curiosity(curiosity, curiosity_reward_coefficient);
     }
+    if let Some(replay) = replay_for_sharing {
+        agent.add_replay_buffer_for_share_experience(replay);
+    }
 
     Ok(AgentWrapper {
         agent: Box::new(agent),
@@ -546,13 +604,23 @@ fn create_ppo_with_paths(
     save_path: Option<String>,
     load_path: Option<String>,
 ) -> Result<AgentWrapper, i32> {
-    create_ppo_with_paths_and_curiosity(config, save_path, load_path, None)
+    create_ppo_with_paths_and_curiosity(config, save_path, load_path, None, None)
+}
+
+fn create_ppo_with_replay_and_paths(
+    config: &RxPpoConfig,
+    replay: Arc<ReplayBuffer>,
+    save_path: Option<String>,
+    load_path: Option<String>,
+) -> Result<AgentWrapper, i32> {
+    create_ppo_with_paths_and_curiosity(config, save_path, load_path, None, Some(replay))
 }
 
 fn create_ppo_with_rnd_and_paths(
     config: &RxPpoConfig,
     rnd: Arc<Mutex<RndWrapper>>,
     curiosity_reward_coefficient: f64,
+    replay_for_sharing: Option<Arc<ReplayBuffer>>,
     save_path: Option<String>,
     load_path: Option<String>,
 ) -> Result<AgentWrapper, i32> {
@@ -569,6 +637,7 @@ fn create_ppo_with_rnd_and_paths(
         save_path,
         load_path,
         Some((SharedRnd { rnd }, curiosity_reward_coefficient)),
+        replay_for_sharing,
     )
 }
 
@@ -593,12 +662,12 @@ fn build_critic(
 }
 
 fn create_sac_with_replay_and_paths(
-    config: &RxSacConfig,
+    config: &RxSacConfigV2,
     replay: Arc<ReplayBuffer>,
     save_path: Option<String>,
     load_path: Option<String>,
 ) -> Result<AgentWrapper, i32> {
-    validate_sac(config)?;
+    validate_sac_v2(config)?;
     let device = Device::cuda_if_available();
     let obs_size = to_i64(config.agent.obs_size)?;
     let action_size = to_i64(config.agent.action_size)?;
@@ -661,7 +730,7 @@ fn create_sac_with_replay_and_paths(
         hidden_layers,
         hidden_size,
     )?;
-    let agent = SAC::new_with_save_load(
+    let agent = SAC::new_with_save_load_and_entropy_target(
         actor,
         actor_optimizer,
         critic1,
@@ -677,10 +746,10 @@ fn create_sac_with_replay_and_paths(
         config.tau,
         config.alpha,
         config.action_space == RX_ACTION_CONTINUOUS && config.squash_action != 0,
+        config.discrete_target_entropy_ratio,
         save_path,
         load_path,
     );
-
     Ok(AgentWrapper {
         agent: Box::new(agent),
         device,
@@ -694,11 +763,11 @@ fn create_sac_with_replay_and_paths(
 }
 
 fn create_sac_with_paths(
-    config: &RxSacConfig,
+    config: &RxSacConfigV2,
     save_path: Option<String>,
     load_path: Option<String>,
 ) -> Result<AgentWrapper, i32> {
-    validate_sac(config)?;
+    validate_sac_v2(config)?;
     let replay = Arc::new(ReplayBuffer::new(
         to_usize(config.replay_capacity)?,
         to_usize(config.replay_n_steps)?,
@@ -707,7 +776,7 @@ fn create_sac_with_paths(
 }
 
 fn create_sac(config: &RxSacConfig) -> Result<AgentWrapper, i32> {
-    create_sac_with_paths(config, None, None)
+    create_sac_with_paths(&(*config).into(), None, None)
 }
 
 fn create_rnd_with_paths(
@@ -1021,6 +1090,18 @@ pub extern "C" fn rx_sac_config_default(
 }
 
 #[no_mangle]
+pub extern "C" fn rx_sac_config_default_v2(
+    out_config: *mut RxSacConfigV2,
+    obs_size: u64,
+    action_size: u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        write_default(out_config, default_sac_config(obs_size, action_size).into())
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+#[no_mangle]
 pub extern "C" fn rx_replay_buffer_config_default(
     out_config: *mut RxReplayBufferConfig,
     capacity: u64,
@@ -1060,6 +1141,16 @@ pub extern "C" fn rx_ppo_create(config: *const RxPpoConfig, out_id: *mut u64) ->
 pub extern "C" fn rx_sac_create(config: *const RxSacConfig, out_id: *mut u64) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         create_from_config(config, out_id, create_sac)
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+#[no_mangle]
+pub extern "C" fn rx_sac_create_v2(config: *const RxSacConfigV2, out_id: *mut u64) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        create_from_config(config, out_id, |config| {
+            create_sac_with_paths(config, None, None)
+        })
     }))
     .unwrap_or(RX_ERROR_PANIC)
 }
@@ -1181,6 +1272,75 @@ pub extern "C" fn rx_ppo_create_with_paths(
 }
 
 #[no_mangle]
+pub extern "C" fn rx_ppo_create_with_replay(
+    config: *const RxPpoConfig,
+    replay_id: u64,
+    out_id: *mut u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        rx_ppo_create_with_replay_and_paths(
+            config,
+            replay_id,
+            std::ptr::null(),
+            std::ptr::null(),
+            out_id,
+        )
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+#[no_mangle]
+pub extern "C" fn rx_ppo_create_with_replay_and_paths(
+    config: *const RxPpoConfig,
+    replay_id: u64,
+    save_path: *const c_char,
+    load_path: *const c_char,
+    out_id: *mut u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if config.is_null() || out_id.is_null() {
+            return RX_ERROR_NULL_POINTER;
+        }
+        unsafe {
+            *out_id = 0;
+        }
+        let config = unsafe { *config };
+        if let Err(status) = validate_ppo(&config) {
+            return status;
+        }
+        let replay = match get_replay_buffer(replay_id) {
+            Ok(replay) => replay,
+            Err(status) => return status,
+        };
+        let save_path = match optional_c_string(save_path) {
+            Ok(path) => path,
+            Err(status) => return status,
+        };
+        let load_path = match optional_c_string(load_path) {
+            Ok(path) => path,
+            Err(status) => return status,
+        };
+        match create_ppo_with_replay_and_paths(
+            &config,
+            Arc::clone(&replay.buffer),
+            save_path,
+            load_path,
+        )
+        .and_then(insert_agent)
+        {
+            Ok(id) => {
+                unsafe {
+                    *out_id = id;
+                }
+                RX_OK
+            }
+            Err(status) => status,
+        }
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+#[no_mangle]
 pub extern "C" fn rx_ppo_create_with_rnd(
     config: *const RxPpoConfig,
     rnd_id: u64,
@@ -1239,6 +1399,7 @@ pub extern "C" fn rx_ppo_create_with_rnd_and_paths(
             &config,
             rnd,
             curiosity_reward_coefficient,
+            None,
             save_path,
             load_path,
         )
@@ -1269,8 +1430,21 @@ pub extern "C" fn rx_sac_create_with_paths(
             save_path,
             load_path,
             out_id,
-            |config, save, load| create_sac_with_paths(config, save, load),
+            |config, save, load| create_sac_with_paths(&(*config).into(), save, load),
         )
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+#[no_mangle]
+pub extern "C" fn rx_sac_create_with_paths_v2(
+    config: *const RxSacConfigV2,
+    save_path: *const c_char,
+    load_path: *const c_char,
+    out_id: *mut u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        create_from_config_with_paths(config, save_path, load_path, out_id, create_sac_with_paths)
     }))
     .unwrap_or(RX_ERROR_PANIC)
 }
@@ -1343,6 +1517,42 @@ pub extern "C" fn rx_sac_create_with_replay_and_paths(
     load_path: *const c_char,
     out_id: *mut u64,
 ) -> i32 {
+    create_sac_from_replay_config(config, replay_id, save_path, load_path, out_id)
+}
+
+#[no_mangle]
+pub extern "C" fn rx_sac_create_with_replay_v2(
+    config: *const RxSacConfigV2,
+    replay_id: u64,
+    out_id: *mut u64,
+) -> i32 {
+    create_sac_from_replay_config(
+        config,
+        replay_id,
+        std::ptr::null(),
+        std::ptr::null(),
+        out_id,
+    )
+}
+
+#[no_mangle]
+pub extern "C" fn rx_sac_create_with_replay_and_paths_v2(
+    config: *const RxSacConfigV2,
+    replay_id: u64,
+    save_path: *const c_char,
+    load_path: *const c_char,
+    out_id: *mut u64,
+) -> i32 {
+    create_sac_from_replay_config(config, replay_id, save_path, load_path, out_id)
+}
+
+fn create_sac_from_replay_config<C: Copy + Into<RxSacConfigV2>>(
+    config: *const C,
+    replay_id: u64,
+    save_path: *const c_char,
+    load_path: *const c_char,
+    out_id: *mut u64,
+) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         if config.is_null() || out_id.is_null() {
             return RX_ERROR_NULL_POINTER;
@@ -1350,8 +1560,8 @@ pub extern "C" fn rx_sac_create_with_replay_and_paths(
         unsafe {
             *out_id = 0;
         }
-        let config = unsafe { *config };
-        if let Err(status) = validate_sac(&config) {
+        let config: RxSacConfigV2 = unsafe { *config }.into();
+        if let Err(status) = validate_sac_v2(&config) {
             return status;
         }
         let replay = match get_replay_buffer(replay_id) {
@@ -1595,6 +1805,108 @@ pub extern "C" fn rx_replay_buffer_destroy(id: u64) -> i32 {
 }
 
 #[no_mangle]
+pub extern "C" fn rx_ppo_create_with_rnd_and_replay(
+    config: *const RxPpoConfig,
+    rnd_id: u64,
+    replay_id: u64,
+    curiosity_reward_coefficient: f64,
+    out_id: *mut u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        rx_ppo_create_with_rnd_and_replay_and_paths(
+            config,
+            rnd_id,
+            replay_id,
+            curiosity_reward_coefficient,
+            std::ptr::null(),
+            std::ptr::null(),
+            out_id,
+        )
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+#[no_mangle]
+pub extern "C" fn rx_ppo_create_with_rnd_and_replay_and_paths(
+    config: *const RxPpoConfig,
+    rnd_id: u64,
+    replay_id: u64,
+    curiosity_reward_coefficient: f64,
+    save_path: *const c_char,
+    load_path: *const c_char,
+    out_id: *mut u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if config.is_null() || out_id.is_null() {
+            return RX_ERROR_NULL_POINTER;
+        }
+        unsafe {
+            *out_id = 0;
+        }
+        let config = unsafe { *config };
+        if let Err(status) = validate_ppo(&config) {
+            return status;
+        }
+        if !curiosity_reward_coefficient.is_finite() {
+            return RX_ERROR_INVALID_ARGUMENT;
+        }
+        let rnd = match get_rnd(rnd_id) {
+            Ok(rnd) => rnd,
+            Err(status) => return status,
+        };
+        let replay = match get_replay_buffer(replay_id) {
+            Ok(replay) => replay,
+            Err(status) => return status,
+        };
+        let save_path = match optional_c_string(save_path) {
+            Ok(path) => path,
+            Err(status) => return status,
+        };
+        let load_path = match optional_c_string(load_path) {
+            Ok(path) => path,
+            Err(status) => return status,
+        };
+        match create_ppo_with_rnd_and_paths(
+            &config,
+            rnd,
+            curiosity_reward_coefficient,
+            Some(Arc::clone(&replay.buffer)),
+            save_path,
+            load_path,
+        )
+        .and_then(insert_agent)
+        {
+            Ok(id) => {
+                unsafe {
+                    *out_id = id;
+                }
+                RX_OK
+            }
+            Err(status) => status,
+        }
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+#[no_mangle]
+pub extern "C" fn rx_replay_buffer_len(id: u64, out_len: *mut u64) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if out_len.is_null() {
+            return RX_ERROR_NULL_POINTER;
+        }
+        let replay = match get_replay_buffer(id) {
+            Ok(replay) => replay,
+            Err(status) => return status,
+        };
+        unsafe {
+            *out_len = replay.buffer.len() as u64;
+        }
+        RX_OK
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+#[no_mangle]
 pub extern "C" fn rx_rnd_save(id: u64) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         let rnd = match get_rnd(id) {
@@ -1734,6 +2046,90 @@ mod tests {
     }
 
     #[test]
+    fn sac_config_preserves_legacy_abi_and_default_write_bounds() {
+        #[repr(C)]
+        struct GuardedConfig {
+            config: std::mem::MaybeUninit<RxSacConfig>,
+            canary: [u8; 16],
+        }
+        if cfg!(target_pointer_width = "64") {
+            assert_eq!(std::mem::size_of::<RxSacConfig>(), 144);
+            assert_eq!(std::mem::offset_of!(RxSacConfig, action_space), 40);
+            assert_eq!(std::mem::offset_of!(RxSacConfig, actor_learning_rate), 48);
+            assert_eq!(std::mem::offset_of!(RxSacConfig, alpha), 120);
+            assert_eq!(std::mem::offset_of!(RxSacConfig, min_variance), 128);
+            assert_eq!(std::mem::offset_of!(RxSacConfig, squash_action), 136);
+            assert_eq!(std::mem::size_of::<RxSacConfigV2>(), 152);
+            assert_eq!(
+                std::mem::offset_of!(RxSacConfigV2, discrete_target_entropy_ratio),
+                144
+            );
+        }
+        let mut guarded = GuardedConfig {
+            config: std::mem::MaybeUninit::uninit(),
+            canary: [0xA5; 16],
+        };
+        assert_eq!(
+            rx_sac_config_default(guarded.config.as_mut_ptr(), 4, 2),
+            RX_OK
+        );
+        assert_eq!(guarded.canary, [0xA5; 16]);
+        let config = unsafe { guarded.config.assume_init() };
+        assert_eq!(config.min_variance, 1e-3);
+        assert_eq!(config.squash_action, 1);
+        assert_eq!(
+            RxSacConfigV2::from(config).discrete_target_entropy_ratio,
+            0.98
+        );
+    }
+
+    #[test]
+    fn sac_v2_defaults_validation_and_action_lifecycle() {
+        let mut config = std::mem::MaybeUninit::<RxSacConfigV2>::uninit();
+        assert_eq!(rx_sac_config_default_v2(config.as_mut_ptr(), 4, 2), RX_OK);
+        let mut config = unsafe { config.assume_init() };
+        assert_eq!(config.discrete_target_entropy_ratio, 0.98);
+        assert_eq!(
+            rx_sac_config_default_v2(std::ptr::null_mut(), 4, 2),
+            RX_ERROR_NULL_POINTER
+        );
+        let mut id = 123;
+        for ratio in [-0.1, 1.01, f64::NAN, f64::INFINITY] {
+            config.discrete_target_entropy_ratio = ratio;
+            assert_eq!(
+                rx_sac_create_v2(&config, &mut id),
+                RX_ERROR_INVALID_ARGUMENT
+            );
+            assert_eq!(id, 0);
+        }
+        config.discrete_target_entropy_ratio = 0.02;
+        config.base.agent.hidden_size = 16;
+        config.base.replay_capacity = 32;
+        config.base.replay_start_size = 4;
+        config.base.batch_size = 4;
+        for action_space in [RX_ACTION_DISCRETE, RX_ACTION_CONTINUOUS] {
+            config.base.action_space = action_space;
+            assert_eq!(rx_sac_create_v2(&config, &mut id), RX_OK);
+            let obs = [0.1f32; 4];
+            let mut out = [0.0f32; 2];
+            let expected = if action_space == RX_ACTION_DISCRETE {
+                1
+            } else {
+                2
+            };
+            for _ in 0..6 {
+                assert_eq!(
+                    rx_agent_act_and_train(id, obs.as_ptr(), 4, 0.0, out.as_mut_ptr(), 2),
+                    expected
+                );
+                assert!(out.iter().all(|value| value.is_finite()));
+            }
+            assert_eq!(rx_agent_stop_episode(id, obs.as_ptr(), 4, 1.0), RX_OK);
+            assert_eq!(rx_agent_destroy(id), RX_OK);
+        }
+    }
+
+    #[test]
     fn sac_supports_discrete_and_continuous_actions() {
         for action_space in [RX_ACTION_DISCRETE, RX_ACTION_CONTINUOUS] {
             let mut config = default_sac_config(4, 2);
@@ -1768,6 +2164,14 @@ mod tests {
         invalid.tau = 2.0;
         let mut id = 123;
         assert_eq!(rx_sac_create(&invalid, &mut id), RX_ERROR_INVALID_ARGUMENT);
+        assert_eq!(id, 0);
+
+        let mut invalid_v2 = RxSacConfigV2::from(default_sac_config(4, 2));
+        invalid_v2.discrete_target_entropy_ratio = 1.01;
+        assert_eq!(
+            rx_sac_create_v2(&invalid_v2, &mut id),
+            RX_ERROR_INVALID_ARGUMENT
+        );
         assert_eq!(id, 0);
 
         let mut config = default_ppo_config(4, 2);
@@ -1807,10 +2211,19 @@ mod tests {
             RX_OK
         );
         assert_eq!(
-            rx_sac_create_with_replay(&config, replay_id, &mut agent2),
+            rx_sac_create_with_replay_v2(&RxSacConfigV2::from(config), replay_id, &mut agent2),
             RX_OK
         );
         assert_ne!(agent1, agent2);
+
+        let mut invalid_v2 = RxSacConfigV2::from(config);
+        invalid_v2.discrete_target_entropy_ratio = f64::NAN;
+        let mut invalid_id = 123;
+        assert_eq!(
+            rx_sac_create_with_replay_v2(&invalid_v2, replay_id, &mut invalid_id),
+            RX_ERROR_INVALID_ARGUMENT
+        );
+        assert_eq!(invalid_id, 0);
 
         let obs = [0.1f32; 4];
         let mut out = [0.0f32; 1];
@@ -1849,6 +2262,84 @@ mod tests {
 
         assert_eq!(rx_agent_destroy(agent1), RX_OK);
         assert_eq!(rx_agent_destroy(agent2), RX_OK);
+        assert_eq!(rx_replay_buffer_destroy(replay_id), RX_OK);
+    }
+
+    #[test]
+    fn ppo_experience_can_feed_a_shared_sac_replay_buffer() {
+        let replay_config = default_replay_buffer_config(64, 1);
+        let mut replay_id = 0;
+        assert_eq!(
+            rx_replay_buffer_create(&replay_config, &mut replay_id),
+            RX_OK
+        );
+
+        let mut ppo_config = default_ppo_config(4, 2);
+        ppo_config.action_space = RX_ACTION_CONTINUOUS;
+        ppo_config.update_interval = 16;
+        ppo_config.minibatch_size = 4;
+        let mut ppo_id = 0;
+        assert_eq!(
+            rx_ppo_create_with_replay(&ppo_config, replay_id, &mut ppo_id),
+            RX_OK
+        );
+
+        let mut sac_config = default_sac_config(4, 2);
+        sac_config.action_space = RX_ACTION_CONTINUOUS;
+        sac_config.replay_capacity = replay_config.capacity;
+        sac_config.replay_n_steps = replay_config.n_steps;
+        sac_config.replay_start_size = 4;
+        sac_config.batch_size = 4;
+        let mut sac_id = 0;
+        assert_eq!(
+            rx_sac_create_with_replay(&sac_config, replay_id, &mut sac_id),
+            RX_OK
+        );
+
+        let obs = [0.1f32; 4];
+        let mut action = [0.0f32; 2];
+        for _ in 0..6 {
+            assert_eq!(
+                rx_agent_act_and_train(
+                    ppo_id,
+                    obs.as_ptr(),
+                    obs.len() as u64,
+                    1.0,
+                    action.as_mut_ptr(),
+                    action.len() as u64,
+                ),
+                2
+            );
+        }
+
+        let mut replay_len = 0;
+        assert_eq!(rx_replay_buffer_len(replay_id, &mut replay_len), RX_OK);
+        assert!(replay_len >= 5);
+
+        assert_eq!(
+            rx_agent_act_and_train(
+                sac_id,
+                obs.as_ptr(),
+                obs.len() as u64,
+                1.0,
+                action.as_mut_ptr(),
+                action.len() as u64,
+            ),
+            2
+        );
+        let n_updates = {
+            let sac = AGENTS.get(&sac_id).unwrap();
+            let statistics = sac.lock().unwrap().agent.get_statistics();
+            statistics
+                .iter()
+                .find(|(name, _)| name == "n_updates")
+                .map(|(_, value)| *value)
+                .unwrap()
+        };
+        assert!(n_updates >= 1.0);
+
+        assert_eq!(rx_agent_destroy(ppo_id), RX_OK);
+        assert_eq!(rx_agent_destroy(sac_id), RX_OK);
         assert_eq!(rx_replay_buffer_destroy(replay_id), RX_OK);
     }
 
@@ -1950,6 +2441,131 @@ mod tests {
     }
 
     #[test]
+    fn ppo_can_use_rnd_while_exporting_to_a_shared_replay_buffer() {
+        let replay_config = default_replay_buffer_config(64, 1);
+        let mut replay_id = 0;
+        assert_eq!(
+            rx_replay_buffer_create(&replay_config, &mut replay_id),
+            RX_OK
+        );
+
+        let mut rnd_config = default_rnd_config(4);
+        rnd_config.feature_size = 8;
+        rnd_config.hidden_layers = 1;
+        rnd_config.hidden_size = 16;
+        rnd_config.update_interval = 2;
+        let mut rnd_id = 0;
+        assert_eq!(rx_rnd_create(&rnd_config, &mut rnd_id), RX_OK);
+
+        let mut ppo_config = default_ppo_config(4, 2);
+        ppo_config.action_space = RX_ACTION_DISCRETE;
+        ppo_config.update_interval = 2;
+        ppo_config.minibatch_size = 1;
+        let mut ppo_id = 0;
+        assert_eq!(
+            rx_ppo_create_with_rnd_and_replay(&ppo_config, rnd_id, replay_id, 0.25, &mut ppo_id,),
+            RX_OK
+        );
+
+        assert_eq!(rx_rnd_destroy(rnd_id), RX_OK);
+        let obs = [0.1f32, 0.2, 0.3, 0.4];
+        let mut action = [0.0f32; 1];
+        for reward in [0.0, 1.0] {
+            assert_eq!(
+                rx_agent_act_and_train(
+                    ppo_id,
+                    obs.as_ptr(),
+                    obs.len() as u64,
+                    reward,
+                    action.as_mut_ptr(),
+                    action.len() as u64,
+                ),
+                1
+            );
+        }
+        assert_eq!(
+            rx_agent_stop_episode(ppo_id, obs.as_ptr(), obs.len() as u64, 1.0),
+            RX_OK
+        );
+
+        let mut replay_len = 0;
+        assert_eq!(rx_replay_buffer_len(replay_id, &mut replay_len), RX_OK);
+        assert_eq!(replay_len, 2);
+
+        assert_eq!(rx_agent_destroy(ppo_id), RX_OK);
+        assert_eq!(rx_replay_buffer_destroy(replay_id), RX_OK);
+    }
+
+    #[test]
+    fn sac_legacy_and_v2_paths_round_trip_with_shared_replay() {
+        let mut config = default_sac_config(4, 2);
+        config.agent.hidden_size = 16;
+        config.replay_capacity = 32;
+        config.replay_start_size = 4;
+        config.batch_size = 4;
+        let config_v2 = RxSacConfigV2::from(config);
+        let replay_config = default_replay_buffer_config(32, 1);
+        let mut replay_id = 0;
+        assert_eq!(
+            rx_replay_buffer_create(&replay_config, &mut replay_id),
+            RX_OK
+        );
+        for use_v2 in [false, true] {
+            let stem = format!("sac-{}", Ulid::new());
+            let directory = std::env::current_dir()
+                .unwrap()
+                .join("target")
+                .join("ffi-tests");
+            let path = CString::new(
+                directory
+                    .join(format!("{}.ot", stem))
+                    .to_string_lossy()
+                    .as_bytes(),
+            )
+            .unwrap();
+            let mut id = 0;
+            let result = if use_v2 {
+                rx_sac_create_with_paths_v2(&config_v2, path.as_ptr(), std::ptr::null(), &mut id)
+            } else {
+                rx_sac_create_with_paths(&config, path.as_ptr(), std::ptr::null(), &mut id)
+            };
+            assert_eq!(result, RX_OK);
+            let obs = [0.1f32; 4];
+            let mut before = [0.0f32; 2];
+            assert_eq!(rx_agent_act(id, obs.as_ptr(), 4, before.as_mut_ptr(), 2), 2);
+            assert_eq!(rx_agent_save(id), RX_OK);
+            assert_eq!(rx_agent_destroy(id), RX_OK);
+            let result = if use_v2 {
+                rx_sac_create_with_replay_and_paths_v2(
+                    &config_v2,
+                    replay_id,
+                    std::ptr::null(),
+                    path.as_ptr(),
+                    &mut id,
+                )
+            } else {
+                rx_sac_create_with_replay_and_paths(
+                    &config,
+                    replay_id,
+                    std::ptr::null(),
+                    path.as_ptr(),
+                    &mut id,
+                )
+            };
+            assert_eq!(result, RX_OK);
+            assert_eq!(rx_agent_load(id), RX_OK);
+            let mut after = [0.0f32; 2];
+            assert_eq!(rx_agent_act(id, obs.as_ptr(), 4, after.as_mut_ptr(), 2), 2);
+            assert_eq!(before, after);
+            assert_eq!(rx_agent_destroy(id), RX_OK);
+            for component in ["actor", "critic1", "critic2", "temperature"] {
+                std::fs::remove_file(directory.join(format!("{}_{}.ot", stem, component))).unwrap();
+            }
+        }
+        assert_eq!(rx_replay_buffer_destroy(replay_id), RX_OK);
+    }
+
+    #[test]
     fn agents_can_be_created_with_save_and_load_paths() {
         let mut config = default_dqn_config(4, 2);
         config.batch_size = 4;
@@ -1980,5 +2596,15 @@ mod tests {
         assert_eq!(rx_agent_destroy(loaded_id), RX_OK);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cuda_availability_result_is_boolean() {
+        assert!(rx_cuda_is_available() <= 1);
+    }
+
+    #[test]
+    fn manual_seed_succeeds() {
+        assert_eq!(rx_manual_seed(42), RX_OK);
     }
 }

@@ -1,4 +1,5 @@
 // Cumulative sum considering a per-step discount rate.
+#[allow(dead_code)]
 pub fn cumsum(seq: &[f64], gamma: &[f64]) -> Vec<f64> {
     assert_eq!(seq.len(), gamma.len());
     seq.iter()

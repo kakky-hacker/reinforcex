@@ -16,17 +16,32 @@ from reinforcex_ffi import (
 )
 
 
+def shaped_reward(reward: float, step: int, done: bool, max_steps: int) -> float:
+    """Keep value targets compact and clearly mark premature failure."""
+    if done and step < max_steps:
+        return -1.0
+    return 0.01 * reward
+
+
 def train(args) -> None:
     validate_training_args(args)
     lib = load_reinforcex()
     config = RxPpoConfig()
     check(lib.rx_ppo_config_default(C.byref(config), 4, 2), "rx_ppo_config_default")
     config.action_space = RX_ACTION_DISCRETE
+    config.agent.hidden_layers = 1
     config.agent.hidden_size = 64
-    config.learning_rate = 2.5e-4
-    config.update_interval = 500
-    config.epochs = 10
-    config.minibatch_size = 32
+    config.agent.gamma = 0.99
+    config.learning_rate = 5e-4
+    config.gae_lambda = 0.95
+    config.update_interval = 256
+    config.epochs = 6
+    config.minibatch_size = 64
+    config.policy_clip_epsilon = 0.2
+    config.value_clip_range = 0.2
+    config.value_loss_coefficient = 0.5
+    config.entropy_coefficient = 0.0
+    config.standardize_gae = 1
 
     agents = []
     try:
@@ -50,6 +65,8 @@ def train(args) -> None:
                 episodes=args.episodes,
                 max_steps=args.max_steps,
                 log_interval=args.log_interval,
+                reward_transform=shaped_reward,
+                solved_return=475.0,
             ),
         )
     finally:
@@ -58,7 +75,7 @@ def train(args) -> None:
 
 
 def main() -> None:
-    parser = training_parser(__doc__, episodes=10_000, max_steps=500, log_interval=20)
+    parser = training_parser(__doc__, episodes=500, max_steps=500, log_interval=25)
     train(parser.parse_args())
 
 

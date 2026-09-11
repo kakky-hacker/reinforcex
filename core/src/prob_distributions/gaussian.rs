@@ -4,6 +4,8 @@ use tch::{Kind, Tensor};
 pub struct GaussianDistribution {
     mean: Tensor,
     var: Tensor,
+    min_action: Option<f64>,
+    max_action: Option<f64>,
 }
 
 unsafe impl Sync for GaussianDistribution {}
@@ -12,7 +14,32 @@ unsafe impl Send for GaussianDistribution {}
 impl GaussianDistribution {
     pub fn new(mean: Tensor, var: Tensor) -> Self {
         assert_eq!(mean.size(), var.size(), "mean and var must have same shape");
-        GaussianDistribution { mean, var }
+        GaussianDistribution {
+            mean,
+            var,
+            min_action: None,
+            max_action: None,
+        }
+    }
+
+    /// A Gaussian with bounds for environment actions. Sampling, modes, entropy,
+    /// and likelihoods remain in the unbounded Gaussian policy space; call
+    /// `to_env_action` only for environment execution and off-policy replay.
+    pub fn new_bounded(mean: Tensor, var: Tensor, min_action: f64, max_action: f64) -> Self {
+        assert!(min_action.is_finite());
+        assert!(max_action.is_finite());
+        assert!(min_action < max_action);
+        let mut distribution = Self::new(mean, var);
+        distribution.min_action = Some(min_action);
+        distribution.max_action = Some(max_action);
+        distribution
+    }
+
+    fn bound_action(&self, action: Tensor) -> Tensor {
+        match (self.min_action, self.max_action) {
+            (Some(min_action), Some(max_action)) => action.clamp(min_action, max_action),
+            _ => action,
+        }
     }
 }
 
@@ -50,6 +77,10 @@ impl BaseDistribution for GaussianDistribution {
         (&self.mean + &std * noise).detach()
     }
 
+    fn to_env_action(&self, action: &Tensor) -> Tensor {
+        self.bound_action(action.shallow_clone())
+    }
+
     fn prob(&self, x: &Tensor) -> Tensor {
         self.log_prob(x).exp()
     }
@@ -62,10 +93,13 @@ impl BaseDistribution for GaussianDistribution {
     }
 
     fn copy(&self) -> Box<dyn BaseDistribution> {
-        Box::new(Self::new(
+        let mut copy = Self::new(
             self.mean.shallow_clone().detach(),
             self.var.shallow_clone().detach(),
-        ))
+        );
+        copy.min_action = self.min_action;
+        copy.max_action = self.max_action;
+        Box::new(copy)
     }
 
     fn most_probable(&self) -> Tensor {
@@ -134,6 +168,51 @@ mod tests {
 
         let sample = gaussian.sample();
         assert_eq!(sample.size(), vec![1, 2]);
+    }
+
+    #[test]
+    fn test_environment_actions_are_bounded_without_clipping_policy_actions() {
+        let mean = Tensor::from_slice(&[-5.0, 5.0]).view([1, 2]);
+        let var = Tensor::from_slice(&[100.0, 100.0]).view([1, 2]);
+        let gaussian = GaussianDistribution::new_bounded(mean, var, -1.0, 1.0);
+
+        for _ in 0..100 {
+            let raw_sample = gaussian.sample();
+            let sample = gaussian.to_env_action(&raw_sample);
+            assert!(sample.ge(-1.0).all().int64_value(&[]) == 1);
+            assert!(sample.le(1.0).all().int64_value(&[]) == 1);
+        }
+        let raw_mode = gaussian.most_probable();
+        assert_eq!(raw_mode.double_value(&[0, 0]), -5.0);
+        assert_eq!(raw_mode.double_value(&[0, 1]), 5.0);
+        let mode = gaussian.to_env_action(&raw_mode);
+        assert_eq!(mode.double_value(&[0, 0]), -1.0);
+        assert_eq!(mode.double_value(&[0, 1]), 1.0);
+        let copied = gaussian.copy();
+        assert_eq!(copied.to_env_action(&copied.most_probable()), mode);
+    }
+
+    #[test]
+    fn test_policy_ratio_uses_original_action_above_environment_bound() {
+        let old = GaussianDistribution::new_bounded(
+            Tensor::from_slice(&[0.8f32]).view([1, 1]),
+            Tensor::from_slice(&[0.1f32]).view([1, 1]),
+            -1.0,
+            1.0,
+        );
+        let new = GaussianDistribution::new_bounded(
+            Tensor::from_slice(&[0.9f32]).view([1, 1]),
+            Tensor::from_slice(&[0.1f32]).view([1, 1]),
+            -1.0,
+            1.0,
+        );
+        let raw_action = Tensor::from_slice(&[1.2f32]).view([1, 1]);
+        let env_action = old.to_env_action(&raw_action);
+        assert_eq!(env_action.double_value(&[0, 0]), 1.0);
+        let ratio = (new.log_prob(&raw_action) - old.log_prob(&raw_action)).exp();
+        // exp(((1.2-.8)^2 - (1.2-.9)^2)/(2*.1)) = exp(.35).
+        assert!((ratio.double_value(&[0]) - 0.35f64.exp()).abs() < 1e-6);
+        assert!(ratio.double_value(&[0]) > 1.2);
     }
 
     #[test]

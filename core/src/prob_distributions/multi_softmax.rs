@@ -54,7 +54,7 @@ impl BaseDistribution for MultiSoftmaxDistribution {
         }
     }
 
-    fn kl(&self, q: &Box<dyn BaseDistribution>) -> Tensor {
+    fn kl(&self, _q: &Box<dyn BaseDistribution>) -> Tensor {
         panic!("MultiSoftmaxDistribution::kl() is unsupported");
     }
 
@@ -133,7 +133,7 @@ impl BaseDistribution for MultiSoftmaxDistribution {
 mod tests {
     use super::super::softmax::SoftmaxDistribution;
     use super::*;
-    use tch::{Kind, Tensor};
+    use tch::Tensor;
 
     fn make_dist() -> MultiSoftmaxDistribution {
         let logits0 = Tensor::from_slice(&[1.0, 2.0, 3.0, 1.0, 3.0, 2.0]).reshape(&[2, 3]);
@@ -288,7 +288,7 @@ mod tests {
         let invalid_actions =
             Tensor::from_slice(&[0_i64, 1_i64, 2_i64, 0_i64, 1_i64, 2_i64]).reshape(&[2, 3]);
 
-        dist.log_prob(&invalid_actions);
+        let _ = dist.log_prob(&invalid_actions);
     }
 
     #[test]
