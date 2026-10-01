@@ -9,6 +9,7 @@ from reinforcex_ffi import (
     create_replay_buffer,
     create_sac,
     load_reinforcex,
+    manual_seed,
     path_for_agent,
     run_parallel,
     train_gym_agent,
@@ -27,6 +28,7 @@ def shaped_reward(reward: float, step: int, done: bool, max_steps: int) -> float
 def train(args) -> None:
     validate_training_args(args)
     lib = load_reinforcex()
+    manual_seed(lib, args.seed)
     config = RxSacConfigV2()
     check(lib.rx_sac_config_default_v2(C.byref(config), 4, 2), "rx_sac_config_default_v2")
     config.action_space = RX_ACTION_DISCRETE

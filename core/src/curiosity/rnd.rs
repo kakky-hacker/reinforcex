@@ -3,7 +3,8 @@ use crate::memory::Experience;
 use crate::misc::batch_states::batch_states;
 use crate::models::BasecuriosityModel;
 use std::sync::Arc;
-use tch::{nn, no_grad, Kind, Tensor};
+use crate::misc::autograd::no_grad;
+use tch::{nn, Kind, Tensor};
 
 pub struct RND {
     model: Box<dyn BasecuriosityModel + Send>,
@@ -41,12 +42,18 @@ impl Basecuriosity for RND {
             return Tensor::zeros([0], (Kind::Float, self.model.device()));
         }
 
-        let states = experiences
-            .iter()
-            .map(|experience| experience.state.shallow_clone())
-            .collect::<Vec<Tensor>>();
-        let states = batch_states(&states, self.model.device());
-        no_grad(|| self.model.forward(&states)).detach()
+        let rewards = experiences
+            .chunks(self.minibatch_size)
+            .map(|minibatch| {
+                let states = minibatch
+                    .iter()
+                    .map(|experience| experience.state.shallow_clone())
+                    .collect::<Vec<Tensor>>();
+                let states = batch_states(&states, self.model.device());
+                no_grad(|| self.model.forward(&states)).detach()
+            })
+            .collect::<Vec<_>>();
+        Tensor::cat(&rewards, 0)
     }
 
     fn update(&mut self, experiences: &[Arc<Experience>]) {
@@ -191,7 +198,10 @@ mod tests {
         let optimizer = nn::Adam::default()
             .build(model.predictor_var_store(), 1e-3)
             .unwrap();
-        let rnd = RND::new(Box::new(model), optimizer, 2, Some(dirname.clone()), None);
+        let mut rnd = RND::new(Box::new(model), optimizer, 2, Some(dirname.clone()), None);
+        for _ in 0..5 {
+            rnd.update(&[Arc::clone(&exp)]);
+        }
         let expected_reward = rnd.calc_internal_reward(&[Arc::clone(&exp)]);
         rnd.save();
 
@@ -207,5 +217,63 @@ mod tests {
         assert!(expected_reward.allclose(&actual_reward, 1e-6, 1e-6, false));
 
         let _ = std::fs::remove_dir_all(dirname);
+    }
+
+    #[test]
+    fn test_empty_rollout_is_a_noop_and_singleton_reward_is_detached() {
+        let model = ScalarErrorModel::new();
+        let optimizer = nn::Sgd::default().build(&model.var_store, 0.1).unwrap();
+        let mut rnd = RND::new(Box::new(model), optimizer, 1, None, None);
+        assert_eq!(rnd.calc_internal_reward(&[]).size(), [0]);
+        rnd.update(&[]);
+        let experiences = [experience(Tensor::ones([1], (Kind::Float, Device::Cpu)))];
+        let rewards = rnd.calc_internal_reward_and_update(&experiences);
+        assert_eq!(rewards.size(), [1]);
+        assert!(!rewards.requires_grad());
+        assert_eq!(rewards.double_value(&[0]), 1.0);
+        assert!(rnd.calc_internal_reward(&experiences).double_value(&[0]) < 1.0);
+    }
+
+    #[test]
+    fn test_minibatch_rewards_preserve_order_and_include_remainder() {
+        let model = ScalarErrorModel::new();
+        let optimizer = nn::Sgd::default().build(&model.var_store, 0.1).unwrap();
+        let rnd = RND::new(Box::new(model), optimizer, 2, None, None);
+        let experiences = (1..=5)
+            .map(|value| experience(Tensor::from_slice(&[value as f32])))
+            .collect::<Vec<_>>();
+        let rewards = rnd.calc_internal_reward(&experiences);
+        assert!(rewards.equal(&Tensor::from_slice(&[1.0_f32, 4.0, 9.0, 16.0, 25.0])));
+    }
+
+    #[test]
+    fn test_large_observation_units_remain_finite_but_scale_raw_novelty() {
+        let model = FCRNDModel::new(
+            nn::VarStore::new(Device::Cpu),
+            nn::VarStore::new(Device::Cpu),
+            4,
+            8,
+            1,
+            16,
+        );
+        let optimizer = nn::Adam::default()
+            .build(model.predictor_var_store(), 1e-3)
+            .unwrap();
+        let mut rnd = RND::new(Box::new(model), optimizer, 1, None, None);
+        let state = Tensor::from_slice(&[1.0_f32, -2.0, 0.5, 3.0]);
+        let ordinary = [experience(state.shallow_clone())];
+        let scaled = [experience(state * 1000.0)];
+        let ordinary_error = rnd.calc_internal_reward(&ordinary).double_value(&[0]);
+        let scaled_error = rnd.calc_internal_reward(&scaled).double_value(&[0]);
+        assert!(scaled_error.is_finite());
+        // With zero biases, the initial ReLU networks are positively homogeneous.
+        // This documents why callers must normalize observations or tune the
+        // curiosity coefficient when the environment changes its units.
+        assert!((scaled_error / ordinary_error / 1e6 - 1.0).abs() < 1e-4);
+        for _ in 0..100 {
+            rnd.update(&scaled);
+        }
+        let learned_error = rnd.calc_internal_reward(&scaled).double_value(&[0]);
+        assert!(learned_error.is_finite() && learned_error < scaled_error);
     }
 }

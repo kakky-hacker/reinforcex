@@ -10,6 +10,7 @@ from reinforcex_ffi import (
     create_sac,
     evaluate_gym_agent,
     load_reinforcex,
+    manual_seed,
     path_for_agent,
     run_parallel,
     train_gym_agent,
@@ -33,6 +34,7 @@ def train(args) -> None:
         raise ValueError("--eval-only requires --load-path")
 
     lib = load_reinforcex()
+    manual_seed(lib, args.seed)
     config = RxSacConfigV2()
     check(lib.rx_sac_config_default_v2(C.byref(config), 11, 3), "rx_sac_config_default_v2")
     config.action_space = RX_ACTION_CONTINUOUS

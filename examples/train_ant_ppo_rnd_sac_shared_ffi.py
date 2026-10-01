@@ -3,7 +3,6 @@
 import argparse
 import ctypes as C
 import json
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +21,7 @@ from reinforcex_ffi import (
     evaluate_gym_agent,
     load_reinforcex,
     manual_seed,
+    run_parallel,
     train_gym_agent,
 )
 
@@ -243,11 +243,10 @@ def run_condition(lib, args, condition: str):
             )
             return algorithm, returns
 
-        with ThreadPoolExecutor(max_workers=len(jobs)) as executor:
-            futures = [executor.submit(train_worker, job) for job in jobs]
-            for future in futures:
-                algorithm, returns = future.result()
-                training_returns[algorithm].append(returns)
+        for algorithm, returns in run_parallel(
+            len(jobs), lambda job_id: train_worker(jobs[job_id])
+        ):
+            training_returns[algorithm].append(returns)
 
         final_statistics = {
             "ppo": [agent.statistics() for agent in ppo_agents],
@@ -450,7 +449,7 @@ def parser():
     result.add_argument("--rnd-learning-rate", type=float, default=1e-4)
     result.add_argument("--rnd-coefficient", type=float, default=0.01)
     result.add_argument("--results-path")
-    result.add_argument("--require-cuda", action=argparse.BooleanOptionalAction, default=True)
+    result.add_argument("--require-cuda", action=argparse.BooleanOptionalAction, default=False)
     result.add_argument("--eval-only", action="store_true")
     result.add_argument("--eval-condition", choices=ALL_CONDITIONS, default=RND_SHARED)
     result.add_argument("--eval-algorithm", choices=("ppo", "sac"), default="sac")

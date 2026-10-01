@@ -6,7 +6,6 @@ pub struct MultiSoftmaxDistribution {
     distributions: Vec<SoftmaxDistribution>,
 }
 
-unsafe impl Send for MultiSoftmaxDistribution {}
 unsafe impl Sync for MultiSoftmaxDistribution {}
 
 impl MultiSoftmaxDistribution {

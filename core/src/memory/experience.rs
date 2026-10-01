@@ -10,8 +10,12 @@ pub struct Experience {
     pub action: Option<Tensor>,
     pub action_distrib: Option<Box<dyn BaseDistribution>>,
     pub reward: f64,
+    /// Whether this observation ends the rollout, including time-limit truncation.
+    pub is_episode_end: bool,
+    /// Whether the environment reached an absorbing state (no bootstrapping).
     pub is_episode_terminal: bool,
     pub n_step_discounted_reward: Mutex<Option<f64>>,
+    pub n_step_horizon: Mutex<Option<usize>>,
     pub n_step_after_experience: Mutex<Option<Arc<Experience>>>,
 }
 
@@ -35,9 +39,17 @@ impl Experience {
             action,
             action_distrib,
             reward,
+            is_episode_end: is_episode_terminal,
             is_episode_terminal,
             n_step_discounted_reward: Mutex::new(None),
+            n_step_horizon: Mutex::new(None),
             n_step_after_experience: Mutex::new(None),
         }
+    }
+
+    pub fn with_episode_end(mut self, is_episode_end: bool) -> Self {
+        assert!(!self.is_episode_terminal || is_episode_end);
+        self.is_episode_end = is_episode_end;
+        self
     }
 }

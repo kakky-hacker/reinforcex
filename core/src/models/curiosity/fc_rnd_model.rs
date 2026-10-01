@@ -3,7 +3,8 @@ use crate::misc::weight_initializer::{he_init, xavier_init};
 use std::fs;
 use std::path::Path as StdPath;
 use tch::nn::{linear, Init, Linear, LinearConfig, Module, Path, VarStore};
-use tch::{no_grad, Device, Kind, Tensor};
+use crate::misc::autograd::no_grad;
+use tch::{Device, Kind, Tensor};
 
 pub struct FCRNDModel {
     predictor_vs: VarStore,
@@ -17,7 +18,7 @@ pub struct FCRNDModel {
 impl FCRNDModel {
     pub fn new(
         predictor_vs: VarStore,
-        target_vs: VarStore,
+        mut target_vs: VarStore,
         n_input_channels: i64,
         feature_size: i64,
         n_hidden_layers: usize,
@@ -48,6 +49,7 @@ impl FCRNDModel {
                 n_hidden_channels,
             )
         };
+        target_vs.freeze();
 
         FCRNDModel {
             predictor_vs,
@@ -174,7 +176,7 @@ impl BasecuriosityModel for FCRNDModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tch::{nn, Device, Kind, Tensor};
+    use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
     #[test]
     fn test_fc_rnd_model_forward() {
@@ -201,5 +203,63 @@ mod tests {
         model.load(&path);
 
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn test_only_predictor_learns_and_target_stays_frozen() {
+        let model = FCRNDModel::new(
+            nn::VarStore::new(Device::Cpu),
+            nn::VarStore::new(Device::Cpu),
+            4,
+            8,
+            1,
+            16,
+        );
+        // Use an active, deterministic ReLU fixture. A global manual_seed is
+        // insufficient when unrelated tests initialize models concurrently.
+        no_grad(|| {
+            for (name, mut value) in model.predictor_vs.variables() {
+                let _ = value.fill_(if name.starts_with("weight") {
+                    0.05
+                } else {
+                    0.01
+                });
+            }
+            for (name, mut value) in model.target_vs.variables() {
+                let _ = value.fill_(if name.starts_with("weight") {
+                    0.03
+                } else {
+                    0.02
+                });
+            }
+        });
+        let before = model
+            .target_vs
+            .variables()
+            .into_iter()
+            .map(|(name, value)| (name, value.copy()))
+            .collect::<std::collections::HashMap<_, _>>();
+        let input = Tensor::from_slice(&[1.0_f32, 0.5, -0.5, 2.0]).view([1, 4]);
+        let initial_error = model.forward(&input).double_value(&[0]);
+        let mut optimizer = nn::Adam::default()
+            .build(model.predictor_var_store(), 1e-3)
+            .unwrap();
+        for _ in 0..100 {
+            let loss = model.forward(&input).mean(Kind::Float);
+            optimizer.backward_step(&loss);
+        }
+        let learned_error = model.forward(&input).double_value(&[0]);
+        assert!(
+            learned_error < initial_error * 0.1,
+            "predictor did not learn: initial={initial_error}, learned={learned_error}"
+        );
+        for (name, value) in model.target_vs.variables() {
+            assert!(!value.requires_grad());
+            assert!(!value.grad().defined());
+            assert!(
+                value.equal(&before[&name]),
+                "target parameter {name} changed"
+            );
+        }
     }
 }

@@ -9,7 +9,6 @@ pub struct GaussianDistribution {
 }
 
 unsafe impl Sync for GaussianDistribution {}
-unsafe impl Send for GaussianDistribution {}
 
 impl GaussianDistribution {
     pub fn new(mean: Tensor, var: Tensor) -> Self {

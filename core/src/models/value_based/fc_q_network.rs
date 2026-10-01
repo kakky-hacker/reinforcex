@@ -1,7 +1,8 @@
 use super::base_q_network::BaseQFunction;
 use crate::misc::weight_initializer::{he_init, xavier_init};
 use tch::nn::{linear, Init, Linear, LinearConfig, Module, VarStore};
-use tch::{no_grad, Device, Tensor};
+use crate::misc::autograd::no_grad;
+use tch::{Device, Tensor};
 
 pub struct FCQNetwork {
     vs: VarStore,
@@ -110,6 +111,11 @@ impl BaseQFunction for FCQNetwork {
 
     fn trainable_variables(&self) -> Vec<Tensor> {
         self.vs.trainable_variables()
+    }
+
+    fn supports_in_place_target_sync(&self) -> bool {
+        // This network has only affine parameters; there are no running buffers.
+        true
     }
 
     fn save(&self, path: &str) {

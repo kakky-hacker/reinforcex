@@ -9,6 +9,7 @@ from reinforcex_ffi import (
     create_ppo,
     evaluate_gym_agent,
     load_reinforcex,
+    manual_seed,
     path_for_agent,
     run_parallel,
     train_gym_agent,
@@ -28,6 +29,7 @@ def clipped_reward(reward: float, _step: int, _done: bool, _max_steps: int) -> f
 def train(args) -> None:
     validate_training_args(args)
     lib = load_reinforcex()
+    manual_seed(lib, args.seed)
     config = RxPpoConfig()
     check(lib.rx_ppo_config_default(C.byref(config), 105, 8), "rx_ppo_config_default")
     config.action_space = RX_ACTION_CONTINUOUS

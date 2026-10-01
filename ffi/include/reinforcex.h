@@ -65,6 +65,35 @@ typedef struct RxPpoConfig {
     double min_variance;
 } RxPpoConfig;
 
+enum {
+    RX_PPO_MODEL_LEGACY = 0,
+    RX_PPO_MODEL_SEPARATE = 1,
+    RX_PPO_ACTIVATION_TANH = 0,
+    RX_PPO_ACTIVATION_RELU = 1
+};
+
+/* V2 preserves the original ABI. model=SEPARATE uses independent actor/critic,
+ * orthogonal initialization and (continuous) state-independent per-action log_std.
+ * activation applies to SEPARATE only. initial_log_std is ln(standard deviation).
+ * target_kl=0 disables early stopping. Use the same model/activation when loading.
+ * base.value_clip_range=0 disables value clipping in the updated core. */
+typedef struct RxPpoConfigV2 {
+    RxPpoConfig base;
+    uint32_t model;
+    uint32_t activation;
+    double initial_log_std;
+    double adam_epsilon;
+    double target_kl;
+} RxPpoConfigV2;
+
+int32_t rx_ppo_config_default_v2(RxPpoConfigV2 *out_config, uint64_t obs_size, uint64_t action_size);
+/* Unified V2 creation: rnd_id=0 / replay_id=0 means absent. Paths may be NULL.
+ * Old rx_ppo_create* functions continue to construct the original shared model. */
+int32_t rx_ppo_create_v2(
+    const RxPpoConfigV2 *config, uint64_t rnd_id, uint64_t replay_id,
+    double curiosity_reward_coefficient, const char *save_path,
+    const char *load_path, uint64_t *out_id);
+
 typedef struct RxSacConfig {
     RxAgentConfig agent;
     uint32_t action_space;
@@ -276,11 +305,59 @@ int64_t rx_agent_act_and_train(
     float *out,
     uint64_t out_len);
 
+/* PPO only. Train with obs/reward and export replay_obs/replay_reward to the
+ * configured shared replay buffer. Observations describe the same current state;
+ * both rewards belong to the previous action. Both observations must have the
+ * configured length and finite values; rewards must be finite. All inputs and
+ * output capacity are checked before invoking the agent. DQN/SAC are rejected
+ * with RX_ERROR_INVALID_ARGUMENT. Returns values written or a negative error. */
+int64_t rx_agent_act_and_train_with_replay_input(
+    uint64_t id,
+    const float *obs,
+    uint64_t obs_len,
+    float reward,
+    const float *replay_obs,
+    uint64_t replay_obs_len,
+    float replay_reward,
+    float *out,
+    uint64_t out_len);
+
 int32_t rx_agent_stop_episode(
     uint64_t id,
     const float *obs,
     uint64_t obs_len,
     float reward);
+
+/* End an episode. terminated=1 disables bootstrap; terminated=0 preserves
+ * bootstrap at an external time limit. Other values are rejected.
+ * The legacy rx_agent_stop_episode is equivalent to terminated=1. */
+int32_t rx_agent_stop_episode_with_terminal(
+    uint64_t id,
+    const float *obs,
+    uint64_t obs_len,
+    float reward,
+    uint32_t terminated);
+
+/* PPO only. End the same episode in learner and shared replay streams using
+ * separate inputs. terminated=0 preserves bootstrap, terminated=1 disables it;
+ * other flags are rejected. Validation happens before invoking the agent. */
+int32_t rx_agent_stop_episode_with_replay_input(
+    uint64_t id,
+    const float *obs,
+    uint64_t obs_len,
+    float reward,
+    uint32_t terminated,
+    const float *replay_obs,
+    uint64_t replay_obs_len,
+    float replay_reward);
+
+/* DQN/PPO only. Set a finite, strictly positive learning rate on the existing
+ * optimizer, preserving Adam state, parameters, and counters. Invalid rates
+ * (including zero) and unsupported agents return RX_ERROR_INVALID_ARGUMENT
+ * without mutation. The caller supplies the schedule; model checkpoints do not
+ * store the rate. Existing APIs retain their constructor learning rate unless
+ * this function is called. */
+int32_t rx_agent_set_learning_rate(uint64_t id, double learning_rate);
 
 int32_t rx_agent_statistics_len(uint64_t id, uint64_t *out_len);
 

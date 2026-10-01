@@ -9,9 +9,10 @@ import importlib.util
 import os
 import re
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Callable
+from threading import Event, local
+from typing import Callable, TypeVar
 
 import numpy as np
 
@@ -22,6 +23,8 @@ RX_ACTION_CONTINUOUS = 1
 RX_STAT_NAME_LEN = 64
 _DLL_DIRECTORY_HANDLES = []
 _PRELOADED_DLL_HANDLES = []
+_WORKER_STATE = local()
+_WorkerResult = TypeVar("_WorkerResult")
 
 
 class RxAgentConfig(C.Structure):
@@ -66,6 +69,25 @@ class RxPpoConfig(C.Structure):
         ("min_action", C.c_double),
         ("max_action", C.c_double),
         ("min_variance", C.c_double),
+    ]
+
+
+class RxPpoConfigV2(C.Structure):
+    """PPO model/optimizer options; the legacy struct and API remain supported.
+
+    model=0 selects the original shared model, model=1 separate actor/critic.
+    activation=0 is tanh, 1 is ReLU (separate model only). target_kl=0 disables
+    early stopping. Continuous separate models learn one log_std per action.
+    """
+
+    _anonymous_ = ("base",)
+    _fields_ = [
+        ("base", RxPpoConfig),
+        ("model", C.c_uint32),
+        ("activation", C.c_uint32),
+        ("initial_log_std", C.c_double),
+        ("adam_epsilon", C.c_double),
+        ("target_kl", C.c_double),
     ]
 
 
@@ -174,6 +196,20 @@ def configure_ffi(lib: C.CDLL) -> None:
     lib.rx_cuda_is_available.restype = C.c_uint32
     lib.rx_manual_seed.argtypes = [C.c_int64]
     lib.rx_manual_seed.restype = C.c_int32
+
+    if hasattr(lib, "rx_agent_set_learning_rate"):
+        lib.rx_agent_set_learning_rate.argtypes = [C.c_uint64, C.c_double]
+        lib.rx_agent_set_learning_rate.restype = C.c_int32
+
+    # Allow the same Python wrapper to load historical libraries without V2.
+    if hasattr(lib, "rx_ppo_config_default_v2"):
+        lib.rx_ppo_config_default_v2.argtypes = [C.POINTER(RxPpoConfigV2), C.c_uint64, C.c_uint64]
+        lib.rx_ppo_config_default_v2.restype = C.c_int32
+        lib.rx_ppo_create_v2.argtypes = [
+            C.POINTER(RxPpoConfigV2), C.c_uint64, C.c_uint64, C.c_double,
+            char_pointer, char_pointer, uint64_pointer,
+        ]
+        lib.rx_ppo_create_v2.restype = C.c_int32
 
     lib.rx_dqn_config_default.argtypes = [C.POINTER(RxDqnConfig), C.c_uint64, C.c_uint64]
     lib.rx_ppo_config_default.argtypes = [C.POINTER(RxPpoConfig), C.c_uint64, C.c_uint64]
@@ -305,6 +341,19 @@ def configure_ffi(lib: C.CDLL) -> None:
         C.c_uint64,
     ]
     lib.rx_agent_act_and_train.restype = C.c_int64
+    if hasattr(lib, "rx_agent_act_and_train_with_replay_input"):
+        lib.rx_agent_act_and_train_with_replay_input.argtypes = [
+            C.c_uint64,
+            float_pointer,
+            C.c_uint64,
+            C.c_float,
+            float_pointer,
+            C.c_uint64,
+            C.c_float,
+            float_pointer,
+            C.c_uint64,
+        ]
+        lib.rx_agent_act_and_train_with_replay_input.restype = C.c_int64
     lib.rx_agent_act.argtypes = [
         C.c_uint64,
         float_pointer,
@@ -320,6 +369,26 @@ def configure_ffi(lib: C.CDLL) -> None:
         C.c_float,
     ]
     lib.rx_agent_stop_episode.restype = C.c_int32
+    lib.rx_agent_stop_episode_with_terminal.argtypes = [
+        C.c_uint64,
+        float_pointer,
+        C.c_uint64,
+        C.c_float,
+        C.c_uint32,
+    ]
+    lib.rx_agent_stop_episode_with_terminal.restype = C.c_int32
+    if hasattr(lib, "rx_agent_stop_episode_with_replay_input"):
+        lib.rx_agent_stop_episode_with_replay_input.argtypes = [
+            C.c_uint64,
+            float_pointer,
+            C.c_uint64,
+            C.c_float,
+            C.c_uint32,
+            float_pointer,
+            C.c_uint64,
+            C.c_float,
+        ]
+        lib.rx_agent_stop_episode_with_replay_input.restype = C.c_int32
     lib.rx_agent_statistics_len.argtypes = [C.c_uint64, uint64_pointer]
     lib.rx_agent_statistics_len.restype = C.c_int32
     lib.rx_agent_statistics.argtypes = [
@@ -413,11 +482,19 @@ def rnd_path(path: str | None, agent_id: int | str) -> str | None:
 
 
 class Agent:
-    def __init__(self, lib: C.CDLL, handle: int, output_size: int, discrete: bool):
+    def __init__(
+        self,
+        lib: C.CDLL,
+        handle: int,
+        output_size: int,
+        discrete: bool,
+        action_bounds: tuple[float, float] | None = None,
+    ):
         self.lib = lib
         self.handle = handle
         self.output_size = output_size
         self.discrete = discrete
+        self.action_bounds = action_bounds
 
     def act_and_train(self, observation: np.ndarray, reward: float):
         obs = observation_array(observation)
@@ -452,17 +529,99 @@ class Agent:
         values = np.ctypeslib.as_array(output).copy()
         return int(values[0]) if self.discrete else values
 
-    def stop_episode(self, observation: np.ndarray, reward: float) -> None:
+    def act_and_train_with_replay_input(
+        self,
+        observation: np.ndarray,
+        reward: float,
+        replay_observation: np.ndarray,
+        replay_reward: float,
+    ):
+        """PPO learner inputs plus separate raw inputs for shared replay.
+
+        Both observations describe the same current state; both rewards are
+        for the previous action. Requires a library providing the opt-in API.
+        """
+        operation = "rx_agent_act_and_train_with_replay_input"
+        if not hasattr(self.lib, operation):
+            raise RuntimeError("this ReinforceX library does not support separate replay inputs")
+        obs = observation_array(observation)
+        replay_obs = observation_array(replay_observation)
+        output = (C.c_float * self.output_size)()
+        written = self.lib.rx_agent_act_and_train_with_replay_input(
+            self.handle,
+            obs.ctypes.data_as(C.POINTER(C.c_float)),
+            obs.size,
+            reward,
+            replay_obs.ctypes.data_as(C.POINTER(C.c_float)),
+            replay_obs.size,
+            replay_reward,
+            output,
+            self.output_size,
+        )
+        check(written, operation)
+        if written != self.output_size:
+            raise RuntimeError(f"expected {self.output_size} action values, got {written}")
+        values = np.ctypeslib.as_array(output).copy()
+        return int(values[0]) if self.discrete else values
+
+    def stop_episode(
+        self, observation: np.ndarray, reward: float, *, terminated: bool = True
+    ) -> None:
+        """End a rollout; time limits retain the final-state bootstrap value."""
         obs = observation_array(observation)
         check(
-            self.lib.rx_agent_stop_episode(
+            self.lib.rx_agent_stop_episode_with_terminal(
                 self.handle,
                 obs.ctypes.data_as(C.POINTER(C.c_float)),
                 obs.size,
                 reward,
+                int(terminated),
             ),
-            "rx_agent_stop_episode",
+            "rx_agent_stop_episode_with_terminal",
         )
+
+    def stop_episode_with_replay_input(
+        self,
+        observation: np.ndarray,
+        reward: float,
+        replay_observation: np.ndarray,
+        replay_reward: float,
+        *,
+        terminated: bool = True,
+    ) -> None:
+        """End PPO learner/replay episodes together, retaining truncation bootstrap."""
+        operation = "rx_agent_stop_episode_with_replay_input"
+        if not hasattr(self.lib, operation):
+            raise RuntimeError("this ReinforceX library does not support separate replay inputs")
+        obs = observation_array(observation)
+        replay_obs = observation_array(replay_observation)
+        check(
+            self.lib.rx_agent_stop_episode_with_replay_input(
+                self.handle,
+                obs.ctypes.data_as(C.POINTER(C.c_float)),
+                obs.size,
+                reward,
+                int(terminated),
+                replay_obs.ctypes.data_as(C.POINTER(C.c_float)),
+                replay_obs.size,
+                replay_reward,
+            ),
+            operation,
+        )
+
+    def set_learning_rate(self, learning_rate: float) -> None:
+        """Set a positive DQN/PPO learning rate, preserving optimizer state.
+
+        Scheduling belongs to the caller; model checkpoints do not save this
+        value. Historical libraries and unsupported agent types are rejected.
+        """
+        operation = "rx_agent_set_learning_rate"
+        if not hasattr(self.lib, operation):
+            raise RuntimeError("this ReinforceX library does not support runtime learning-rate changes")
+        learning_rate = float(learning_rate)
+        if not np.isfinite(learning_rate) or learning_rate <= 0.0:
+            raise ValueError("learning_rate must be finite and strictly positive")
+        check(self.lib.rx_agent_set_learning_rate(self.handle, learning_rate), operation)
 
     def statistics(self) -> dict[str, float]:
         length = C.c_uint64()
@@ -570,7 +729,7 @@ def create_dqn(
 
 def create_ppo(
     lib: C.CDLL,
-    config: RxPpoConfig,
+    config: RxPpoConfig | RxPpoConfigV2,
     save_path: str | None,
     load_path: str | None,
     rnd: Rnd | None = None,
@@ -578,7 +737,16 @@ def create_ppo(
     replay: ReplayBuffer | None = None,
 ) -> Agent:
     handle = C.c_uint64()
-    if rnd is not None and replay is not None:
+    if isinstance(config, RxPpoConfigV2):
+        if not hasattr(lib, "rx_ppo_create_v2"):
+            raise RuntimeError("This library does not support RxPpoConfigV2; rebuild ReinforceX.")
+        status = lib.rx_ppo_create_v2(
+            C.byref(config), 0 if rnd is None else rnd.handle,
+            0 if replay is None else replay.handle, curiosity_reward_coefficient,
+            _path_bytes(save_path), _path_bytes(load_path), C.byref(handle),
+        )
+        operation = "rx_ppo_create_v2"
+    elif rnd is not None and replay is not None:
         status = lib.rx_ppo_create_with_rnd_and_replay_and_paths(
             C.byref(config),
             rnd.handle,
@@ -615,7 +783,10 @@ def create_ppo(
         operation = "rx_ppo_create_with_rnd_and_paths"
     check(status, operation)
     discrete = config.action_space == RX_ACTION_DISCRETE
-    return Agent(lib, handle.value, 1 if discrete else config.agent.action_size, discrete)
+    return Agent(
+        lib, handle.value, 1 if discrete else config.agent.action_size, discrete,
+        None if discrete else (config.min_action, config.max_action),
+    )
 
 
 def create_sac(
@@ -643,7 +814,10 @@ def create_sac(
         )
     check(status, operation)
     discrete = config.action_space == RX_ACTION_DISCRETE
-    return Agent(lib, handle.value, 1 if discrete else config.agent.action_size, discrete)
+    return Agent(
+        lib, handle.value, 1 if discrete else config.agent.action_size, discrete,
+        (-1.0, 1.0) if not discrete and config.squash_action else None,
+    )
 
 
 def create_rnd(
@@ -662,11 +836,54 @@ def create_rnd(
     return Rnd(lib, handle.value)
 
 
+# Arguments are reward, step, terminated (never a time-limit truncation), max_steps.
 RewardTransform = Callable[[float, int, bool, int], float]
 
 
 def identity_reward(reward: float, _step: int, _done: bool, _max_steps: int) -> float:
     return reward
+
+
+def gym_action(agent: Agent, action, action_space):
+    """Map policy coordinates to Gym coordinates without altering replay actions.
+
+    Bounded policies use an affine transform into a finite Box. Unsquashed
+    policies already express actions in environment units. Discrete policies
+    produce zero-based indices, including for spaces with a nonzero start.
+    """
+    from gymnasium import spaces
+
+    if agent.discrete:
+        if not isinstance(action_space, spaces.Discrete):
+            raise ValueError("a discrete agent requires a Gymnasium Discrete action space")
+        if int(action) != action or not 0 <= int(action) < action_space.n:
+            raise ValueError("agent returned an invalid discrete action")
+        return int(action) + int(action_space.start)
+    if not isinstance(action_space, spaces.Box):
+        raise ValueError("a continuous agent requires a Gymnasium Box action space")
+    values = np.asarray(action, dtype=np.float64)
+    if values.size != int(np.prod(action_space.shape)):
+        raise ValueError("agent action size does not match the Gymnasium Box")
+    if not np.isfinite(values).all():
+        raise ValueError("agent returned a non-finite action")
+    values = values.reshape(action_space.shape)
+    if agent.action_bounds is not None:
+        lower, upper = agent.action_bounds
+        if not np.isfinite([lower, upper]).all() or lower >= upper:
+            raise ValueError("policy action bounds must be finite and increasing")
+        if not np.isfinite(action_space.low).all() or not np.isfinite(action_space.high).all():
+            raise ValueError("bounded policies require finite Gymnasium Box bounds")
+        fraction = (np.clip(values, lower, upper) - lower) / (upper - lower)
+        values = action_space.low + fraction * (
+            action_space.high.astype(np.float64) - action_space.low
+        )
+    return np.clip(values, action_space.low, action_space.high).astype(action_space.dtype)
+
+
+def _raise_if_cancelled() -> None:
+    event = getattr(_WORKER_STATE, "cancel", None)
+    if event is not None and event.is_set():
+        raise CancelledError("another parallel worker failed")
 
 
 def train_gym_agent(
@@ -684,6 +901,11 @@ def train_gym_agent(
     save_best: bool = False,
 ) -> list[float]:
     """Run one Gymnasium environment and feed transitions through an FFI agent."""
+    for name, value in (
+        ("episodes", episodes), ("max_steps", max_steps), ("log_interval", log_interval)
+    ):
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
     if solved_window <= 0:
         raise ValueError("solved_window must be positive")
     try:
@@ -694,6 +916,7 @@ def train_gym_agent(
             "gymnasium extra before training."
         ) from error
 
+    _raise_if_cancelled()
     env = gym.make(env_id)
     recent_returns: deque[float] = deque(maxlen=solved_window)
     episode_returns: list[float] = []
@@ -702,6 +925,7 @@ def train_gym_agent(
 
     try:
         for episode in range(1, episodes + 1):
+            _raise_if_cancelled()
             observation, _ = env.reset(seed=seed + episode - 1)
             previous_reward = 0.0
             episode_return = 0.0
@@ -710,18 +934,23 @@ def train_gym_agent(
             for step in range(1, max_steps + 1):
                 action = agent.act_and_train(observation, previous_reward)
 
-                next_observation, reward, terminated, truncated, _ = env.step(action)
-                done = terminated or truncated
-                previous_reward = reward_transform(float(reward), step, done, max_steps)
+                next_observation, reward, terminated, truncated, _ = env.step(
+                    gym_action(agent, action, env.action_space)
+                )
+                done = terminated or truncated or step == max_steps
+                # Reward shaping must not mistake a time limit for task failure.
+                previous_reward = reward_transform(
+                    float(reward), step, bool(terminated), max_steps
+                )
                 episode_return += float(reward)
                 training_return += previous_reward
                 observation = next_observation
 
-                if done:
-                    agent.stop_episode(observation, previous_reward)
+                cancelled = getattr(_WORKER_STATE, "cancel", None)
+                if done or (cancelled is not None and cancelled.is_set()):
+                    agent.stop_episode(observation, previous_reward, terminated=bool(terminated))
+                    _raise_if_cancelled()
                     break
-            else:
-                agent.stop_episode(observation, previous_reward)
 
             recent_returns.append(episode_return)
             episode_returns.append(episode_return)
@@ -784,11 +1013,14 @@ def evaluate_gym_agent(
     """Evaluate a loaded agent deterministically without modifying it."""
     if episodes <= 0:
         raise ValueError("episodes must be positive")
+    if max_steps <= 0:
+        raise ValueError("max_steps must be positive")
     try:
         import gymnasium as gym
     except ImportError as error:
         raise RuntimeError("Gymnasium is required for evaluation") from error
 
+    _raise_if_cancelled()
     env = gym.make(env_id, render_mode="human" if render else None)
     returns: list[float] = []
     lengths: list[int] = []
@@ -798,8 +1030,11 @@ def evaluate_gym_agent(
             episode_return = 0.0
             episode_length = 0
             for episode_length in range(1, max_steps + 1):
+                _raise_if_cancelled()
                 action = agent.act(observation)
-                observation, reward, terminated, truncated, _ = env.step(action)
+                observation, reward, terminated, truncated, _ = env.step(
+                    gym_action(agent, action, env.action_space)
+                )
                 episode_return += float(reward)
                 if terminated or truncated:
                     break
@@ -816,14 +1051,44 @@ def evaluate_gym_agent(
         env.close()
 
 
-def run_parallel(worker_count: int, worker: Callable[[int], None]) -> None:
+def run_parallel(
+    worker_count: int, worker: Callable[[int], _WorkerResult]
+) -> list[_WorkerResult]:
+    """Run workers in parallel, cancelling Gym loops promptly on any failure.
+
+    All running workers finish cleanup before this function propagates an error,
+    so callers may safely destroy agents and shared replay in their finally block.
+    Results preserve worker order even when completion order differs.
+    """
+    if worker_count <= 0:
+        raise ValueError("worker_count must be positive")
     if worker_count == 1:
-        worker(0)
-        return
+        return [worker(0)]
+    cancel = Event()
+
+    def invoke(worker_id):
+        _WORKER_STATE.cancel = cancel
+        try:
+            _raise_if_cancelled()
+            return worker(worker_id)
+        finally:
+            del _WORKER_STATE.cancel
+
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = [executor.submit(worker, worker_id) for worker_id in range(worker_count)]
-        for future in futures:
-            future.result()
+        futures = {
+            executor.submit(invoke, worker_id): worker_id
+            for worker_id in range(worker_count)
+        }
+        results = [None] * worker_count
+        try:
+            for future in as_completed(futures):
+                results[futures[future]] = future.result()
+        except BaseException:
+            cancel.set()
+            for future in futures:
+                future.cancel()
+            raise
+    return results
 
 
 def training_parser(
@@ -848,3 +1113,10 @@ def validate_training_args(args: argparse.Namespace) -> None:
     for name in ("episodes", "max_steps", "log_interval", "parallel"):
         if getattr(args, name) <= 0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
+    if args.parallel > 1 and args.save_path:
+        paths = {
+            os.path.normcase(str(Path(path_for_agent(args.save_path, worker_id)).resolve()))
+            for worker_id in range(args.parallel)
+        }
+        if len(paths) != args.parallel:
+            raise ValueError("--save-path must resolve to distinct paths using {agent_id} for parallel workers")

@@ -9,8 +9,8 @@ use reinforcex::curiosity::{Basecuriosity, RND};
 use reinforcex::explorers::EpsilonGreedy;
 use reinforcex::memory::{Experience, ReplayBuffer};
 use reinforcex::models::{
-    BasePolicy, BaseQFunction, FCGaussianPolicy, FCGaussianPolicyWithValue, FCQNetwork, FCRNDModel,
-    FCSoftmaxPolicy, FCSoftmaxPolicyWithValue,
+    BasePolicy, BaseQFunction, FCGaussianPolicy, FCGaussianPolicyWithValue, FCPpoPolicy,
+    FCQNetwork, FCRNDModel, FCSoftmaxPolicy, FCSoftmaxPolicyWithValue, PpoActivation,
 };
 use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 
@@ -98,6 +98,37 @@ pub struct RxPpoConfig {
     pub min_variance: f64,
 }
 
+pub const RX_PPO_MODEL_LEGACY: u32 = 0;
+pub const RX_PPO_MODEL_SEPARATE: u32 = 1;
+pub const RX_PPO_ACTIVATION_TANH: u32 = 0;
+pub const RX_PPO_ACTIVATION_RELU: u32 = 1;
+
+/// Explicit opt-in model/optimizer options; the original PPO ABI is unchanged.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RxPpoConfigV2 {
+    pub base: RxPpoConfig,
+    pub model: u32,
+    pub activation: u32,
+    pub initial_log_std: f64,
+    pub adam_epsilon: f64,
+    /// Zero disables KL early stopping; positive values set the KL target.
+    pub target_kl: f64,
+}
+
+impl From<RxPpoConfig> for RxPpoConfigV2 {
+    fn from(base: RxPpoConfig) -> Self {
+        Self {
+            base,
+            model: RX_PPO_MODEL_LEGACY,
+            activation: RX_PPO_ACTIVATION_TANH,
+            initial_log_std: 0.0,
+            adam_epsilon: 1e-8,
+            target_kl: 0.0,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct RxSacConfig {
@@ -180,6 +211,41 @@ struct ReplayBufferWrapper {
     buffer: Arc<ReplayBuffer>,
     capacity: usize,
     n_steps: usize,
+    spec: Mutex<Option<ReplaySpec>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ReplaySpec {
+    obs_size: u64,
+    action_size: u64,
+    action_space: u32,
+    gamma: f64,
+}
+
+/// A shared buffer stores already discounted rewards and model-space actions.
+/// Serialize its first attachment so incompatible concurrent creators cannot
+/// both claim an untyped buffer. Failed creation leaves the buffer unbound.
+fn with_replay_spec(
+    replay: &ReplayBufferWrapper,
+    config: &RxAgentConfig,
+    action_space: u32,
+    create: impl FnOnce() -> Result<u64, i32>,
+) -> Result<u64, i32> {
+    let requested = ReplaySpec {
+        obs_size: config.obs_size,
+        action_size: config.action_size,
+        action_space,
+        gamma: config.gamma,
+    };
+    let mut spec = replay.spec.lock().map_err(|_| RX_ERROR_INTERNAL)?;
+    if spec.as_ref().is_some_and(|bound| *bound != requested) {
+        return Err(RX_ERROR_INVALID_ARGUMENT);
+    }
+    // Catch before the guard unwinds: a bad checkpoint must not poison the
+    // shared resource and prevent otherwise valid agents from attaching.
+    let id = catch_unwind(AssertUnwindSafe(create)).map_err(|_| RX_ERROR_PANIC)??;
+    *spec = Some(requested);
+    Ok(id)
 }
 
 struct RndWrapper {
@@ -192,6 +258,14 @@ struct SharedRnd {
 }
 
 impl Basecuriosity for SharedRnd {
+    fn calc_internal_reward_and_update(&mut self, experiences: &[Arc<Experience>]) -> Tensor {
+        self.rnd
+            .lock()
+            .expect("RND mutex poisoned")
+            .rnd
+            .calc_internal_reward_and_update(experiences)
+    }
+
     fn calc_internal_reward(&self, experiences: &[Arc<Experience>]) -> Tensor {
         self.rnd
             .lock()
@@ -385,6 +459,34 @@ fn validate_ppo(config: &RxPpoConfig) -> Result<(), i32> {
     Ok(())
 }
 
+fn validate_ppo_v2(config: &RxPpoConfigV2) -> Result<(), i32> {
+    validate_ppo(&config.base)?;
+    let initial_variance = (2.0 * config.initial_log_std).exp() as f32;
+    if !matches!(config.model, RX_PPO_MODEL_LEGACY | RX_PPO_MODEL_SEPARATE)
+        || !matches!(
+            config.activation,
+            RX_PPO_ACTIVATION_TANH | RX_PPO_ACTIVATION_RELU
+        )
+        || !config.initial_log_std.is_finite()
+        || !initial_variance.is_finite()
+        || initial_variance <= 0.0
+        || !is_positive(config.adam_epsilon)
+        || !is_non_negative(config.target_kl)
+    {
+        return Err(RX_ERROR_INVALID_ARGUMENT);
+    }
+    if config.model == RX_PPO_MODEL_SEPARATE && config.base.action_space == RX_ACTION_CONTINUOUS {
+        let floor = config.base.min_variance as f32;
+        if !floor.is_finite()
+            || floor <= 0.0
+            || config.initial_log_std < 0.5 * config.base.min_variance.ln()
+        {
+            return Err(RX_ERROR_INVALID_ARGUMENT);
+        }
+    }
+    Ok(())
+}
+
 fn validate_sac(config: &RxSacConfig) -> Result<(), i32> {
     validate_agent(&config.agent)?;
     if !valid_action_space(config.action_space)
@@ -530,10 +632,32 @@ fn create_ppo_with_paths_and_curiosity(
     curiosity: Option<(SharedRnd, f64)>,
     replay_for_sharing: Option<Arc<ReplayBuffer>>,
 ) -> Result<AgentWrapper, i32> {
+    create_ppo_extended(
+        config,
+        save_path,
+        load_path,
+        curiosity,
+        replay_for_sharing,
+        None,
+    )
+}
+
+fn create_ppo_extended(
+    config: &RxPpoConfig,
+    save_path: Option<String>,
+    load_path: Option<String>,
+    curiosity: Option<(SharedRnd, f64)>,
+    replay_for_sharing: Option<Arc<ReplayBuffer>>,
+    options: Option<&RxPpoConfigV2>,
+) -> Result<AgentWrapper, i32> {
     validate_ppo(config)?;
+    if let Some(options) = options {
+        validate_ppo_v2(options)?;
+    }
     let device = Device::cuda_if_available();
     let vs = nn::VarStore::new(device);
     let optimizer = nn::Adam::default()
+        .eps(options.map_or(1e-8, |o| o.adam_epsilon))
         .build(&vs, config.learning_rate)
         .map_err(|_| RX_ERROR_INTERNAL)?;
     let obs_size = to_i64(config.agent.obs_size)?;
@@ -541,29 +665,61 @@ fn create_ppo_with_paths_and_curiosity(
     let hidden_layers = to_usize(config.agent.hidden_layers)?;
     let hidden_size = to_i64(config.agent.hidden_size)?;
 
-    let model: Box<dyn BasePolicy> = match config.action_space {
-        RX_ACTION_DISCRETE => Box::new(FCSoftmaxPolicyWithValue::new(
-            vs,
-            obs_size,
-            action_size,
-            hidden_layers,
-            hidden_size,
-            0.0,
-        )),
-        RX_ACTION_CONTINUOUS => Box::new(FCGaussianPolicyWithValue::new(
-            vs,
-            obs_size,
-            action_size,
-            hidden_layers,
-            hidden_size,
-            Some(config.min_action),
-            Some(config.max_action),
-            true,
-            "spherical",
-            config.min_variance,
-        )),
-        _ => return Err(RX_ERROR_INVALID_ARGUMENT),
-    };
+    let model: Box<dyn BasePolicy> =
+        if let Some(options) = options.filter(|o| o.model == RX_PPO_MODEL_SEPARATE) {
+            let activation = if options.activation == RX_PPO_ACTIVATION_TANH {
+                PpoActivation::Tanh
+            } else {
+                PpoActivation::Relu
+            };
+            match config.action_space {
+                RX_ACTION_DISCRETE => Box::new(FCPpoPolicy::new_discrete(
+                    vs,
+                    obs_size,
+                    action_size,
+                    hidden_layers,
+                    hidden_size,
+                    activation,
+                )),
+                RX_ACTION_CONTINUOUS => Box::new(FCPpoPolicy::new_continuous(
+                    vs,
+                    obs_size,
+                    action_size,
+                    hidden_layers,
+                    hidden_size,
+                    activation,
+                    config.min_action,
+                    config.max_action,
+                    config.min_variance,
+                    options.initial_log_std,
+                )),
+                _ => return Err(RX_ERROR_INVALID_ARGUMENT),
+            }
+        } else {
+            match config.action_space {
+                RX_ACTION_DISCRETE => Box::new(FCSoftmaxPolicyWithValue::new(
+                    vs,
+                    obs_size,
+                    action_size,
+                    hidden_layers,
+                    hidden_size,
+                    0.0,
+                )),
+                RX_ACTION_CONTINUOUS => Box::new(FCGaussianPolicyWithValue::new(
+                    vs,
+                    obs_size,
+                    action_size,
+                    hidden_layers,
+                    hidden_size,
+                    Some(config.min_action),
+                    Some(config.max_action),
+                    true,
+                    "spherical",
+                    config.min_variance,
+                )),
+                _ => return Err(RX_ERROR_INVALID_ARGUMENT),
+            }
+        };
     let mut agent = PPO::new(
         model,
         optimizer,
@@ -579,7 +735,8 @@ fn create_ppo_with_paths_and_curiosity(
         config.standardize_gae != 0,
         save_path,
         load_path,
-    );
+    )
+    .with_target_kl(options.and_then(|o| (o.target_kl > 0.0).then_some(o.target_kl)));
     if let Some((curiosity, curiosity_reward_coefficient)) = curiosity {
         agent.add_curiosity(curiosity, curiosity_reward_coefficient);
     }
@@ -1033,7 +1190,7 @@ fn act_impl(
     write_action(action, guard.output_size, out, out_len)
 }
 
-fn stop_episode_impl(id: u64, obs: *const f32, obs_len: u64, reward: f32) -> i32 {
+fn stop_episode_impl(id: u64, obs: *const f32, obs_len: u64, reward: f32, terminated: bool) -> i32 {
     if !reward.is_finite() {
         return RX_ERROR_INVALID_ARGUMENT;
     }
@@ -1049,8 +1206,120 @@ fn stop_episode_impl(id: u64, obs: *const f32, obs_len: u64, reward: f32) -> i32
         Ok(obs) => obs,
         Err(status) => return status,
     };
-    guard.agent.stop_episode_and_train(&obs, f64::from(reward));
+    guard
+        .agent
+        .stop_episode_and_train_with_terminal(&obs, f64::from(reward), terminated);
     RX_OK
+}
+
+/// Validate both streams before constructing tensors or calling the agent.
+fn separate_replay_observations(
+    wrapper: &AgentWrapper,
+    obs: *const f32,
+    obs_len: u64,
+    reward: f32,
+    replay_obs: *const f32,
+    replay_obs_len: u64,
+    replay_reward: f32,
+) -> Result<(Tensor, Tensor), i32> {
+    if !wrapper.agent.supports_separate_replay_input()
+        || !reward.is_finite()
+        || !replay_reward.is_finite()
+    {
+        return Err(RX_ERROR_INVALID_ARGUMENT);
+    }
+    if obs.is_null() || replay_obs.is_null() {
+        return Err(RX_ERROR_NULL_POINTER);
+    }
+    let learner_len = to_usize(obs_len)?;
+    let replay_len = to_usize(replay_obs_len)?;
+    if learner_len != wrapper.obs_size || replay_len != wrapper.obs_size {
+        return Err(RX_ERROR_INVALID_ARGUMENT);
+    }
+    for (pointer, len) in [(obs, learner_len), (replay_obs, replay_len)] {
+        let values = unsafe { std::slice::from_raw_parts(pointer, len) };
+        if !values.iter().all(|value| value.is_finite()) {
+            return Err(RX_ERROR_INVALID_ARGUMENT);
+        }
+    }
+    Ok((
+        make_observation(obs, obs_len, wrapper.obs_size, wrapper.device)?,
+        make_observation(replay_obs, replay_obs_len, wrapper.obs_size, Device::Cpu)?,
+    ))
+}
+
+fn act_with_replay_input_impl(
+    id: u64,
+    obs: *const f32,
+    obs_len: u64,
+    reward: f32,
+    replay_obs: *const f32,
+    replay_obs_len: u64,
+    replay_reward: f32,
+    out: *mut f32,
+    out_len: u64,
+) -> Result<i64, i32> {
+    let wrapper = get_agent(id)?;
+    let mut guard = wrapper.lock().map_err(|_| RX_ERROR_INTERNAL)?;
+    if !guard.agent.supports_separate_replay_input() {
+        return Err(RX_ERROR_INVALID_ARGUMENT);
+    }
+    if out.is_null() {
+        return Err(RX_ERROR_NULL_POINTER);
+    }
+    if to_usize(out_len)? < guard.output_size {
+        return Err(RX_ERROR_BUFFER_TOO_SMALL);
+    }
+    let (obs, replay_obs) = separate_replay_observations(
+        &guard,
+        obs,
+        obs_len,
+        reward,
+        replay_obs,
+        replay_obs_len,
+        replay_reward,
+    )?;
+    let action = guard.agent.act_and_train_with_replay_input(
+        &obs,
+        f64::from(reward),
+        &replay_obs,
+        f64::from(replay_reward),
+    );
+    Ok(write_action(action, guard.output_size, out, out_len))
+}
+
+fn stop_with_replay_input_impl(
+    id: u64,
+    obs: *const f32,
+    obs_len: u64,
+    reward: f32,
+    terminated: u32,
+    replay_obs: *const f32,
+    replay_obs_len: u64,
+    replay_reward: f32,
+) -> Result<(), i32> {
+    if !valid_flag(terminated) {
+        return Err(RX_ERROR_INVALID_ARGUMENT);
+    }
+    let wrapper = get_agent(id)?;
+    let mut guard = wrapper.lock().map_err(|_| RX_ERROR_INTERNAL)?;
+    let (obs, replay_obs) = separate_replay_observations(
+        &guard,
+        obs,
+        obs_len,
+        reward,
+        replay_obs,
+        replay_obs_len,
+        replay_reward,
+    )?;
+    guard.agent.stop_episode_and_train_with_replay_input(
+        &obs,
+        f64::from(reward),
+        terminated != 0,
+        &replay_obs,
+        f64::from(replay_reward),
+    );
+    Ok(())
 }
 
 #[no_mangle]
@@ -1097,6 +1366,108 @@ pub extern "C" fn rx_sac_config_default_v2(
 ) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         write_default(out_config, default_sac_config(obs_size, action_size).into())
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+/// Defaults for the separate actor/critic PPO model. Legacy defaults are unchanged.
+#[no_mangle]
+pub extern "C" fn rx_ppo_config_default_v2(
+    out_config: *mut RxPpoConfigV2,
+    obs_size: u64,
+    action_size: u64,
+) -> i32 {
+    if out_config.is_null() {
+        return RX_ERROR_NULL_POINTER;
+    }
+    let mut config = RxPpoConfigV2::from(default_ppo_config(obs_size, action_size));
+    config.model = RX_PPO_MODEL_SEPARATE;
+    config.adam_epsilon = 1e-5;
+    if let Err(status) = validate_ppo_v2(&config) {
+        return status;
+    }
+    unsafe {
+        *out_config = config;
+    }
+    RX_OK
+}
+
+/// Unified V2 constructor. Zero means absent for each optional RND/replay handle.
+/// Existing V1 constructors continue to use their original model architecture.
+#[no_mangle]
+pub extern "C" fn rx_ppo_create_v2(
+    config: *const RxPpoConfigV2,
+    rnd_id: u64,
+    replay_id: u64,
+    curiosity_reward_coefficient: f64,
+    save_path: *const c_char,
+    load_path: *const c_char,
+    out_id: *mut u64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if out_id.is_null() {
+            return RX_ERROR_NULL_POINTER;
+        }
+        unsafe {
+            *out_id = 0;
+        }
+        if config.is_null() {
+            return RX_ERROR_NULL_POINTER;
+        }
+        let config = unsafe { *config };
+        let result = (|| -> Result<u64, i32> {
+            validate_ppo_v2(&config)?;
+            if !curiosity_reward_coefficient.is_finite() {
+                return Err(RX_ERROR_INVALID_ARGUMENT);
+            }
+            let curiosity = if rnd_id == 0 {
+                None
+            } else {
+                let rnd = get_rnd(rnd_id)?;
+                if rnd.lock().map_err(|_| RX_ERROR_INTERNAL)?.obs_size
+                    != to_usize(config.base.agent.obs_size)?
+                {
+                    return Err(RX_ERROR_INVALID_ARGUMENT);
+                }
+                Some((SharedRnd { rnd }, curiosity_reward_coefficient))
+            };
+            let replay = if replay_id == 0 {
+                None
+            } else {
+                Some(get_replay_buffer(replay_id)?)
+            };
+            let save_path = optional_c_string(save_path)?;
+            let load_path = optional_c_string(load_path)?;
+            let construct = || {
+                create_ppo_extended(
+                    &config.base,
+                    save_path,
+                    load_path,
+                    curiosity,
+                    replay.as_ref().map(|r| Arc::clone(&r.buffer)),
+                    Some(&config),
+                )
+                .and_then(insert_agent)
+            };
+            match &replay {
+                Some(replay) => with_replay_spec(
+                    replay,
+                    &config.base.agent,
+                    config.base.action_space,
+                    construct,
+                ),
+                None => construct(),
+            }
+        })();
+        match result {
+            Ok(id) => {
+                unsafe {
+                    *out_id = id;
+                }
+                RX_OK
+            }
+            Err(status) => status,
+        }
     }))
     .unwrap_or(RX_ERROR_PANIC)
 }
@@ -1232,14 +1603,15 @@ pub extern "C" fn rx_dqn_create_with_replay_and_paths(
             Ok(path) => path,
             Err(status) => return status,
         };
-        match create_dqn_with_replay_and_paths(
-            &config,
-            Arc::clone(&replay.buffer),
-            save_path,
-            load_path,
-        )
-        .and_then(insert_agent)
-        {
+        match with_replay_spec(&replay, &config.agent, RX_ACTION_DISCRETE, || {
+            create_dqn_with_replay_and_paths(
+                &config,
+                Arc::clone(&replay.buffer),
+                save_path,
+                load_path,
+            )
+            .and_then(insert_agent)
+        }) {
             Ok(id) => {
                 unsafe {
                     *out_id = id;
@@ -1320,14 +1692,15 @@ pub extern "C" fn rx_ppo_create_with_replay_and_paths(
             Ok(path) => path,
             Err(status) => return status,
         };
-        match create_ppo_with_replay_and_paths(
-            &config,
-            Arc::clone(&replay.buffer),
-            save_path,
-            load_path,
-        )
-        .and_then(insert_agent)
-        {
+        match with_replay_spec(&replay, &config.agent, config.action_space, || {
+            create_ppo_with_replay_and_paths(
+                &config,
+                Arc::clone(&replay.buffer),
+                save_path,
+                load_path,
+            )
+            .and_then(insert_agent)
+        }) {
             Ok(id) => {
                 unsafe {
                     *out_id = id;
@@ -1477,6 +1850,7 @@ pub extern "C" fn rx_replay_buffer_create(
             buffer: Arc::new(ReplayBuffer::new(capacity, n_steps)),
             capacity,
             n_steps,
+            spec: Mutex::new(None),
         };
         match insert_replay_buffer(wrapper) {
             Ok(id) => {
@@ -1586,14 +1960,15 @@ fn create_sac_from_replay_config<C: Copy + Into<RxSacConfigV2>>(
             Ok(path) => path,
             Err(status) => return status,
         };
-        match create_sac_with_replay_and_paths(
-            &config,
-            Arc::clone(&replay.buffer),
-            save_path,
-            load_path,
-        )
-        .and_then(insert_agent)
-        {
+        match with_replay_spec(&replay, &config.agent, config.action_space, || {
+            create_sac_with_replay_and_paths(
+                &config,
+                Arc::clone(&replay.buffer),
+                save_path,
+                load_path,
+            )
+            .and_then(insert_agent)
+        }) {
             Ok(id) => {
                 unsafe {
                     *out_id = id;
@@ -1683,6 +2058,38 @@ pub extern "C" fn rx_agent_act_and_train(
     .unwrap_or(i64::from(RX_ERROR_PANIC))
 }
 
+/// PPO-only: train with `obs`/`reward`, exporting `replay_obs`/`replay_reward`
+/// to its shared replay buffer. Both observations describe the same state and
+/// both rewards belong to the previous action. Invalid input never calls the agent.
+#[no_mangle]
+pub extern "C" fn rx_agent_act_and_train_with_replay_input(
+    id: u64,
+    obs: *const f32,
+    obs_len: u64,
+    reward: f32,
+    replay_obs: *const f32,
+    replay_obs_len: u64,
+    replay_reward: f32,
+    out: *mut f32,
+    out_len: u64,
+) -> i64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        act_with_replay_input_impl(
+            id,
+            obs,
+            obs_len,
+            reward,
+            replay_obs,
+            replay_obs_len,
+            replay_reward,
+            out,
+            out_len,
+        )
+        .unwrap_or_else(i64::from)
+    }))
+    .unwrap_or(i64::from(RX_ERROR_PANIC))
+}
+
 #[no_mangle]
 pub extern "C" fn rx_agent_stop_episode(
     id: u64,
@@ -1691,7 +2098,81 @@ pub extern "C" fn rx_agent_stop_episode(
     reward: f32,
 ) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
-        stop_episode_impl(id, obs, obs_len, reward)
+        stop_episode_impl(id, obs, obs_len, reward, true)
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+/// End an episode, preserving value bootstrapping on external time limits.
+/// `terminated` must be 0 (truncation) or 1 (MDP terminal state).
+#[no_mangle]
+pub extern "C" fn rx_agent_stop_episode_with_terminal(
+    id: u64,
+    obs: *const f32,
+    obs_len: u64,
+    reward: f32,
+    terminated: u32,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if !valid_flag(terminated) {
+            return RX_ERROR_INVALID_ARGUMENT;
+        }
+        stop_episode_impl(id, obs, obs_len, reward, terminated != 0)
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+/// PPO-only separate learner/replay inputs at an episode boundary. The same
+/// termination flag applies to both streams; 0 preserves bootstrap, 1 disables it.
+#[no_mangle]
+pub extern "C" fn rx_agent_stop_episode_with_replay_input(
+    id: u64,
+    obs: *const f32,
+    obs_len: u64,
+    reward: f32,
+    terminated: u32,
+    replay_obs: *const f32,
+    replay_obs_len: u64,
+    replay_reward: f32,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        stop_with_replay_input_impl(
+            id,
+            obs,
+            obs_len,
+            reward,
+            terminated,
+            replay_obs,
+            replay_obs_len,
+            replay_reward,
+        )
+        .map_or_else(|status| status, |()| RX_OK)
+    }))
+    .unwrap_or(RX_ERROR_PANIC)
+}
+
+/// Set the learning rate of a DQN/PPO optimizer without resetting its state.
+/// Zero, nonfinite/negative rates, and unsupported agents are rejected before
+/// mutation. The caller owns scheduling; model checkpoints do not store the rate.
+#[no_mangle]
+pub extern "C" fn rx_agent_set_learning_rate(id: u64, learning_rate: f64) -> i32 {
+    if !is_positive(learning_rate) {
+        return RX_ERROR_INVALID_ARGUMENT;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let wrapper = match get_agent(id) {
+            Ok(wrapper) => wrapper,
+            Err(status) => return status,
+        };
+        let mut guard = match wrapper.lock() {
+            Ok(guard) => guard,
+            Err(_) => return RX_ERROR_INTERNAL,
+        };
+        if !guard.agent.supports_learning_rate_update() {
+            return RX_ERROR_INVALID_ARGUMENT;
+        }
+        guard.agent.set_learning_rate(learning_rate);
+        RX_OK
     }))
     .unwrap_or(RX_ERROR_PANIC)
 }
@@ -1866,16 +2347,17 @@ pub extern "C" fn rx_ppo_create_with_rnd_and_replay_and_paths(
             Ok(path) => path,
             Err(status) => return status,
         };
-        match create_ppo_with_rnd_and_paths(
-            &config,
-            rnd,
-            curiosity_reward_coefficient,
-            Some(Arc::clone(&replay.buffer)),
-            save_path,
-            load_path,
-        )
-        .and_then(insert_agent)
-        {
+        match with_replay_spec(&replay, &config.agent, config.action_space, || {
+            create_ppo_with_rnd_and_paths(
+                &config,
+                rnd,
+                curiosity_reward_coefficient,
+                Some(Arc::clone(&replay.buffer)),
+                save_path,
+                load_path,
+            )
+            .and_then(insert_agent)
+        }) {
             Ok(id) => {
                 unsafe {
                     *out_id = id;
@@ -1976,6 +2458,90 @@ mod tests {
     use std::ffi::CString;
     use ulid::Ulid;
 
+    #[test]
+    fn shared_replay_spec_rejects_mismatches_and_failed_creation_does_not_bind() {
+        let replay = ReplayBufferWrapper {
+            buffer: Arc::new(ReplayBuffer::new(32, 3)),
+            capacity: 32,
+            n_steps: 3,
+            spec: Mutex::new(None),
+        };
+        let config = default_agent_config(4, 2, 16);
+        assert_eq!(
+            with_replay_spec(&replay, &config, RX_ACTION_DISCRETE, || Err(
+                RX_ERROR_INVALID_ARGUMENT
+            )),
+            Err(RX_ERROR_INVALID_ARGUMENT)
+        );
+        assert!(replay.spec.lock().unwrap().is_none());
+        assert_eq!(
+            with_replay_spec(&replay, &config, RX_ACTION_DISCRETE, || panic!(
+                "checkpoint load failure"
+            )),
+            Err(RX_ERROR_PANIC)
+        );
+        assert!(replay.spec.lock().unwrap().is_none());
+        assert_eq!(
+            with_replay_spec(&replay, &config, RX_ACTION_DISCRETE, || Ok(1)),
+            Ok(1)
+        );
+        assert_eq!(
+            with_replay_spec(&replay, &config, RX_ACTION_DISCRETE, || panic!(
+                "checkpoint load failure on bound replay"
+            )),
+            Err(RX_ERROR_PANIC)
+        );
+        let mut incompatible = config;
+        incompatible.gamma = 0.95;
+        assert_eq!(
+            with_replay_spec(&replay, &incompatible, RX_ACTION_DISCRETE, || panic!(
+                "must reject before model allocation"
+            )),
+            Err(RX_ERROR_INVALID_ARGUMENT)
+        );
+        assert_eq!(
+            with_replay_spec(&replay, &config, RX_ACTION_CONTINUOUS, || panic!(
+                "must reject before model allocation"
+            )),
+            Err(RX_ERROR_INVALID_ARGUMENT)
+        );
+        assert_eq!(
+            with_replay_spec(&replay, &config, RX_ACTION_DISCRETE, || Ok(2)),
+            Ok(2)
+        );
+    }
+
+    #[test]
+    fn concurrent_first_replay_attachments_cannot_bind_conflicting_specs() {
+        let replay = Arc::new(ReplayBufferWrapper {
+            buffer: Arc::new(ReplayBuffer::new(32, 1)),
+            capacity: 32,
+            n_steps: 1,
+            spec: Mutex::new(None),
+        });
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|index| {
+                let replay = Arc::clone(&replay);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let config = default_agent_config(4 + index, 2, 16);
+                    barrier.wait();
+                    with_replay_spec(&replay, &config, RX_ACTION_DISCRETE, || Ok(index + 1))
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| **r == Err(RX_ERROR_INVALID_ARGUMENT))
+                .count(),
+            7
+        );
+    }
+
     fn stat_name(stat: &RxStatistic) -> String {
         let bytes = stat
             .name
@@ -1986,6 +2552,79 @@ mod tests {
         String::from_utf8(bytes).unwrap()
     }
 
+    #[test]
+    fn ppo_v2_layout_defaults_and_invalid_options() {
+        assert_eq!(std::mem::offset_of!(RxPpoConfigV2, base), 0);
+        assert_eq!(
+            std::mem::offset_of!(RxPpoConfigV2, model),
+            std::mem::size_of::<RxPpoConfig>()
+        );
+        assert_eq!(
+            std::mem::size_of::<RxPpoConfigV2>(),
+            std::mem::size_of::<RxPpoConfig>() + 32
+        );
+        let legacy = RxPpoConfigV2::from(default_ppo_config(4, 2));
+        assert_eq!(legacy.model, RX_PPO_MODEL_LEGACY);
+        assert_eq!(legacy.adam_epsilon, 1e-8);
+        let mut config = legacy;
+        assert_eq!(rx_ppo_config_default_v2(&mut config, 4, 2), RX_OK);
+        assert_eq!(config.model, RX_PPO_MODEL_SEPARATE);
+        assert_eq!(config.adam_epsilon, 1e-5);
+        assert_eq!(
+            rx_ppo_config_default_v2(std::ptr::null_mut(), 4, 2),
+            RX_ERROR_NULL_POINTER
+        );
+        let mut cases = Vec::new();
+        let mut invalid = config;
+        invalid.model = 2;
+        cases.push(invalid);
+        let mut invalid = config;
+        invalid.activation = 2;
+        cases.push(invalid);
+        let mut invalid = config;
+        invalid.initial_log_std = f64::NAN;
+        cases.push(invalid);
+        let mut invalid = config;
+        invalid.initial_log_std = 1000.;
+        cases.push(invalid);
+        let mut invalid = config;
+        invalid.adam_epsilon = 0.;
+        cases.push(invalid);
+        let mut invalid = config;
+        invalid.target_kl = -0.01;
+        cases.push(invalid);
+        for invalid in cases {
+            let mut id = 123;
+            assert_eq!(
+                rx_ppo_create_v2(
+                    &invalid,
+                    0,
+                    0,
+                    0.,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    &mut id
+                ),
+                RX_ERROR_INVALID_ARGUMENT
+            );
+            assert_eq!(id, 0);
+        }
+        let mut id = 123;
+        assert_eq!(
+            rx_ppo_create_v2(
+                std::ptr::null(),
+                0,
+                0,
+                0.,
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut id
+            ),
+            RX_ERROR_NULL_POINTER
+        );
+        assert_eq!(id, 0);
+    }
+
     fn create_dqn_for_test() -> (u64, RxDqnConfig) {
         let mut config = default_dqn_config(4, 2);
         config.batch_size = 4;
@@ -1994,6 +2633,475 @@ mod tests {
         assert_eq!(rx_dqn_create(&config, &mut id), RX_OK);
         assert_ne!(id, 0);
         (id, config)
+    }
+
+    struct LearningRateProbe {
+        id: Ulid,
+        supported: bool,
+        rates: Arc<Mutex<Vec<f64>>>,
+    }
+
+    impl BaseAgent for LearningRateProbe {
+        fn supports_learning_rate_update(&self) -> bool {
+            self.supported
+        }
+        fn set_learning_rate(&mut self, rate: f64) {
+            self.rates.lock().unwrap().push(rate);
+        }
+        fn act_and_train(&mut self, _: &Tensor, _: f64) -> Tensor {
+            unreachable!()
+        }
+        fn act(&self, _: &Tensor) -> Tensor {
+            unreachable!()
+        }
+        fn stop_episode_and_train(&mut self, _: &Tensor, _: f64) {
+            unreachable!()
+        }
+        fn get_statistics(&self) -> Vec<(String, f64)> {
+            vec![]
+        }
+        fn get_agent_id(&self) -> &Ulid {
+            &self.id
+        }
+        fn save(&self) {}
+        fn load(&mut self) {}
+    }
+
+    #[test]
+    fn learning_rate_ffi_rejects_invalid_or_unsupported_before_mutation() {
+        for supported in [false, true] {
+            let rates = Arc::new(Mutex::new(Vec::new()));
+            let id = insert_agent(AgentWrapper {
+                agent: Box::new(LearningRateProbe {
+                    id: Ulid::new(),
+                    supported,
+                    rates: rates.clone(),
+                }),
+                device: Device::Cpu,
+                obs_size: 4,
+                output_size: 1,
+            })
+            .unwrap();
+            for invalid in [0.0, -0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                assert_eq!(
+                    rx_agent_set_learning_rate(id, invalid),
+                    RX_ERROR_INVALID_ARGUMENT
+                );
+            }
+            assert!(rates.lock().unwrap().is_empty());
+            assert_eq!(
+                rx_agent_set_learning_rate(id, 0.00005),
+                if supported {
+                    RX_OK
+                } else {
+                    RX_ERROR_INVALID_ARGUMENT
+                }
+            );
+            assert_eq!(
+                *rates.lock().unwrap(),
+                if supported { vec![0.00005] } else { vec![] }
+            );
+            // The error paths neither invoke the setter nor poison the mutex.
+            let mut len = 999;
+            assert_eq!(rx_agent_statistics_len(id, &mut len), RX_OK);
+            assert_eq!(len, 0);
+            assert_eq!(rx_agent_destroy(id), RX_OK);
+        }
+        assert_eq!(
+            rx_agent_set_learning_rate(0, 0.0001),
+            RX_ERROR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            rx_agent_set_learning_rate(u64::MAX, 0.0001),
+            RX_ERROR_NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn learning_rate_ffi_supports_dqn_and_ppo_but_not_sac() {
+        let (dqn, _) = create_dqn_for_test();
+        let mut ppo_config = default_ppo_config(4, 2);
+        ppo_config.action_space = RX_ACTION_DISCRETE;
+        ppo_config.agent.hidden_size = 8;
+        let mut ppo = 0;
+        assert_eq!(rx_ppo_create(&ppo_config, &mut ppo), RX_OK);
+        let mut sac_config = default_sac_config(4, 2);
+        sac_config.agent.hidden_size = 8;
+        sac_config.replay_capacity = 32;
+        sac_config.replay_start_size = 4;
+        sac_config.batch_size = 4;
+        let sac = insert_agent(create_sac(&sac_config).unwrap()).unwrap();
+        let obs = [0.1_f32; 4];
+        for (id, expected) in [(dqn, RX_OK), (ppo, RX_OK), (sac, RX_ERROR_INVALID_ARGUMENT)] {
+            let wrapper = get_agent(id).unwrap();
+            let (before_stats, before_action) = {
+                let guard = wrapper.lock().unwrap();
+                (
+                    guard.agent.get_statistics(),
+                    guard
+                        .agent
+                        .act(&Tensor::from_slice(&obs).to_device(guard.device)),
+                )
+            };
+            for invalid in [0.0, -0.1, f64::NAN, f64::INFINITY] {
+                assert_eq!(
+                    rx_agent_set_learning_rate(id, invalid),
+                    RX_ERROR_INVALID_ARGUMENT
+                );
+            }
+            assert_eq!(rx_agent_set_learning_rate(id, 0.00005), expected);
+            {
+                let guard = wrapper.lock().unwrap();
+                assert_eq!(guard.agent.get_statistics(), before_stats);
+                assert!(guard
+                    .agent
+                    .act(&Tensor::from_slice(&obs).to_device(guard.device))
+                    .equal(&before_action));
+            }
+            assert_eq!(rx_agent_destroy(id), RX_OK);
+        }
+    }
+
+    struct ReplayInputProbe {
+        id: ulid::Ulid,
+        calls: Arc<Mutex<Vec<(f64, f64, f64, f64, Option<bool>)>>>,
+    }
+
+    impl BaseAgent for ReplayInputProbe {
+        fn supports_separate_replay_input(&self) -> bool {
+            true
+        }
+        fn act_and_train(&mut self, _: &Tensor, _: f64) -> Tensor {
+            panic!("legacy path invoked")
+        }
+        fn act(&self, _: &Tensor) -> Tensor {
+            panic!("evaluation path invoked")
+        }
+        fn stop_episode_and_train(&mut self, _: &Tensor, _: f64) {
+            panic!("legacy stop invoked")
+        }
+        fn act_and_train_with_replay_input(
+            &mut self,
+            obs: &Tensor,
+            reward: f64,
+            raw: &Tensor,
+            raw_reward: f64,
+        ) -> Tensor {
+            self.calls.lock().unwrap().push((
+                obs.double_value(&[0]),
+                reward,
+                raw.double_value(&[0]),
+                raw_reward,
+                None,
+            ));
+            Tensor::from_slice(&[0.25_f32, -0.25])
+        }
+        fn stop_episode_and_train_with_replay_input(
+            &mut self,
+            obs: &Tensor,
+            reward: f64,
+            terminated: bool,
+            raw: &Tensor,
+            raw_reward: f64,
+        ) {
+            self.calls.lock().unwrap().push((
+                obs.double_value(&[0]),
+                reward,
+                raw.double_value(&[0]),
+                raw_reward,
+                Some(terminated),
+            ));
+        }
+        fn get_statistics(&self) -> Vec<(String, f64)> {
+            vec![]
+        }
+        fn get_agent_id(&self) -> &ulid::Ulid {
+            &self.id
+        }
+        fn save(&self) {}
+        fn load(&mut self) {}
+    }
+
+    #[test]
+    fn separate_replay_ffi_validates_both_streams_before_any_agent_call() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let id = insert_agent(AgentWrapper {
+            agent: Box::new(ReplayInputProbe {
+                id: ulid::Ulid::new(),
+                calls: calls.clone(),
+            }),
+            device: Device::Cpu,
+            obs_size: 4,
+            output_size: 2,
+        })
+        .unwrap();
+        let obs = [10_f32, 20., 30., 40.];
+        let raw = [1_f32, 2., 3., 4.];
+        let nonfinite = [f32::NAN, 0., 0., 0.];
+        let infinity = [0., f32::INFINITY, 0., 0.];
+        let valid = (obs.as_ptr(), 4, 0.25, raw.as_ptr(), 4, 2.5);
+        let cases = [
+            (
+                (std::ptr::null(), 4, 0.25, raw.as_ptr(), 4, 2.5),
+                RX_ERROR_NULL_POINTER,
+            ),
+            (
+                (obs.as_ptr(), 4, 0.25, std::ptr::null(), 4, 2.5),
+                RX_ERROR_NULL_POINTER,
+            ),
+            (
+                (obs.as_ptr(), 3, 0.25, raw.as_ptr(), 4, 2.5),
+                RX_ERROR_INVALID_ARGUMENT,
+            ),
+            (
+                (obs.as_ptr(), 4, 0.25, raw.as_ptr(), 3, 2.5),
+                RX_ERROR_INVALID_ARGUMENT,
+            ),
+            (
+                (obs.as_ptr(), 5, 0.25, raw.as_ptr(), 4, 2.5),
+                RX_ERROR_INVALID_ARGUMENT,
+            ),
+            (
+                (obs.as_ptr(), 4, 0.25, raw.as_ptr(), u64::MAX, 2.5),
+                RX_ERROR_INVALID_ARGUMENT,
+            ),
+            (
+                (nonfinite.as_ptr(), 4, 0.25, raw.as_ptr(), 4, 2.5),
+                RX_ERROR_INVALID_ARGUMENT,
+            ),
+            (
+                (obs.as_ptr(), 4, 0.25, infinity.as_ptr(), 4, 2.5),
+                RX_ERROR_INVALID_ARGUMENT,
+            ),
+            (
+                (obs.as_ptr(), 4, f32::INFINITY, raw.as_ptr(), 4, 2.5),
+                RX_ERROR_INVALID_ARGUMENT,
+            ),
+            (
+                (obs.as_ptr(), 4, 0.25, raw.as_ptr(), 4, f32::NAN),
+                RX_ERROR_INVALID_ARGUMENT,
+            ),
+        ];
+        let mut out = [123_f32, 456.];
+        for ((obs, obs_len, reward, raw, raw_len, raw_reward), expected) in cases {
+            assert_eq!(
+                rx_agent_act_and_train_with_replay_input(
+                    id,
+                    obs,
+                    obs_len,
+                    reward,
+                    raw,
+                    raw_len,
+                    raw_reward,
+                    out.as_mut_ptr(),
+                    2
+                ),
+                i64::from(expected)
+            );
+            assert_eq!(
+                rx_agent_stop_episode_with_replay_input(
+                    id, obs, obs_len, reward, 0, raw, raw_len, raw_reward
+                ),
+                expected
+            );
+            assert!(calls.lock().unwrap().is_empty());
+            assert_eq!(out, [123., 456.]);
+        }
+        let (obs, obs_len, reward, raw, raw_len, raw_reward) = valid;
+        assert_eq!(
+            rx_agent_act_and_train_with_replay_input(
+                id,
+                obs,
+                obs_len,
+                reward,
+                raw,
+                raw_len,
+                raw_reward,
+                std::ptr::null_mut(),
+                2
+            ),
+            i64::from(RX_ERROR_NULL_POINTER)
+        );
+        assert_eq!(
+            rx_agent_act_and_train_with_replay_input(
+                id,
+                obs,
+                obs_len,
+                reward,
+                raw,
+                raw_len,
+                raw_reward,
+                out.as_mut_ptr(),
+                1
+            ),
+            i64::from(RX_ERROR_BUFFER_TOO_SMALL)
+        );
+        assert_eq!(
+            rx_agent_stop_episode_with_replay_input(
+                id, obs, obs_len, reward, 2, raw, raw_len, raw_reward
+            ),
+            RX_ERROR_INVALID_ARGUMENT
+        );
+        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(out, [123., 456.]);
+        assert_eq!(
+            rx_agent_act_and_train_with_replay_input(
+                id,
+                obs,
+                obs_len,
+                reward,
+                raw,
+                raw_len,
+                raw_reward,
+                out.as_mut_ptr(),
+                2
+            ),
+            2
+        );
+        assert_eq!(
+            rx_agent_stop_episode_with_replay_input(
+                id, obs, obs_len, reward, 0, raw, raw_len, raw_reward
+            ),
+            RX_OK
+        );
+        assert_eq!(out, [0.25, -0.25]);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (10., 0.25, 1., 2.5, None),
+                (10., 0.25, 1., 2.5, Some(false))
+            ]
+        );
+        assert_eq!(rx_agent_destroy(id), RX_OK);
+    }
+
+    #[test]
+    fn separate_replay_ffi_rejects_dqn_and_sac_without_state_change() {
+        let (dqn, _) = create_dqn_for_test();
+        let mut config = default_sac_config(4, 2);
+        config.batch_size = 4;
+        config.replay_start_size = 4;
+        config.replay_capacity = 32;
+        let sac = insert_agent(create_sac(&config).unwrap()).unwrap();
+        let obs = [0.1_f32; 4];
+        for id in [dqn, sac] {
+            let before = get_agent(id)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .agent
+                .get_statistics();
+            let mut out = [123_f32, 456.];
+            assert_eq!(
+                rx_agent_act_and_train_with_replay_input(
+                    id,
+                    obs.as_ptr(),
+                    4,
+                    0.1,
+                    obs.as_ptr(),
+                    4,
+                    1.,
+                    out.as_mut_ptr(),
+                    2
+                ),
+                i64::from(RX_ERROR_INVALID_ARGUMENT)
+            );
+            assert_eq!(
+                rx_agent_stop_episode_with_replay_input(
+                    id,
+                    obs.as_ptr(),
+                    4,
+                    0.1,
+                    0,
+                    obs.as_ptr(),
+                    4,
+                    1.
+                ),
+                RX_ERROR_INVALID_ARGUMENT
+            );
+            let after = get_agent(id)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .agent
+                .get_statistics();
+            assert_eq!(before, after);
+            assert_eq!(out, [123., 456.]);
+            // Rejection must not poison the handle: the original API still works.
+            assert!(rx_agent_act_and_train(id, obs.as_ptr(), 4, 0., out.as_mut_ptr(), 2) > 0);
+            assert_eq!(rx_agent_destroy(id), RX_OK);
+        }
+    }
+
+    #[test]
+    fn separate_replay_ffi_ppo_exports_raw_values_and_truncation() {
+        let mut config = default_ppo_config(4, 2);
+        config.action_space = RX_ACTION_DISCRETE;
+        config.update_interval = 8;
+        config.minibatch_size = 4;
+        let replay = Arc::new(ReplayBuffer::new(32, 3));
+        let id = insert_agent(
+            create_ppo_with_replay_and_paths(&config, replay.clone(), None, None).unwrap(),
+        )
+        .unwrap();
+        let mut out = [0_f32; 1];
+        let obs = [10_f32, 20., 30., 40.];
+        let raw = [1_f32, 2., 3., 4.];
+        let next = [20_f32, 30., 40., 50.];
+        let raw_next = [2_f32, 3., 4., 5.];
+        assert_eq!(
+            rx_agent_act_and_train_with_replay_input(
+                id,
+                obs.as_ptr(),
+                4,
+                0.,
+                raw.as_ptr(),
+                4,
+                0.,
+                out.as_mut_ptr(),
+                1
+            ),
+            1
+        );
+        assert_eq!(
+            rx_agent_stop_episode_with_replay_input(
+                id,
+                next.as_ptr(),
+                4,
+                0.5,
+                0,
+                raw_next.as_ptr(),
+                4,
+                5.
+            ),
+            RX_OK
+        );
+        assert_eq!(replay.len(), 1);
+        let experience = replay.sample(1, false).pop().unwrap();
+        assert!(experience
+            .state
+            .equal(&Tensor::from_slice(&raw).unsqueeze(0)));
+        assert_eq!(
+            experience.action.as_ref().unwrap().double_value(&[0]),
+            f64::from(out[0])
+        );
+        assert_eq!(
+            *experience.n_step_discounted_reward.lock().unwrap(),
+            Some(5.)
+        );
+        assert_eq!(*experience.n_step_horizon.lock().unwrap(), Some(1));
+        let next = experience
+            .n_step_after_experience
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap();
+        assert!(next
+            .state
+            .equal(&Tensor::from_slice(&raw_next).unsqueeze(0)));
+        assert!(next.is_episode_end);
+        assert!(!next.is_episode_terminal);
+        assert_eq!(rx_agent_destroy(id), RX_OK);
     }
 
     #[test]

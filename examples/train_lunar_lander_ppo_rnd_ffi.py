@@ -10,6 +10,7 @@ from reinforcex_ffi import (
     create_ppo,
     create_rnd,
     load_reinforcex,
+    manual_seed,
     path_for_agent,
     rnd_path,
     run_parallel,
@@ -22,6 +23,7 @@ from reinforcex_ffi import (
 def train(args) -> None:
     validate_training_args(args)
     lib = load_reinforcex()
+    manual_seed(lib, args.seed)
     ppo_config = RxPpoConfig()
     check(lib.rx_ppo_config_default(C.byref(ppo_config), 8, 4), "rx_ppo_config_default")
     ppo_config.action_space = RX_ACTION_DISCRETE

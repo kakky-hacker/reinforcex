@@ -1,12 +1,14 @@
 use super::base_agent::{ensure_parent_dir, BaseAgent};
 use crate::memory::{Experience, ReplayBuffer};
 use crate::misc::batch_states::batch_states;
+use crate::misc::gradients::clip_grad_norm_f64;
 use crate::models::{BasePolicy, BaseQFunction};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use tch::{nn, nn::OptimizerConfig, no_grad, Device, Kind, Tensor};
+use crate::misc::autograd::no_grad;
+use tch::{nn, nn::OptimizerConfig, Device, Kind, Tensor};
 use ulid::Ulid;
 
 const LOG_PROB_EPSILON: f64 = 1e-6;
@@ -20,6 +22,7 @@ struct SACBatch {
     rewards: Tensor,
     next_states: Tensor,
     non_terminal: Tensor,
+    discounts: Tensor,
 }
 
 pub struct SAC {
@@ -58,8 +61,6 @@ pub struct SAC {
     save_path: Option<String>,
     load_path: Option<String>,
 }
-
-unsafe impl Send for SAC {}
 
 impl SAC {
     pub fn new(
@@ -168,7 +169,7 @@ impl SAC {
         assert!(target_update_interval > 0);
         assert!((0.0..=1.0).contains(&gamma));
         assert!((0.0..=1.0).contains(&tau));
-        assert!(alpha >= 0.0);
+        assert!(alpha.is_finite() && alpha >= 0.0);
         assert!((0.0..=1.0).contains(&discrete_target_entropy_ratio));
         assert_eq!(actor.device(), critic1.device());
         assert_eq!(actor.device(), critic2.device());
@@ -249,7 +250,6 @@ impl SAC {
     }
 
     fn _update_continuous(&mut self, batch: &SACBatch) {
-        let gamma_n = self.gamma.powi(self.replay_buffer.get_n_steps() as i32);
         let target_q = no_grad(|| {
             let (next_actions, next_log_prob) =
                 self._sample_action_and_log_prob(&batch.next_states);
@@ -257,28 +257,28 @@ impl SAC {
             let next_q1 = self.target_critic1.forward(&next_inputs).view([-1]);
             let next_q2 = self.target_critic2.forward(&next_inputs).view([-1]);
             let next_q = next_q1.minimum(&next_q2) - self.alpha * next_log_prob;
-            &batch.rewards + gamma_n * &batch.non_terminal * next_q
+            &batch.rewards + &batch.discounts * &batch.non_terminal * next_q
         });
 
         let critic_inputs = self._critic_input(&batch.states, &batch.actions);
         let pred_q1 = self.critic1.forward(&critic_inputs).view([-1]);
         let critic1_loss: Tensor = (&pred_q1 - &target_q).square().mean(Kind::Float) * 0.5;
-        assert!(critic1_loss.isnan().any().int64_value(&[]) == 0);
+        Self::_assert_finite(&critic1_loss, "critic1 loss");
 
         self.latest_critic1_loss = Some(critic1_loss.double_value(&[]));
         self.critic1_optimizer.zero_grad();
         critic1_loss.backward();
-        self.critic1_optimizer.clip_grad_norm(MAX_GRAD_NORM);
+        clip_grad_norm_f64(&self.critic1_optimizer, MAX_GRAD_NORM, "SAC critic1");
         self.critic1_optimizer.step();
 
         let pred_q2 = self.critic2.forward(&critic_inputs).view([-1]);
         let critic2_loss: Tensor = (&pred_q2 - &target_q).square().mean(Kind::Float) * 0.5;
-        assert!(critic2_loss.isnan().any().int64_value(&[]) == 0);
+        Self::_assert_finite(&critic2_loss, "critic2 loss");
 
         self.latest_critic2_loss = Some(critic2_loss.double_value(&[]));
         self.critic2_optimizer.zero_grad();
         critic2_loss.backward();
-        self.critic2_optimizer.clip_grad_norm(MAX_GRAD_NORM);
+        clip_grad_norm_f64(&self.critic2_optimizer, MAX_GRAD_NORM, "SAC critic2");
         self.critic2_optimizer.step();
 
         let (actions, log_prob) = self._sample_action_and_log_prob(&batch.states);
@@ -286,31 +286,32 @@ impl SAC {
         let q1 = self.critic1.forward(&actor_inputs).view([-1]);
         let q2 = self.critic2.forward(&actor_inputs).view([-1]);
         let actor_loss = (self.alpha * &log_prob - q1.minimum(&q2)).mean(Kind::Float);
-        assert!(actor_loss.isnan().any().int64_value(&[]) == 0);
+        Self::_assert_finite(&actor_loss, "actor loss");
 
         self.latest_actor_loss = Some(actor_loss.double_value(&[]));
         self.actor_optimizer.zero_grad();
         actor_loss.backward();
-        self.actor_optimizer.clip_grad_norm(MAX_GRAD_NORM);
+        clip_grad_norm_f64(&self.actor_optimizer, MAX_GRAD_NORM, "SAC actor");
         self.actor_optimizer.step();
 
         if self.automatic_entropy_tuning {
             let target_entropy = -(actions.size()[1] as f64);
             let temperature_loss =
                 -(&self.log_alpha * (log_prob.detach() + target_entropy)).mean(Kind::Float);
-            assert!(temperature_loss.isnan().any().int64_value(&[]) == 0);
+            Self::_assert_finite(&temperature_loss, "temperature loss");
 
             self.latest_temperature_loss = Some(temperature_loss.double_value(&[]));
             self.alpha_optimizer.zero_grad();
             temperature_loss.backward();
+            Self::_assert_finite_gradients(&self.alpha_optimizer, "temperature gradient");
             self.alpha_optimizer.step();
             self.alpha = self.log_alpha.exp().double_value(&[0]);
+            assert!(self.alpha.is_finite(), "SAC temperature must be finite");
         }
     }
 
     fn _update_discrete(&mut self, batch: &SACBatch) {
         let batch_size = batch.states.size()[0];
-        let gamma_n = self.gamma.powi(self.replay_buffer.get_n_steps() as i32);
         let target_q = no_grad(|| {
             let (next_action_distrib, _) = self.actor.forward(&batch.next_states);
             let next_prob = next_action_distrib.all_prob();
@@ -332,7 +333,7 @@ impl SAC {
                 false,
                 Kind::Float,
             );
-            &batch.rewards + gamma_n * &batch.non_terminal * next_v
+            &batch.rewards + &batch.discounts * &batch.non_terminal * next_v
         });
 
         let action_indices = batch.actions.to_kind(Kind::Int64).view([batch_size, 1]);
@@ -340,24 +341,24 @@ impl SAC {
         Self::_assert_action_indices(&action_indices, q1_values.size()[1]);
         let pred_q1 = q1_values.gather(1, &action_indices, false).view([-1]);
         let critic1_loss = pred_q1.huber_loss(&target_q, tch::Reduction::Mean, 1.0);
-        assert!(critic1_loss.isnan().any().int64_value(&[]) == 0);
+        Self::_assert_finite(&critic1_loss, "critic1 loss");
 
         self.latest_critic1_loss = Some(critic1_loss.double_value(&[]));
         self.critic1_optimizer.zero_grad();
         critic1_loss.backward();
-        self.critic1_optimizer.clip_grad_norm(MAX_GRAD_NORM);
+        clip_grad_norm_f64(&self.critic1_optimizer, MAX_GRAD_NORM, "SAC critic1");
         self.critic1_optimizer.step();
 
         let q2_values = self.critic2.forward(&batch.states).view([batch_size, -1]);
         Self::_assert_action_indices(&action_indices, q2_values.size()[1]);
         let pred_q2 = q2_values.gather(1, &action_indices, false).view([-1]);
         let critic2_loss = pred_q2.huber_loss(&target_q, tch::Reduction::Mean, 1.0);
-        assert!(critic2_loss.isnan().any().int64_value(&[]) == 0);
+        Self::_assert_finite(&critic2_loss, "critic2 loss");
 
         self.latest_critic2_loss = Some(critic2_loss.double_value(&[]));
         self.critic2_optimizer.zero_grad();
         critic2_loss.backward();
-        self.critic2_optimizer.clip_grad_norm(MAX_GRAD_NORM);
+        clip_grad_norm_f64(&self.critic2_optimizer, MAX_GRAD_NORM, "SAC critic2");
         self.critic2_optimizer.step();
 
         let (action_distrib, _) = self.actor.forward(&batch.states);
@@ -375,25 +376,27 @@ impl SAC {
         let actor_loss = (&prob * (self.alpha * &log_prob - q))
             .sum_dim_intlist([-1].as_ref(), false, Kind::Float)
             .mean(Kind::Float);
-        assert!(actor_loss.isnan().any().int64_value(&[]) == 0);
+        Self::_assert_finite(&actor_loss, "actor loss");
 
         self.latest_actor_loss = Some(actor_loss.double_value(&[]));
         self.actor_optimizer.zero_grad();
         actor_loss.backward();
-        self.actor_optimizer.clip_grad_norm(MAX_GRAD_NORM);
+        clip_grad_norm_f64(&self.actor_optimizer, MAX_GRAD_NORM, "SAC actor");
         self.actor_optimizer.step();
 
         if self.automatic_entropy_tuning {
             let target_entropy = self._discrete_target_entropy(&prob);
             let temperature_loss =
                 -(&self.log_alpha * (target_entropy - entropies.detach())).mean(Kind::Float);
-            assert!(temperature_loss.isnan().any().int64_value(&[]) == 0);
+            Self::_assert_finite(&temperature_loss, "temperature loss");
 
             self.latest_temperature_loss = Some(temperature_loss.double_value(&[]));
             self.alpha_optimizer.zero_grad();
             temperature_loss.backward();
+            Self::_assert_finite_gradients(&self.alpha_optimizer, "temperature gradient");
             self.alpha_optimizer.step();
             self.alpha = self.log_alpha.exp().double_value(&[0]);
+            assert!(self.alpha.is_finite(), "SAC temperature must be finite");
         }
     }
 
@@ -446,6 +449,7 @@ impl SAC {
         let mut rewards: Vec<f64> = Vec::with_capacity(self.batch_size);
         let mut next_states: Vec<Tensor> = Vec::with_capacity(self.batch_size);
         let mut non_terminal: Vec<f64> = Vec::with_capacity(self.batch_size);
+        let mut discounts: Vec<f64> = Vec::with_capacity(self.batch_size);
 
         for experience in experiences {
             let n_step_after_experience = Self::_n_step_after_experience(&experience);
@@ -466,6 +470,8 @@ impl SAC {
                     .unwrap_or(experience.reward),
             );
             next_states.push(n_step_after_experience.state.shallow_clone());
+            let horizon = experience.n_step_horizon.lock().unwrap().unwrap();
+            discounts.push(self.gamma.powi(horizon as i32));
             non_terminal.push(if n_step_after_experience.is_episode_terminal {
                 0.0
             } else {
@@ -486,6 +492,9 @@ impl SAC {
         let non_terminal = Tensor::from_slice(&non_terminal)
             .to_kind(Kind::Float)
             .to_device(device);
+        let discounts = Tensor::from_slice(&discounts)
+            .to_kind(Kind::Float)
+            .to_device(device);
 
         SACBatch {
             states,
@@ -493,6 +502,7 @@ impl SAC {
             rewards,
             next_states,
             non_terminal,
+            discounts,
         }
     }
 
@@ -517,17 +527,40 @@ impl SAC {
         let diff = (&raw_action - mean).pow_tensor_scalar(2.0);
         let log_prob_each_dim: Tensor =
             -0.5 * ((2.0 * std::f64::consts::PI).ln() + var.log() + diff / &var);
-        let mut log_prob = log_prob_each_dim.sum_dim_intlist([-1].as_ref(), false, Kind::Float);
+        let log_prob = log_prob_each_dim.sum_dim_intlist([-1].as_ref(), false, Kind::Float);
 
         if self.squash_action {
-            let action = raw_action.tanh();
-            let correction = (Tensor::ones_like(&action) - action.square() + LOG_PROB_EPSILON)
-                .log()
-                .sum_dim_intlist([-1].as_ref(), false, Kind::Float);
-            log_prob = log_prob - correction;
-            (action, log_prob)
+            Self::_squash_action_and_log_prob(&raw_action, log_prob)
         } else {
             (raw_action, log_prob)
+        }
+    }
+
+    fn _squash_action_and_log_prob(raw_action: &Tensor, log_prob: Tensor) -> (Tensor, Tensor) {
+        // log(1 - tanh(u)^2) evaluated from u remains accurate, with a useful
+        // gradient, even when tanh(u) has rounded to +/-1. An epsilon inside
+        // log(1 - action^2 + epsilon) instead caps this correction at saturation.
+        // These are normalized [-1, 1] actions; no affine action scaling is applied.
+        let log_jacobian: Tensor =
+            2.0 * (std::f64::consts::LN_2 - raw_action - (-2.0f64 * raw_action).softplus());
+        let correction = log_jacobian.sum_dim_intlist([-1].as_ref(), false, log_prob.kind());
+        (raw_action.tanh(), log_prob - correction)
+    }
+
+    fn _assert_finite(value: &Tensor, name: &str) {
+        assert!(
+            value.isfinite().all().int64_value(&[]) != 0,
+            "SAC {} must be finite",
+            name
+        );
+    }
+
+    fn _assert_finite_gradients(optimizer: &nn::Optimizer, name: &str) {
+        for parameter in optimizer.trainable_variables() {
+            let gradient = parameter.grad();
+            if gradient.defined() {
+                Self::_assert_finite(&gradient, name);
+            }
         }
     }
 
@@ -588,6 +621,12 @@ impl SAC {
                 Self::_checkpoint_path(base_path, "temperature"),
             ),
         ]
+    }
+}
+
+impl Drop for SAC {
+    fn drop(&mut self) {
+        self.replay_buffer.discard_episode(&self.current_episode_id);
     }
 }
 
@@ -656,16 +695,28 @@ impl BaseAgent for SAC {
     }
 
     fn stop_episode_and_train(&mut self, obs: &Tensor, reward: f64) {
+        self.stop_episode_and_train_with_terminal(obs, reward, true);
+    }
+
+    fn stop_episode_and_train_with_terminal(
+        &mut self,
+        obs: &Tensor,
+        reward: f64,
+        terminated: bool,
+    ) {
         let state = batch_states(&vec![obs.shallow_clone()], self.actor.device());
-        let experience = Arc::new(Experience::new(
-            self.agent_id,
-            self.current_episode_id,
-            state.to_device(Device::Cpu),
-            None,
-            None,
-            reward,
-            true,
-        ));
+        let experience = Arc::new(
+            Experience::new(
+                self.agent_id,
+                self.current_episode_id,
+                state.to_device(Device::Cpu),
+                None,
+                None,
+                reward,
+                terminated,
+            )
+            .with_episode_end(true),
+        );
         self.replay_buffer.append(experience, self.gamma);
         self.current_episode_id = Ulid::new();
     }
@@ -1024,6 +1075,241 @@ mod tests {
     }
 
     #[test]
+    fn test_squashed_gaussian_log_prob_and_gradient_at_saturation() {
+        let values = [0.0f64, -20.0, 20.0, -100.0, 100.0];
+        for kind in [Kind::Float, Kind::Double] {
+            let raw_action = Tensor::from_slice(&values)
+                .to_kind(kind)
+                .view([5, 1])
+                .set_requires_grad(true);
+            let normal_log_prob: Tensor =
+                -0.5 * (raw_action.square() + (2.0 * std::f64::consts::PI).ln());
+            let normal_log_prob = normal_log_prob.sum_dim_intlist([-1].as_ref(), false, kind);
+            let (action, log_prob) = SAC::_squash_action_and_log_prob(&raw_action, normal_log_prob);
+            assert!(action.abs().le(1.0).all().int64_value(&[]) != 0);
+            assert!(log_prob.isfinite().all().int64_value(&[]) != 0);
+            log_prob.sum(kind).backward();
+            let gradient = raw_action.grad();
+            assert!(gradient.isfinite().all().int64_value(&[]) != 0);
+
+            for (index, u) in values.iter().copied().enumerate() {
+                // Independent scalar expression, stable for either sign of u.
+                let log_jacobian =
+                    -2.0 * (u.abs() + (-2.0 * u.abs()).exp().ln_1p() - std::f64::consts::LN_2);
+                let expected_log_prob =
+                    -0.5 * (u * u + (2.0 * std::f64::consts::PI).ln()) - log_jacobian;
+                let expected_gradient = -u + 2.0 * u.tanh();
+                let tolerance = if kind == Kind::Float { 1e-3 } else { 1e-10 };
+                assert!(
+                    (log_prob.double_value(&[index as i64]) - expected_log_prob).abs() < tolerance
+                );
+                assert!(
+                    (gradient.double_value(&[index as i64, 0]) - expected_gradient).abs()
+                        < tolerance
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_saturated_reparameterized_entropy_keeps_mean_gradient() {
+        let values = [0.0f32, -20.0, 20.0, -100.0, 100.0];
+        let mean = Tensor::from_slice(&values)
+            .view([5, 1])
+            .set_requires_grad(true);
+        let variance = Tensor::ones_like(&mean).set_requires_grad(true);
+        // Zero noise isolates the derivative through the reparameterized mean.
+        let raw_action = &mean + variance.sqrt() * Tensor::zeros_like(&mean);
+        let normal_log_prob: Tensor = -0.5
+            * ((2.0 * std::f64::consts::PI).ln()
+                + variance.log()
+                + (&raw_action - &mean).square() / &variance);
+        let normal_log_prob = normal_log_prob.sum_dim_intlist([-1].as_ref(), false, Kind::Float);
+        let (_, log_prob) = SAC::_squash_action_and_log_prob(&raw_action, normal_log_prob);
+        log_prob.sum(Kind::Float).backward();
+
+        assert!(log_prob.isfinite().all().int64_value(&[]) != 0);
+        assert!(variance.grad().isfinite().all().int64_value(&[]) != 0);
+        for (index, u) in values.iter().copied().enumerate() {
+            let gradient = mean.grad().double_value(&[index as i64, 0]);
+            assert!((gradient - 2.0 * (u as f64).tanh()).abs() < 1e-6);
+            if u != 0.0 {
+                assert!(gradient.abs() > 1.99);
+            }
+        }
+    }
+
+    #[test]
+    fn test_squashed_log_prob_matches_change_of_variables_away_from_saturation() {
+        let raw_action = Tensor::from_slice(&[-2.0f64, -0.5, 0.0, 0.5, 2.0]).view([1, 5]);
+        let normal_log_prob: Tensor =
+            -0.5 * (raw_action.square() + (2.0 * std::f64::consts::PI).ln());
+        let normal_log_prob = normal_log_prob.sum_dim_intlist([-1].as_ref(), false, Kind::Double);
+        let (_, log_prob) =
+            SAC::_squash_action_and_log_prob(&raw_action, normal_log_prob.shallow_clone());
+        let determinant = Tensor::ones_like(&raw_action) - raw_action.tanh().square();
+        let expected = &normal_log_prob
+            - determinant
+                .log()
+                .sum_dim_intlist([-1].as_ref(), false, Kind::Double);
+        assert!((&log_prob - expected).abs().max().double_value(&[]) < 1e-12);
+
+        let old_epsilon_approximation = &normal_log_prob
+            - (determinant + LOG_PROB_EPSILON).log().sum_dim_intlist(
+                [-1].as_ref(),
+                false,
+                Kind::Double,
+            );
+        // Removing epsilon also removes its small density bias at moderate u;
+        // the new expression is exact, rather than bit-identical to that bias.
+        let difference = (log_prob - old_epsilon_approximation).double_value(&[0]);
+        assert!(difference > 0.0 && difference < 4e-5);
+    }
+
+    #[test]
+    #[should_panic(expected = "SAC test loss must be finite")]
+    fn test_infinite_loss_is_rejected() {
+        SAC::_assert_finite(&Tensor::from(f32::INFINITY), "test loss");
+    }
+
+    #[test]
+    #[should_panic(expected = "SAC test gradient must be finite")]
+    fn test_finite_loss_with_infinite_gradient_is_rejected_before_optimizer_step() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let parameter = vs.root().var("zero", &[1], nn::Init::Const(0.0));
+        let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+        let loss = parameter.sqrt().sum(Kind::Float);
+        SAC::_assert_finite(&loss, "test loss");
+        loss.backward();
+        SAC::_assert_finite_gradients(&optimizer, "test gradient");
+    }
+
+    #[test]
+    fn test_large_finite_gradients_keep_direction_and_update_after_norm_clip() {
+        let vs = nn::VarStore::new(Device::Cpu);
+        let parameter = vs.root().var("parameter", &[2], nn::Init::Const(1.0));
+        let mut optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+        let loss = (&parameter * Tensor::from_slice(&[1e20_f32, -1e20])).sum(Kind::Float);
+        SAC::_assert_finite(&loss, "test loss");
+        optimizer.zero_grad();
+        loss.backward();
+        SAC::_assert_finite_gradients(&optimizer, "test gradient");
+        // This is the overflow-prone reduction used by tch 0.20's norm clip.
+        assert!(parameter.grad().norm().double_value(&[]).is_infinite());
+        let norm = clip_grad_norm_f64(&optimizer, MAX_GRAD_NORM, "SAC");
+        assert!(norm.is_finite() && norm > 1e20);
+        let gradient = parameter.grad();
+        assert!(gradient.isfinite().all().int64_value(&[]) != 0);
+        assert!(gradient.double_value(&[0]) > 7.0);
+        assert!(gradient.double_value(&[1]) < -7.0);
+        assert!((gradient.to_kind(Kind::Double).norm().double_value(&[]) - 10.0).abs() < 1e-5);
+        optimizer.step();
+        assert!((parameter.double_value(&[0]) - 0.999).abs() < 1e-6);
+        assert!((parameter.double_value(&[1]) - 1.001).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_safe_gradient_clip_matches_normal_range_and_skips_undefined_gradients() {
+        for scale in [0.0, 0.1, 1.0, 100.0] {
+            let mut gradients = Vec::new();
+            for safe in [false, true] {
+                let vs = nn::VarStore::new(Device::Cpu);
+                let first = vs.root().var("first", &[2], nn::Init::Const(1.0));
+                let second = vs.root().var("second", &[1], nn::Init::Const(1.0));
+                let unused = vs.root().var("unused", &[1], nn::Init::Const(1.0));
+                let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+                assert_eq!(clip_grad_norm_f64(&optimizer, MAX_GRAD_NORM, "SAC"), 0.0);
+                let loss = ((&first * Tensor::from_slice(&[3.0_f32, 4.0])).sum(Kind::Float)
+                    + (&second * 12.0).sum(Kind::Float))
+                    * scale;
+                loss.backward();
+                if safe {
+                    let norm = clip_grad_norm_f64(&optimizer, MAX_GRAD_NORM, "SAC");
+                    assert!((norm - 13.0 * scale).abs() < 1e-4);
+                } else {
+                    optimizer.clip_grad_norm(MAX_GRAD_NORM);
+                }
+                assert!(!unused.grad().defined());
+                gradients.push(Tensor::cat(&[first.grad(), second.grad()], 0));
+            }
+            assert!(
+                (&gradients[0] - &gradients[1])
+                    .abs()
+                    .max()
+                    .double_value(&[])
+                    < 1e-5
+            );
+        }
+    }
+
+    #[test]
+    fn test_nonfinite_norm_rejected_before_scaling_any_gradient() {
+        for invalid in [f64::INFINITY, f64::NAN] {
+            let vs = nn::VarStore::new(Device::Cpu);
+            let first = vs.root().var("first", &[1], nn::Init::Const(1.0));
+            let second = vs.root().var("second", &[1], nn::Init::Const(1.0));
+            let optimizer = nn::Adam::default().build(&vs, 1e-3).unwrap();
+            (&first + &second).sum(Kind::Float).backward();
+            no_grad(|| {
+                let _ = second.grad().fill_(invalid);
+            });
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                clip_grad_norm_f64(&optimizer, MAX_GRAD_NORM, "SAC");
+            }));
+            assert!(result.is_err());
+            assert_eq!(first.grad().double_value(&[0]), 1.0);
+            assert_eq!(first.double_value(&[0]), 1.0);
+            assert_eq!(second.double_value(&[0]), 1.0);
+        }
+    }
+
+    #[test]
+    fn test_target_critics_are_independent_and_apply_tau() {
+        let mut sac = build_sac();
+        sac.tau = 0.25;
+        no_grad(|| {
+            for mut parameter in sac.target_critic1.trainable_variables() {
+                let _ = parameter.fill_(0.0);
+            }
+            for mut parameter in sac.target_critic2.trainable_variables() {
+                let _ = parameter.fill_(0.0);
+            }
+            for mut parameter in sac.critic1.trainable_variables() {
+                let _ = parameter.fill_(2.0);
+            }
+            for mut parameter in sac.critic2.trainable_variables() {
+                let _ = parameter.fill_(-4.0);
+            }
+        });
+        for target in [&sac.target_critic1, &sac.target_critic2] {
+            for parameter in target.trainable_variables() {
+                assert!(parameter.eq(0.0).all().int64_value(&[]) != 0);
+            }
+        }
+        sac._update_target_model();
+        for parameter in sac.target_critic1.trainable_variables() {
+            assert!(parameter.eq(0.5).all().int64_value(&[]) != 0);
+        }
+        for parameter in sac.target_critic2.trainable_variables() {
+            assert!(parameter.eq(-1.0).all().int64_value(&[]) != 0);
+        }
+    }
+
+    #[test]
+    fn test_true_terminal_replay_masks_bootstrap_for_both_policy_types() {
+        for mut sac in [build_sac(), build_discrete_sac()] {
+            sac.replay_buffer = Arc::new(ReplayBuffer::new(100, 5));
+            let obs = Tensor::zeros([4], (Kind::Float, Device::Cpu));
+            let _ = sac.act_and_train(&obs, 0.0);
+            sac.stop_episode_and_train_with_terminal(&obs, 2.0, true);
+            let batch = sac._sample_batch();
+            assert!(batch.non_terminal.eq(0.0).all().int64_value(&[]) != 0);
+            assert!(batch.rewards.eq(2.0).all().int64_value(&[]) != 0);
+            assert!((batch.discounts - 0.99).abs().max().double_value(&[]) < 1e-6);
+        }
+    }
+
+    #[test]
     fn test_soft_actor_critic_new() {
         let sac = build_sac();
 
@@ -1033,6 +1319,24 @@ mod tests {
         assert_eq!(sac.gamma, 0.99);
         assert_eq!(sac.t, 0);
         assert!(sac.squash_action);
+    }
+
+    #[test]
+    fn test_truncated_replay_batches_bootstrap_with_short_horizon() {
+        for mut sac in [build_sac(), build_discrete_sac()] {
+            sac.replay_buffer = Arc::new(ReplayBuffer::new(100, 5));
+            let obs = Tensor::zeros([4], (Kind::Float, Device::Cpu));
+            let _ = sac.act_and_train(&obs, 0.0);
+            sac.stop_episode_and_train_with_terminal(&obs, 2.0, false);
+            assert_eq!(sac.replay_buffer.len(), 1);
+            let batch = sac._sample_batch();
+            assert!(batch.non_terminal.eq(1.0).all().int64_value(&[]) != 0);
+            assert!(batch.rewards.eq(2.0).all().int64_value(&[]) != 0);
+            assert!((batch.discounts - 0.99).abs().max().double_value(&[]) < 1e-6);
+            let _ = sac.act_and_train(&obs, 0.0);
+            sac.stop_episode_and_train(&obs, 4.0);
+            assert_eq!(sac.replay_buffer.len(), 2);
+        }
     }
 
     #[test]
