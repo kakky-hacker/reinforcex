@@ -1,6 +1,6 @@
 use tch::{Device, Tensor};
 
-pub trait BasecuriosityModel {
+pub trait BasecuriosityModel: Send {
     fn forward(&self, x: &Tensor) -> Tensor;
     fn device(&self) -> Device;
     fn save(&self, path: &str);

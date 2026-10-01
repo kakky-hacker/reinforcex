@@ -8,6 +8,7 @@ from reinforcex_ffi import (
     create_dqn,
     create_replay_buffer,
     load_reinforcex,
+    manual_seed,
     path_for_agent,
     run_parallel,
     train_gym_agent,
@@ -26,6 +27,7 @@ def shaped_reward(reward: float, step: int, done: bool, max_steps: int) -> float
 def train(args) -> None:
     validate_training_args(args)
     lib = load_reinforcex()
+    manual_seed(lib, args.seed)
     config = RxDqnConfig()
     check(lib.rx_dqn_config_default(C.byref(config), 4, 2), "rx_dqn_config_default")
     # CartPole needs little model capacity. A smaller network and replay buffer

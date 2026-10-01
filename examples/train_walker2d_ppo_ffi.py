@@ -10,6 +10,7 @@ from reinforcex_ffi import (
     cuda_is_available,
     evaluate_gym_agent,
     load_reinforcex,
+    manual_seed,
     path_for_agent,
     run_parallel,
     train_gym_agent,
@@ -46,6 +47,7 @@ def train(args) -> None:
         raise ValueError("--eval-only requires --load-path")
 
     lib = load_reinforcex()
+    manual_seed(lib, args.seed)
     device = "cuda" if cuda_is_available(lib) else "cpu"
     print(f"reinforcex_device={device}")
 

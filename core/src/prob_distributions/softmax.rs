@@ -9,7 +9,6 @@ pub struct SoftmaxDistribution {
 }
 
 unsafe impl Sync for SoftmaxDistribution {}
-unsafe impl Send for SoftmaxDistribution {}
 
 impl SoftmaxDistribution {
     pub fn new(logits: Tensor, beta: f64, min_prob: f64) -> Self {

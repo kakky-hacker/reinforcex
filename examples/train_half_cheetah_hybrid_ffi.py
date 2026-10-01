@@ -3,7 +3,6 @@
 import argparse
 import ctypes as C
 import json
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +18,8 @@ from reinforcex_ffi import (
     cuda_is_available,
     evaluate_gym_agent,
     load_reinforcex,
+    manual_seed,
+    run_parallel,
     train_gym_agent,
 )
 
@@ -89,7 +90,7 @@ def evaluate_candidates(lib, args, algorithm, config, worker_count, path_templat
                 agent=agent,
                 env_id=ENV_ID,
                 agent_id=f"{algorithm}-{worker_id}",
-                seed=args.seed + 20_000_000 + worker_id * 1_000_000,
+                seed=args.seed + 20_000_000,
                 episodes=args.eval_episodes,
                 max_steps=args.max_steps,
                 render=False,
@@ -98,10 +99,7 @@ def evaluate_candidates(lib, args, algorithm, config, worker_count, path_templat
         finally:
             agent.close()
 
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = [executor.submit(evaluate, worker_id) for worker_id in range(worker_count)]
-        for future in futures:
-            future.result()
+    run_parallel(worker_count, evaluate)
 
     means = [float(np.mean(returns)) for returns in results]
     best_worker = int(np.argmax(means))
@@ -176,11 +174,21 @@ def validate_args(args):
         raise ValueError("learning rates must be positive")
     if args.ppo_entropy < 0 or args.ppo_min_variance <= 0 or args.sac_alpha < 0:
         raise ValueError("entropy, variance, and alpha settings are invalid")
+    checkpoint_paths = []
+    for algorithm in ("ppo", "sac"):
+        checkpoint_paths.extend(
+            Path(candidate_path(getattr(args, f"{algorithm}_save_path"), algorithm, worker_id)).resolve()
+            for worker_id in range(getattr(args, f"{algorithm}_workers"))
+        )
+        checkpoint_paths.append(Path(getattr(args, f"best_{algorithm}_path")).resolve())
+    if len(set(checkpoint_paths)) != len(checkpoint_paths):
+        raise ValueError("candidate and best checkpoint paths must be distinct for every worker")
 
 
 def train(args):
     validate_args(args)
     lib = load_reinforcex()
+    manual_seed(lib, args.seed)
     device = "cuda" if cuda_is_available(lib) else "cpu"
     print(f"reinforcex_device={device}")
     if args.require_cuda and device != "cuda":
@@ -259,11 +267,10 @@ def train(args):
             "ppo": [None] * args.ppo_workers,
             "sac": [None] * args.sac_workers,
         }
-        with ThreadPoolExecutor(max_workers=len(jobs)) as executor:
-            futures = [executor.submit(train_worker, job) for job in jobs]
-            for future in futures:
-                algorithm, worker_id, returns = future.result()
-                training_returns[algorithm][worker_id] = returns
+        for algorithm, worker_id, returns in run_parallel(
+            len(jobs), lambda job_id: train_worker(jobs[job_id])
+        ):
+            training_returns[algorithm][worker_id] = returns
 
         replay_size = len(replay)
         print(f"shared_replay_size={replay_size}")
@@ -355,7 +362,7 @@ def parser():
         "--results-path",
         default="artifacts/half-cheetah-ppo-sac-shared-results.json",
     )
-    result.add_argument("--require-cuda", action=argparse.BooleanOptionalAction, default=True)
+    result.add_argument("--require-cuda", action=argparse.BooleanOptionalAction, default=False)
     result.add_argument("--eval-only", action="store_true")
     result.add_argument("--eval-algorithm", choices=("ppo", "sac", "both"), default="both")
     result.add_argument("--load-ppo-path")

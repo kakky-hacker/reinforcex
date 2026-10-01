@@ -4,7 +4,8 @@ use crate::misc::weight_initializer::{he_init, xavier_init};
 use crate::prob_distributions::BaseDistribution;
 use crate::prob_distributions::GaussianDistribution;
 use tch::nn::{linear, Init, Linear, LinearConfig, Module, VarStore};
-use tch::{no_grad, Device, Tensor};
+use crate::misc::autograd::no_grad;
+use tch::{Device, Tensor};
 
 const PPO_ACTION_MEAN_INIT_STD: f64 = 0.01;
 
@@ -384,7 +385,7 @@ mod tests {
             1e-3,
         )
         .with_max_variance(max_variance);
-        let _ = tch::no_grad(|| {
+        let _ = no_grad(|| {
             policy
                 .base_policy
                 .var_layer
